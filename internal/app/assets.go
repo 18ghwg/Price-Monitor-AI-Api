@@ -424,6 +424,10 @@ const indexHTML = `<!doctype html>
         </div>
       </section>
     </div>
+    <footer class="app-footer">
+      <span>开源地址</span>
+      <a href="https://github.com/18ghwg/Price-Monitor-AI-Api.git" target="_blank" rel="noopener noreferrer">github.com/18ghwg/Price-Monitor-AI-Api</a>
+    </footer>
   </main>
   <div id="toast" class="toast" hidden></div>
   <script src="/static/app.js?v=20260607-smtp-encryption"></script>
@@ -1604,6 +1608,28 @@ tr:last-child td {
   padding: 22px;
   color: var(--muted);
   text-align: center;
+}
+
+.app-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 22px;
+  padding: 16px 12px 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.app-footer a {
+  color: var(--primary-dark);
+  font-weight: 800;
+  text-decoration: underline;
+  text-decoration-color: rgba(109, 40, 217, .28);
+  text-underline-offset: 3px;
+  overflow-wrap: anywhere;
 }
 
 .toast {
