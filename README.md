@@ -15,6 +15,16 @@
 - 邮件通知：价格变动、同步成功/失败、低余额跳过等事件。
 - Docker Compose 一键部署，PostgreSQL 持久化存储。
 
+## 界面预览
+
+### 监控台概览
+
+![监控台概览](docs/screenshots/price-monitor-community-overview.png)
+
+### 价格快照列表
+
+![价格快照列表](docs/screenshots/price-monitor-community-snapshots.png)
+
 ## 快速启动
 
 ```bash
