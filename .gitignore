@@ -1,0 +1,14 @@
+.gocache/
+.gomodcache/
+newapi-price-monitor
+.DS_Store
+*.log
+tmp/
+data/
+.env
+.env.*
+!.env.example
+*.pem
+id_rsa*
+id_ed25519*
+newapi_system_access_token.json

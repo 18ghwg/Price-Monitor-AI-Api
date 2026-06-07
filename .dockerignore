@@ -1,0 +1,9 @@
+.git
+.DS_Store
+.gocache
+.gomodcache
+new-api-main
+sub2api-main
+tmp
+*.log
+newapi_system_access_token.json

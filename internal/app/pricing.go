@@ -1,0 +1,272 @@
+package app
+
+import (
+	"encoding/json"
+	"fmt"
+	"sort"
+	"strings"
+)
+
+func BuildPricingRows(pricing map[string]any, wantedModel, wantedGroup string) ([]PricingRow, error) {
+	groupRatio := asMap(pricing["group_ratio"])
+	usableGroup := asMap(pricing["usable_group"])
+	models, ok := pricing["data"].([]any)
+	if !ok {
+		return nil, fmt.Errorf("pricing response missing data array")
+	}
+
+	var rows []PricingRow
+	for _, item := range models {
+		model := asMap(item)
+		modelName := stringValue(model["model_name"])
+		if modelName == "" || modelName != wantedModel {
+			continue
+		}
+
+		quotaType := int(floatValue(model["quota_type"], 0))
+		modelRatio := floatValue(model["model_ratio"], 0)
+		completionRatio := floatValue(model["completion_ratio"], 0)
+		modelPrice := floatValue(model["model_price"], 0)
+
+		for _, group := range enabledGroups(model, groupRatio) {
+			if group != wantedGroup {
+				continue
+			}
+			ratio := floatValue(groupRatio[group], 1)
+			desc := groupDescription(usableGroup[group])
+			row := PricingRow{
+				ModelName:  modelName,
+				GroupName:  group,
+				GroupDesc:  desc,
+				QuotaType:  quotaType,
+				GroupRatio: ratio,
+			}
+
+			if quotaType == 1 {
+				row.RequestPrice = ptr(modelPrice * ratio)
+			} else {
+				input := modelRatio * 2 * ratio
+				output := input * completionRatio
+				row.InputPrice = ptr(input)
+				row.OutputPrice = ptr(output)
+				if hasFloat(model["cache_ratio"]) {
+					row.CacheReadPrice = ptr(input * floatValue(model["cache_ratio"], 0))
+				}
+				if hasFloat(model["create_cache_ratio"]) {
+					row.CacheWritePrice = ptr(input * floatValue(model["create_cache_ratio"], 0))
+				}
+			}
+			rows = append(rows, row)
+		}
+	}
+	return rows, nil
+}
+
+func BuildCheapestKeywordRows(pricing map[string]any, wantedModel string) ([]PricingRow, error) {
+	wantedModel = strings.TrimSpace(wantedModel)
+	if wantedModel == "" {
+		return nil, fmt.Errorf("model name is required")
+	}
+	groupRatio := asMap(pricing["group_ratio"])
+	usableGroup := asMap(pricing["usable_group"])
+	models, ok := pricing["data"].([]any)
+	if !ok {
+		return nil, fmt.Errorf("pricing response missing data array")
+	}
+
+	var rows []PricingRow
+	for _, item := range models {
+		model := asMap(item)
+		modelName := stringValue(model["model_name"])
+		if modelName == "" || !strings.EqualFold(strings.TrimSpace(modelName), wantedModel) {
+			continue
+		}
+
+		var cheapest *PricingRow
+		for _, group := range enabledGroups(model, groupRatio) {
+			row := buildPricingRow(model, usableGroup, groupRatio, modelName, group)
+			if cheapest == nil || pricingRowLess(row, *cheapest) {
+				current := row
+				cheapest = &current
+			}
+		}
+		if cheapest != nil {
+			rows = append(rows, *cheapest)
+		}
+	}
+
+	sort.SliceStable(rows, func(i, j int) bool {
+		if pricingRowLess(rows[i], rows[j]) {
+			return true
+		}
+		if pricingRowLess(rows[j], rows[i]) {
+			return false
+		}
+		return rows[i].ModelName < rows[j].ModelName
+	})
+	return rows, nil
+}
+
+func buildPricingRow(model map[string]any, usableGroup map[string]any, groupRatio map[string]any, modelName string, group string) PricingRow {
+	quotaType := int(floatValue(model["quota_type"], 0))
+	modelRatio := floatValue(model["model_ratio"], 0)
+	completionRatio := floatValue(model["completion_ratio"], 0)
+	modelPrice := floatValue(model["model_price"], 0)
+	ratio := floatValue(groupRatio[group], 1)
+	row := PricingRow{
+		ModelName:  modelName,
+		GroupName:  group,
+		GroupDesc:  groupDescription(usableGroup[group]),
+		QuotaType:  quotaType,
+		GroupRatio: ratio,
+	}
+	if quotaType == 1 {
+		row.RequestPrice = ptr(modelPrice * ratio)
+		return row
+	}
+
+	input := modelRatio * 2 * ratio
+	output := input * completionRatio
+	row.InputPrice = ptr(input)
+	row.OutputPrice = ptr(output)
+	if hasFloat(model["cache_ratio"]) {
+		row.CacheReadPrice = ptr(input * floatValue(model["cache_ratio"], 0))
+	}
+	if hasFloat(model["create_cache_ratio"]) {
+		row.CacheWritePrice = ptr(input * floatValue(model["create_cache_ratio"], 0))
+	}
+	return row
+}
+
+func pricingRowLess(left, right PricingRow) bool {
+	leftPrice := effectivePrice(left)
+	rightPrice := effectivePrice(right)
+	if leftPrice != rightPrice {
+		return leftPrice < rightPrice
+	}
+	if left.OutputPrice != nil && right.OutputPrice != nil && *left.OutputPrice != *right.OutputPrice {
+		return *left.OutputPrice < *right.OutputPrice
+	}
+	if left.GroupRatio != right.GroupRatio {
+		return left.GroupRatio < right.GroupRatio
+	}
+	return left.GroupName < right.GroupName
+}
+
+func effectivePrice(row PricingRow) float64 {
+	if row.InputPrice != nil {
+		return *row.InputPrice
+	}
+	if row.RequestPrice != nil {
+		return *row.RequestPrice
+	}
+	if row.OutputPrice != nil {
+		return *row.OutputPrice
+	}
+	return 1e308
+}
+
+func PricingRowRaw(row PricingRow) []byte {
+	data, err := json.Marshal(row)
+	if err != nil {
+		return []byte(`{}`)
+	}
+	return data
+}
+
+func enabledGroups(model map[string]any, groupRatio map[string]any) []string {
+	rawGroups, ok := model["enable_groups"].([]any)
+	if !ok {
+		rawGroups, _ = model["enable_group"].([]any)
+	}
+	if len(rawGroups) == 0 {
+		groups := make([]string, 0, len(groupRatio))
+		for group := range groupRatio {
+			groups = append(groups, group)
+		}
+		sort.Strings(groups)
+		return groups
+	}
+
+	for _, raw := range rawGroups {
+		if stringValue(raw) == "all" {
+			groups := make([]string, 0, len(groupRatio))
+			for group := range groupRatio {
+				groups = append(groups, group)
+			}
+			sort.Strings(groups)
+			return groups
+		}
+	}
+
+	var groups []string
+	for _, raw := range rawGroups {
+		group := stringValue(raw)
+		if _, ok := groupRatio[group]; ok {
+			groups = append(groups, group)
+		}
+	}
+	return groups
+}
+
+func asMap(value any) map[string]any {
+	if typed, ok := value.(map[string]any); ok {
+		return typed
+	}
+	return map[string]any{}
+}
+
+func stringValue(value any) string {
+	if value == nil {
+		return ""
+	}
+	switch typed := value.(type) {
+	case string:
+		return typed
+	default:
+		return fmt.Sprint(typed)
+	}
+}
+
+func groupDescription(value any) string {
+	group := asMap(value)
+	if desc := stringValue(group["desc"]); desc != "" {
+		return desc
+	}
+	return stringValue(value)
+}
+
+func floatValue(value any, fallback float64) float64 {
+	switch typed := value.(type) {
+	case float64:
+		return typed
+	case float32:
+		return float64(typed)
+	case int:
+		return float64(typed)
+	case int64:
+		return float64(typed)
+	case json.Number:
+		value, err := typed.Float64()
+		if err == nil {
+			return value
+		}
+	}
+	return fallback
+}
+
+func hasFloat(value any) bool {
+	if value == nil {
+		return false
+	}
+	switch value.(type) {
+	case float64, float32, int, int64, json.Number:
+		return true
+	default:
+		return false
+	}
+}
+
+func ptr(value float64) *float64 {
+	return &value
+}

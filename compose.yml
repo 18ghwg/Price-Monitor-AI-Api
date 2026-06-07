@@ -1,0 +1,37 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${APP_PORT:-28080}:8080"
+    environment:
+      ADDR: ":8080"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-newapi_price_monitor}?sslmode=disable"
+      BASIC_AUTH_USER: "${BASIC_AUTH_USER:-admin}"
+      BASIC_AUTH_PASS: "${BASIC_AUTH_PASS:-change-me}"
+      SESSION_SECRET: "${SESSION_SECRET:-change-me-session-secret}"
+      MONITOR_INTERVAL: "${MONITOR_INTERVAL:-1m}"
+      PRICE_MONITOR_DOCKER_HOST_REWRITE: "1"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: "${POSTGRES_DB:-newapi_price_monitor}"
+      POSTGRES_USER: "${POSTGRES_USER:-postgres}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-postgres}"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-newapi_price_monitor}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
