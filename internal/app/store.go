@@ -1013,6 +1013,29 @@ func (s Store) UpdateRuleSyncStatus(ctx context.Context, ruleID int64, status st
 	return err
 }
 
+func (s Store) UpdateRuleSyncSuccess(ctx context.Context, ruleID int64, status string, signature string) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE monitor_rules
+		SET last_sync_at = now(),
+		    sync_status = $2,
+		    sync_error = '',
+		    sync_signature = $3,
+		    updated_at = now()
+		WHERE id = $1
+	`, ruleID, status, signature)
+	return err
+}
+
+func (s Store) RuleSyncSignature(ctx context.Context, ruleID int64) (string, error) {
+	var signature string
+	err := s.db.QueryRow(ctx, `
+		SELECT COALESCE(sync_signature, '')
+		FROM monitor_rules
+		WHERE id = $1
+	`, ruleID).Scan(&signature)
+	return signature, err
+}
+
 func (s Store) InsertSnapshot(ctx context.Context, snapshot PriceSnapshot) (PriceSnapshot, error) {
 	if strings.TrimSpace(snapshot.SourceType) == "" {
 		snapshot.SourceType = RuleSourceNewAPI
@@ -1291,19 +1314,31 @@ func (s Store) LatestSnapshots(ctx context.Context, limit int, category string) 
 }
 
 func (s Store) CheapestSyncCandidate(ctx context.Context, category string, modelName string) (PriceSnapshot, []PriceSnapshot, error) {
-	snapshots, err := s.latestSnapshotsForModel(ctx, category, modelName)
+	candidates, skipped, err := s.SyncCandidates(ctx, category, modelName)
 	if err != nil {
 		return PriceSnapshot{}, nil, err
 	}
+	if len(candidates) == 0 {
+		return PriceSnapshot{}, skipped, pgx.ErrNoRows
+	}
+	return candidates[0], skipped, nil
+}
+
+func (s Store) SyncCandidates(ctx context.Context, category string, modelName string) ([]PriceSnapshot, []PriceSnapshot, error) {
+	snapshots, err := s.latestSnapshotsForModel(ctx, category, modelName)
+	if err != nil {
+		return nil, nil, err
+	}
+	candidates := make([]PriceSnapshot, 0, len(snapshots))
 	skipped := make([]PriceSnapshot, 0)
 	for _, snapshot := range snapshots {
 		if snapshotBalanceInsufficient(snapshot) {
 			skipped = append(skipped, snapshot)
 			continue
 		}
-		return snapshot, skipped, nil
+		candidates = append(candidates, snapshot)
 	}
-	return PriceSnapshot{}, skipped, pgx.ErrNoRows
+	return candidates, skipped, nil
 }
 
 func (s Store) latestSnapshotsForModel(ctx context.Context, category string, modelName string) ([]PriceSnapshot, error) {
