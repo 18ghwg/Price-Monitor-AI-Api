@@ -1073,7 +1073,7 @@ func (s *Server) runNewAPIRule(ctx context.Context, rule Rule, site Site) ([]Pri
 	syncDecisionRecorded := false
 	for _, row := range rows {
 		activeGroups = append(activeGroups, row.GroupName)
-		previous, previousErr := s.store.PreviousSnapshot(ctx, rule.ID, row.ModelName)
+		previousLowest, previousLowestErr := s.store.CheapestLatestSnapshot(ctx, rule.Category, row.ModelName)
 		snapshot := PriceSnapshot{
 			RuleID:          rule.ID,
 			SourceType:      RuleSourceNewAPI,
@@ -1102,16 +1102,21 @@ func (s *Server) runNewAPIRule(ctx context.Context, rule Rule, site Site) ([]Pri
 			return nil, err
 		}
 		snapshots = append(snapshots, snapshot)
-		if previousErr == nil {
-			s.notifyPriceChange(ctx, previous, snapshot, snapshotPriceChanges(previous, snapshot))
-		} else if !notFound(previousErr) {
-			log.Printf("load previous snapshot for rule %d model %q: %v", rule.ID, row.ModelName, previousErr)
+		currentLowest, newLowest, stableLowest := s.lowestSnapshotEvent(ctx, rule, snapshot, previousLowest, previousLowestErr)
+		if stableLowest {
+			syncDecisionRecorded = true
+		}
+		if newLowest {
+			s.notifyPriceChange(ctx, previousLowest, currentLowest, lowestSnapshotChanges(previousLowest, currentLowest))
 		}
 		if rule.SyncEnabled {
-			shouldSync, skippedLowBalance, decisionRecorded := s.shouldSyncGlobalCheapestWithBalance(ctx, rule, snapshot)
+			if !newLowest {
+				continue
+			}
+			shouldSync, skippedLowBalance, decisionRecorded := s.shouldSyncGlobalCheapestWithBalance(ctx, rule, currentLowest)
 			syncDecisionRecorded = syncDecisionRecorded || decisionRecorded
-			if snapshotBalanceInsufficient(snapshot) && len(skippedLowBalance) > 0 {
-				s.notifyLowBalanceSkip(ctx, rule, skippedLowBalance, snapshot)
+			if snapshotBalanceInsufficient(currentLowest) && len(skippedLowBalance) > 0 {
+				s.notifyLowBalanceSkip(ctx, rule, skippedLowBalance, currentLowest)
 			}
 			if shouldSync {
 				syncAttempted = true
@@ -1181,7 +1186,7 @@ func (s *Server) runSub2APIRule(ctx context.Context, rule Rule, upstream Sub2API
 	syncDecisionRecorded := false
 	for _, row := range rows {
 		activeGroups = append(activeGroups, row.GroupName)
-		previous, previousErr := s.store.PreviousSnapshot(ctx, rule.ID, row.ModelName)
+		previousLowest, previousLowestErr := s.store.CheapestLatestSnapshot(ctx, rule.Category, row.ModelName)
 		cacheWritePrice := row.FinalCacheWritePerMillion
 		if cacheWritePrice == nil {
 			cacheWritePrice = row.FinalCacheWrite1hPerMillion
@@ -1213,16 +1218,21 @@ func (s *Server) runSub2APIRule(ctx context.Context, rule Rule, upstream Sub2API
 			return nil, err
 		}
 		snapshots = append(snapshots, snapshot)
-		if previousErr == nil {
-			s.notifyPriceChange(ctx, previous, snapshot, snapshotPriceChanges(previous, snapshot))
-		} else if !notFound(previousErr) {
-			log.Printf("load previous snapshot for rule %d model %q: %v", rule.ID, row.ModelName, previousErr)
+		currentLowest, newLowest, stableLowest := s.lowestSnapshotEvent(ctx, rule, snapshot, previousLowest, previousLowestErr)
+		if stableLowest {
+			syncDecisionRecorded = true
+		}
+		if newLowest {
+			s.notifyPriceChange(ctx, previousLowest, currentLowest, lowestSnapshotChanges(previousLowest, currentLowest))
 		}
 		if rule.SyncEnabled {
-			shouldSync, skippedLowBalance, decisionRecorded := s.shouldSyncGlobalCheapestWithBalance(ctx, rule, snapshot)
+			if !newLowest {
+				continue
+			}
+			shouldSync, skippedLowBalance, decisionRecorded := s.shouldSyncGlobalCheapestWithBalance(ctx, rule, currentLowest)
 			syncDecisionRecorded = syncDecisionRecorded || decisionRecorded
-			if snapshotBalanceInsufficient(snapshot) && len(skippedLowBalance) > 0 {
-				s.notifyLowBalanceSkip(ctx, rule, skippedLowBalance, snapshot)
+			if snapshotBalanceInsufficient(currentLowest) && len(skippedLowBalance) > 0 {
+				s.notifyLowBalanceSkip(ctx, rule, skippedLowBalance, currentLowest)
 			}
 			if shouldSync {
 				syncAttempted = true
@@ -1322,6 +1332,28 @@ func sub2APIUserPriceRowRaw(row Sub2APIUserPriceRow) []byte {
 		return []byte(`{}`)
 	}
 	return data
+}
+
+func (s *Server) lowestSnapshotEvent(ctx context.Context, rule Rule, inserted PriceSnapshot, previous PriceSnapshot, previousErr error) (PriceSnapshot, bool, bool) {
+	current, err := s.store.CheapestLatestSnapshot(ctx, rule.Category, inserted.ModelName)
+	if err != nil {
+		log.Printf("load current cheapest snapshot for rule %d model %q: %v", rule.ID, inserted.ModelName, err)
+		return PriceSnapshot{}, false, false
+	}
+	if current.ID != inserted.ID {
+		return current, false, false
+	}
+	if previousErr != nil {
+		if notFound(previousErr) {
+			return current, true, false
+		}
+		log.Printf("load previous cheapest snapshot for rule %d model %q: %v", rule.ID, inserted.ModelName, previousErr)
+		return current, false, true
+	}
+	if sameLowestSnapshot(previous, current) {
+		return current, false, true
+	}
+	return current, true, false
 }
 
 func (s *Server) shouldSyncGlobalCheapestWithBalance(ctx context.Context, rule Rule, snapshot PriceSnapshot) (bool, []PriceSnapshot, bool) {

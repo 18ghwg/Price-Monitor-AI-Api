@@ -34,16 +34,20 @@ func (s *Server) notifyPriceChange(ctx context.Context, previous PriceSnapshot, 
 		return
 	}
 
-	subject := fmt.Sprintf("[价格变动] %s / %s / %s", current.SiteName, current.ModelName, current.GroupName)
+	subject := fmt.Sprintf("[新低价] %s / %s / %s", current.SiteName, current.ModelName, current.GroupName)
 	var body strings.Builder
-	body.WriteString("检测到价格快照发生变化。\n\n")
+	body.WriteString("价格快照列表检测到新的最低价。\n\n")
 	body.WriteString("站点: " + current.SiteName + "\n")
 	body.WriteString("地址: " + current.SiteBaseURL + "\n")
 	body.WriteString("分类: " + current.CategoryName + "\n")
 	body.WriteString("关键词: " + current.ModelKeyword + "\n")
 	body.WriteString("模型: " + current.ModelName + "\n")
 	body.WriteString("当前分组: " + current.GroupName + "\n")
-	body.WriteString("上一快照: " + previous.CreatedAt.Format(time.RFC3339) + "\n")
+	if previous.ID > 0 {
+		body.WriteString("上一最低价快照: " + previous.CreatedAt.Format(time.RFC3339) + "\n")
+	} else {
+		body.WriteString("上一最低价快照: 无\n")
+	}
 	body.WriteString("当前快照: " + current.CreatedAt.Format(time.RFC3339) + "\n\n")
 	body.WriteString("变化:\n")
 	for _, change := range changes {
@@ -193,6 +197,63 @@ func snapshotPriceChanges(previous PriceSnapshot, current PriceSnapshot) []price
 	addFloatChange("缓存写价格", previous.CacheWritePrice, current.CacheWritePrice)
 	addFloatChange("请求价格", previous.RequestPrice, current.RequestPrice)
 	return changes
+}
+
+func lowestSnapshotChanges(previous PriceSnapshot, current PriceSnapshot) []priceChange {
+	if previous.ID == 0 {
+		return []priceChange{{
+			Label: "最低价渠道",
+			Old:   "无",
+			New:   lowestSnapshotLabel(current),
+		}}
+	}
+	changes := make([]priceChange, 0, 9)
+	if !sameLowestSnapshotSource(previous, current) {
+		changes = append(changes, priceChange{
+			Label: "最低价渠道",
+			Old:   lowestSnapshotLabel(previous),
+			New:   lowestSnapshotLabel(current),
+		})
+	}
+	changes = append(changes, snapshotPriceChanges(previous, current)...)
+	return changes
+}
+
+func sameLowestSnapshot(previous PriceSnapshot, current PriceSnapshot) bool {
+	return len(lowestSnapshotChanges(previous, current)) == 0
+}
+
+func sameLowestSnapshotSource(previous PriceSnapshot, current PriceSnapshot) bool {
+	if !strings.EqualFold(strings.TrimSpace(previous.SourceType), strings.TrimSpace(current.SourceType)) {
+		return false
+	}
+	if previous.SiteID != current.SiteID || previous.Sub2APIUpstreamID != current.Sub2APIUpstreamID {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(previous.SiteBaseURL), strings.TrimSpace(current.SiteBaseURL)) {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(previous.ModelName), strings.TrimSpace(current.ModelName)) {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(previous.GroupName), strings.TrimSpace(current.GroupName))
+}
+
+func lowestSnapshotLabel(snapshot PriceSnapshot) string {
+	parts := []string{}
+	if sourceType := strings.TrimSpace(snapshot.SourceType); sourceType != "" {
+		parts = append(parts, sourceType)
+	}
+	if siteName := strings.TrimSpace(snapshot.SiteName); siteName != "" {
+		parts = append(parts, siteName)
+	}
+	if groupName := strings.TrimSpace(snapshot.GroupName); groupName != "" {
+		parts = append(parts, groupName)
+	}
+	if len(parts) == 0 {
+		return "未知"
+	}
+	return strings.Join(parts, " / ")
 }
 
 func sameFloatPtr(left *float64, right *float64) bool {

@@ -59,3 +59,71 @@ func TestSnapshotPriceChangesReportsModelGroupPriceChanges(t *testing.T) {
 		t.Fatalf("snapshotPriceChanges() labels = %#v, should not include balance changes", labels)
 	}
 }
+
+func TestSameLowestSnapshotIgnoresBalanceOnlyChange(t *testing.T) {
+	previousBalance := 10.0
+	currentBalance := 1.0
+	price := 0.12
+
+	previous := PriceSnapshot{
+		ID:              1,
+		SourceType:      RuleSourceNewAPI,
+		SiteID:          10,
+		SiteName:        "upstream-a",
+		SiteBaseURL:     "https://upstream.example.com/",
+		ModelName:       "gpt-4o",
+		GroupName:       "vip",
+		GroupRatio:      ptr(0.8),
+		InputPrice:      &price,
+		UpstreamBalance: &previousBalance,
+	}
+	current := previous
+	current.UpstreamBalance = &currentBalance
+
+	if !sameLowestSnapshot(previous, current) {
+		t.Fatalf("sameLowestSnapshot() = false, want true for balance-only change")
+	}
+	if changes := lowestSnapshotChanges(previous, current); len(changes) != 0 {
+		t.Fatalf("lowestSnapshotChanges() = %#v, want no changes for balance-only update", changes)
+	}
+}
+
+func TestLowestSnapshotChangesReportsSourceChange(t *testing.T) {
+	price := 0.12
+	previous := PriceSnapshot{
+		ID:          1,
+		SourceType:  RuleSourceNewAPI,
+		SiteID:      10,
+		SiteName:    "upstream-a",
+		SiteBaseURL: "https://a.example.com/",
+		ModelName:   "gpt-4o",
+		GroupName:   "vip",
+		InputPrice:  &price,
+	}
+	current := previous
+	current.ID = 2
+	current.SiteID = 11
+	current.SiteName = "upstream-b"
+	current.SiteBaseURL = "https://b.example.com/"
+
+	changes := lowestSnapshotChanges(previous, current)
+	if len(changes) != 1 || changes[0].Label != "最低价渠道" {
+		t.Fatalf("lowestSnapshotChanges() = %#v, want source change only", changes)
+	}
+}
+
+func TestLowestSnapshotChangesReportsInitialLowest(t *testing.T) {
+	price := 0.12
+	changes := lowestSnapshotChanges(PriceSnapshot{}, PriceSnapshot{
+		ID:         1,
+		SourceType: RuleSourceSub2API,
+		SiteName:   "channel-a",
+		ModelName:  "gpt-4o",
+		GroupName:  "codex-low",
+		InputPrice: &price,
+	})
+
+	if len(changes) != 1 || changes[0].Old != "无" {
+		t.Fatalf("lowestSnapshotChanges() = %#v, want initial lowest change", changes)
+	}
+}
