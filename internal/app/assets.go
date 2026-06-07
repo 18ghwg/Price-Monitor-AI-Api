@@ -2797,6 +2797,59 @@ function loginURL(baseURL) {
   }
 }
 
+function normalizeCompareText(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function normalizeCompareBaseURL(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  return text.replace(/\/+$/, "") + "/";
+}
+
+function duplicateSiteMessage(sourceType, payload, id) {
+  const baseURL = normalizeCompareBaseURL(payload.base_url);
+  if (!baseURL) return "";
+  if (sourceType === "sub2api") {
+    const email = normalizeCompareText(payload.email);
+    const token = String(payload.auth_token || "").trim();
+    const current = state.sub2Upstreams.find((item) => Number(item.id) === Number(id));
+    const effectiveToken = token || (!email && current ? String(current.auth_token || "").trim() : "");
+    const duplicate = state.sub2Upstreams.some((upstream) => {
+      if (Number(upstream.id) === Number(id)) return false;
+      if (normalizeCompareBaseURL(upstream.base_url) !== baseURL) return false;
+      if (email && normalizeCompareText(upstream.email || upstream.username) === email) return true;
+      return !email && effectiveToken && String(upstream.auth_token || "").trim() === effectiveToken;
+    });
+    return duplicate ? "sub2api 上游站点账号已存在：同一站点地址和账号不能重复添加" : "";
+  }
+  const username = normalizeCompareText(payload.username);
+  const duplicate = newapiSites().some((site) => (
+    Number(site.id) !== Number(id)
+    && normalizeCompareBaseURL(site.base_url) === baseURL
+    && normalizeCompareText(site.username) === username
+  ));
+  return duplicate ? "NewAPI 上游站点账号已存在：同一站点地址和用户名不能重复添加" : "";
+}
+
+function duplicateRuleMessage(payload, id) {
+  const sourceType = String(payload.source_type || "newapi").toLowerCase() === "sub2api" ? "sub2api" : "newapi";
+  const category = normalizeCompareText(payload.category || "other");
+  const modelKeyword = normalizeCompareText(payload.model_keyword || payload.model_name);
+  const sourceID = sourceType === "sub2api" ? Number(payload.sub2api_upstream_id || 0) : Number(payload.site_id || 0);
+  if (!sourceID || !modelKeyword) return "";
+  const duplicate = state.rules.some((rule) => {
+    const ruleSourceType = String(rule.source_type || "newapi").toLowerCase() === "sub2api" ? "sub2api" : "newapi";
+    const ruleSourceID = ruleSourceType === "sub2api" ? Number(rule.sub2api_upstream_id || 0) : Number(rule.site_id || 0);
+    return Number(rule.id) !== Number(id)
+      && ruleSourceType === sourceType
+      && ruleSourceID === sourceID
+      && normalizeCompareText(rule.category || "other") === category
+      && normalizeCompareText(rule.model_keyword || rule.model_name) === modelKeyword;
+  });
+  return duplicate ? "相同站点、分类和模型的监控规则已存在，请勿重复添加" : "";
+}
+
 function currentSiteSourceType() {
   return state.activeSiteSourceType === "sub2api" ? "sub2api" : "newapi";
 }
@@ -3023,6 +3076,11 @@ if (siteForm) {
           toast("请填写 sub2api 用户名和密码，或填写 Auth Token");
           return;
         }
+        const duplicateMessage = duplicateSiteMessage("sub2api", sub2Payload, id);
+        if (duplicateMessage) {
+          toast(duplicateMessage);
+          return;
+        }
         if (id) {
           await api("/api/sub2api/upstreams/" + id + "/update", { method: "POST", body: JSON.stringify(sub2Payload) });
           toast("sub2api 上游已更新");
@@ -3033,6 +3091,11 @@ if (siteForm) {
       } else {
         delete payload.auth_token;
         if (!payload.password) delete payload.password;
+        const duplicateMessage = duplicateSiteMessage("newapi", payload, id);
+        if (duplicateMessage) {
+          toast(duplicateMessage);
+          return;
+        }
         if (id) {
           await api("/api/sites/" + id + "/update", { method: "POST", body: JSON.stringify(payload) });
           toast("NewAPI 上游已更新");
@@ -3283,6 +3346,11 @@ if (ruleForm) {
         toast(newapiSites().length ? "请选择 NewAPI 上游站点" : "请先添加 NewAPI 上游站点");
         return;
       }
+    }
+    const duplicateMessage = duplicateRuleMessage(payload, id);
+    if (duplicateMessage) {
+      toast(duplicateMessage);
+      return;
     }
     try {
       if (id) {

@@ -465,6 +465,10 @@ func (s *Server) createSub2APIUpstream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := s.store.ensureUniqueSub2APIUpstream(r.Context(), normalizeSub2APIUpstreamInput(input), 0); err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
 	_, inspect, err := s.verifySub2APIUpstreamInput(r.Context(), input)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
@@ -496,6 +500,10 @@ func (s *Server) updateSub2APIUpstream(w http.ResponseWriter, r *http.Request) {
 	existing, err := s.store.GetSub2APIUpstream(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if err := s.store.ensureUniqueSub2APIUpstream(r.Context(), normalizeSub2APIUpstreamInput(input), id); err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
 	verifyInput := input

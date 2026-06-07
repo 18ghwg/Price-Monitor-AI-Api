@@ -101,6 +101,9 @@ func (s Store) CreateSite(ctx context.Context, input SiteInput) (Site, error) {
 	if input.Name == "" || input.BaseURL == "" || input.Username == "" || input.Password == "" {
 		return Site{}, fmt.Errorf("site name, base url, username and password are required")
 	}
+	if err := s.ensureUniqueSite(ctx, input, 0); err != nil {
+		return Site{}, err
+	}
 
 	var site Site
 	err := s.db.QueryRow(ctx, `
@@ -112,6 +115,26 @@ func (s Store) CreateSite(ctx context.Context, input SiteInput) (Site, error) {
 		&site.UserID, &site.AccessToken, &site.LastError, &site.LastRunAt, &site.CreatedAt, &site.UpdatedAt,
 	)
 	return site, err
+}
+
+func (s Store) ensureUniqueSite(ctx context.Context, input SiteInput, excludeID int64) error {
+	var existingID int64
+	err := s.db.QueryRow(ctx, `
+		SELECT id
+		FROM sites
+		WHERE base_url = $1
+		  AND lower(username) = lower($2)
+		  AND ($3::bigint = 0 OR id <> $3)
+		ORDER BY id
+		LIMIT 1
+	`, input.BaseURL, input.Username, excludeID).Scan(&existingID)
+	if err == nil {
+		return fmt.Errorf("NewAPI 上游站点账号已存在：同一站点地址和用户名不能重复添加")
+	}
+	if err == pgx.ErrNoRows {
+		return nil
+	}
+	return err
 }
 
 func (s Store) ListSites(ctx context.Context) ([]Site, error) {
@@ -146,6 +169,9 @@ func (s Store) UpdateSite(ctx context.Context, siteID int64, input SiteInput) (S
 	input.TOTPCode = strings.TrimSpace(input.TOTPCode)
 	if siteID <= 0 || input.Name == "" || input.BaseURL == "" || input.Username == "" {
 		return Site{}, fmt.Errorf("site id, name, base url and username are required")
+	}
+	if err := s.ensureUniqueSite(ctx, input, siteID); err != nil {
+		return Site{}, err
 	}
 
 	var site Site
@@ -195,6 +221,9 @@ func (s Store) CreateSub2APIUpstream(ctx context.Context, input Sub2APIUpstreamI
 	input = normalizeSub2APIUpstreamInput(input)
 	if input.Name == "" || input.BaseURL == "" || (input.AuthToken == "" && (input.Email == "" || input.Password == "")) {
 		return Sub2APIUpstream{}, fmt.Errorf("upstream name, base url and login credentials are required")
+	}
+	if err := s.ensureUniqueSub2APIUpstream(ctx, input, 0); err != nil {
+		return Sub2APIUpstream{}, err
 	}
 
 	var upstream Sub2APIUpstream
@@ -252,6 +281,9 @@ func (s Store) UpdateSub2APIUpstream(ctx context.Context, upstreamID int64, inpu
 	if upstreamID <= 0 || input.Name == "" || input.BaseURL == "" {
 		return Sub2APIUpstream{}, fmt.Errorf("upstream id, name and base url are required")
 	}
+	if err := s.ensureUniqueSub2APIUpstream(ctx, input, upstreamID); err != nil {
+		return Sub2APIUpstream{}, err
+	}
 
 	var upstream Sub2APIUpstream
 	err := s.db.QueryRow(ctx, `
@@ -271,6 +303,43 @@ func (s Store) UpdateSub2APIUpstream(ctx context.Context, upstreamID int64, inpu
 		&upstream.TOTPCode, &upstream.LastError, &upstream.LastCheckAt, &upstream.CreatedAt, &upstream.UpdatedAt,
 	)
 	return upstream, err
+}
+
+func (s Store) ensureUniqueSub2APIUpstream(ctx context.Context, input Sub2APIUpstreamInput, excludeID int64) error {
+	if excludeID > 0 && input.Email == "" && input.AuthToken == "" {
+		if err := s.db.QueryRow(ctx, `
+			SELECT auth_token
+			FROM sub2api_upstreams
+			WHERE id = $1
+		`, excludeID).Scan(&input.AuthToken); err != nil {
+			return err
+		}
+		input.AuthToken = strings.TrimSpace(input.AuthToken)
+	}
+	if input.Email == "" && input.AuthToken == "" {
+		return nil
+	}
+
+	var existingID int64
+	err := s.db.QueryRow(ctx, `
+		SELECT id
+		FROM sub2api_upstreams
+		WHERE base_url = $1
+		  AND (
+		    ($2 <> '' AND lower(email) = lower($2))
+		    OR ($3 <> '' AND auth_token = $3)
+		  )
+		  AND ($4::bigint = 0 OR id <> $4)
+		ORDER BY id
+		LIMIT 1
+	`, input.BaseURL, input.Email, input.AuthToken, excludeID).Scan(&existingID)
+	if err == nil {
+		return fmt.Errorf("sub2api 上游站点账号已存在：同一站点地址和账号不能重复添加")
+	}
+	if err == pgx.ErrNoRows {
+		return nil
+	}
+	return err
 }
 
 func (s Store) DeleteSub2APIUpstream(ctx context.Context, upstreamID int64) error {
@@ -524,58 +593,19 @@ func (s Store) CreateRule(ctx context.Context, input RuleInput) (Rule, error) {
 	if err != nil {
 		return Rule{}, err
 	}
+	if err := s.ensureUniqueRule(ctx, input, 0); err != nil {
+		return Rule{}, err
+	}
 
 	var rule Rule
 	err = s.db.QueryRow(ctx, `
-		WITH existing AS (
-			SELECT id
-			FROM monitor_rules
-			WHERE source_type = $1
-			  AND COALESCE(site_id, 0) = $2
-			  AND COALESCE(sub2api_upstream_id, 0) = $3
-			  AND category = $4
-			  AND model_keyword = $5
-			ORDER BY id
-			LIMIT 1
-		),
-		updated AS (
-			UPDATE monitor_rules r
-			SET site_id = NULLIF($2, 0),
-			    sub2api_upstream_id = $3,
-			    model_name = $6,
-			    group_name = $7,
-			    enabled = true,
-			    schedule_enabled = $8,
-			    interval_minutes = $9,
-				    next_run_at = CASE
-				      WHEN $8 THEN
-				        CASE
-				          WHEN r.schedule_enabled = false OR r.interval_minutes <> $9 THEN now() + ($9::text || ' minutes')::interval
-				          ELSE COALESCE(r.next_run_at, now())
-				        END
-				      ELSE NULL
-			    END,
-			    sync_enabled = $10,
-			    sync_base_group = $11,
-			    sync_threshold_ratio = NULLIF($12, 0),
-			    sub2api_group_name = $13,
-			    sub2api_group_id = $14,
-			    updated_at = now()
-			FROM existing
-			WHERE r.id = existing.id
-			RETURNING r.id, r.source_type, COALESCE(r.site_id, 0) AS site_id, r.sub2api_upstream_id, r.category, r.model_keyword, r.model_name, r.group_name, r.enabled,
-			          r.schedule_enabled, r.interval_minutes, r.next_run_at, r.last_scheduled_run_at,
-			          r.sync_enabled, r.sync_base_group, r.sync_threshold_ratio, r.sub2api_group_name, r.sub2api_group_id,
-			          r.last_sync_at, r.sync_status, r.sync_error, r.created_at, r.updated_at
-		),
-		inserted AS (
+		WITH inserted AS (
 			INSERT INTO monitor_rules (
 				source_type, site_id, sub2api_upstream_id, category, model_keyword, model_name, group_name, enabled,
 				schedule_enabled, interval_minutes, next_run_at,
 				sync_enabled, sync_base_group, sync_threshold_ratio, sub2api_group_name, sub2api_group_id
 			)
-				SELECT $1, NULLIF($2, 0), $3, $4, $5, $6, $7, true, $8, $9, CASE WHEN $8 THEN now() + ($9::text || ' minutes')::interval ELSE NULL END, $10, $11, NULLIF($12, 0), $13, $14
-			WHERE NOT EXISTS (SELECT 1 FROM updated)
+			VALUES ($1, NULLIF($2, 0), $3, $4, $5, $6, $7, true, $8, $9, CASE WHEN $8 THEN now() + ($9::text || ' minutes')::interval ELSE NULL END, $10, $11, NULLIF($12, 0), $13, $14)
 			RETURNING id, source_type, COALESCE(site_id, 0) AS site_id, sub2api_upstream_id, category, model_keyword, model_name, group_name, enabled,
 			          schedule_enabled, interval_minutes, next_run_at, last_scheduled_run_at,
 			          sync_enabled, sync_base_group, sync_threshold_ratio, sub2api_group_name, sub2api_group_id,
@@ -589,11 +619,7 @@ func (s Store) CreateRule(ctx context.Context, input RuleInput) (Rule, error) {
 		       r.schedule_enabled, r.interval_minutes, r.next_run_at, r.last_scheduled_run_at,
 		       r.sync_enabled, r.sync_base_group, r.sync_threshold_ratio, r.sub2api_group_name, r.sub2api_group_id,
 		       r.last_sync_at, r.sync_status, r.sync_error, r.created_at, r.updated_at
-		FROM (
-			SELECT * FROM updated
-			UNION ALL
-			SELECT * FROM inserted
-		) r
+		FROM inserted r
 		LEFT JOIN sites s ON s.id = r.site_id
 		LEFT JOIN sub2api_upstreams u ON u.id = r.sub2api_upstream_id
 		LEFT JOIN categories c ON c.slug = r.category
@@ -622,6 +648,9 @@ func (s Store) UpdateRule(ctx context.Context, ruleID int64, input RuleInput) (R
 	}
 	input, err := s.normalizeRuleInput(ctx, input)
 	if err != nil {
+		return Rule{}, err
+	}
+	if err := s.ensureUniqueRule(ctx, input, ruleID); err != nil {
 		return Rule{}, err
 	}
 
@@ -685,6 +714,29 @@ func (s Store) UpdateRule(ctx context.Context, ruleID int64, input RuleInput) (R
 		return Rule{}, err
 	}
 	return rule, nil
+}
+
+func (s Store) ensureUniqueRule(ctx context.Context, input RuleInput, excludeID int64) error {
+	var existingID int64
+	err := s.db.QueryRow(ctx, `
+		SELECT id
+		FROM monitor_rules
+		WHERE source_type = $1
+		  AND COALESCE(site_id, 0) = $2
+		  AND COALESCE(sub2api_upstream_id, 0) = $3
+		  AND category = $4
+		  AND lower(trim(model_keyword)) = lower(trim($5::text))
+		  AND ($6::bigint = 0 OR id <> $6)
+		ORDER BY id
+		LIMIT 1
+	`, input.SourceType, input.SiteID, input.Sub2APIUpstreamID, input.Category, input.ModelKeyword, excludeID).Scan(&existingID)
+	if err == nil {
+		return fmt.Errorf("相同站点、分类和模型的监控规则已存在，请勿重复添加")
+	}
+	if err == pgx.ErrNoRows {
+		return nil
+	}
+	return err
 }
 
 func (s Store) syncRuleSnapshotsCategory(ctx context.Context, ruleID int64, category string) error {
