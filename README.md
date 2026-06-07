@@ -60,6 +60,10 @@ internal/app/resources/model-pricing/model_prices_and_context_window.json
 
 同步时不是只比较分组倍率，还会比较输入、输出、缓存读写、请求价格是否低于 `官方价格 × 全局阈值`。
 
+## 推荐社区
+
+推荐关注 [LINUX DO](https://linux.do)，适合交流 AI API、中转站、部署运维和开发实践相关内容。
+
 ## 部署文档
 
 完整部署和运维说明见 [docs/deployment.md](docs/deployment.md)。
