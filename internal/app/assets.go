@@ -6,7 +6,7 @@ const indexHTML = `<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NewAPI 价格监控</title>
-  <link rel="stylesheet" href="/static/app.css?v=20260607-hidden-fields">
+  <link rel="stylesheet" href="/static/app.css?v=20260607-snapshot-pagination">
 </head>
 <body>
   <section id="loginScreen" class="login-screen" hidden>
@@ -164,6 +164,10 @@ const indexHTML = `<!doctype html>
         <div class="filters" aria-label="价格分类筛选">
           <div id="categoryFilters" class="filters-inner"></div>
         </div>
+        <div id="snapshotControls" class="table-controls" hidden>
+          <span id="snapshotSummary" class="summary-line muted"></span>
+          <label class="table-page-size">每页<select id="snapshotPageSize"><option value="10" selected>10</option><option value="20">20</option><option value="50">50</option><option value="100">100</option></select></label>
+        </div>
         <div class="table-wrap">
           <table>
             <thead>
@@ -187,6 +191,7 @@ const indexHTML = `<!doctype html>
             <tbody id="snapshotsBody"></tbody>
           </table>
         </div>
+        <div id="snapshotPager" class="pager" hidden></div>
       </section>
 
       <section class="panel data-panel">
@@ -430,7 +435,7 @@ const indexHTML = `<!doctype html>
     </footer>
   </main>
   <div id="toast" class="toast" hidden></div>
-  <script src="/static/app.js?v=20260607-hidden-fields"></script>
+  <script src="/static/app.js?v=20260607-snapshot-pagination"></script>
 </body>
 </html>`
 
@@ -1781,6 +1786,8 @@ const appJS = `const state = {
   categories: [],
   rules: [],
   snapshots: [],
+  snapshotPage: 1,
+  snapshotPageSize: 10,
   sub2Upstreams: [],
   sub2Accounts: [],
   sub2Groups: [],
@@ -2286,9 +2293,23 @@ function renderRules() {
 
 function renderSnapshots() {
   const body = $("#snapshotsBody");
+  const controls = $("#snapshotControls");
+  const summary = $("#snapshotSummary");
+  const pageSizeSelect = $("#snapshotPageSize");
   if (!body) return;
   const rows = sortedSnapshots();
-  body.innerHTML = rows.length ? rows.map((row) => {
+  const totalPages = Math.max(1, Math.ceil(rows.length / state.snapshotPageSize));
+  if (state.snapshotPage > totalPages) state.snapshotPage = totalPages;
+  if (state.snapshotPage < 1) state.snapshotPage = 1;
+  const start = (state.snapshotPage - 1) * state.snapshotPageSize;
+  const pageRows = rows.slice(start, start + state.snapshotPageSize);
+  if (controls) controls.hidden = rows.length === 0;
+  if (pageSizeSelect && String(pageSizeSelect.value) !== String(state.snapshotPageSize)) pageSizeSelect.value = String(state.snapshotPageSize);
+  if (summary) {
+    const range = rows.length ? "显示 " + (start + 1) + "-" + Math.min(start + pageRows.length, rows.length) + " / " + rows.length + " 条价格快照" : "暂无价格快照";
+    summary.textContent = range;
+  }
+  body.innerHTML = pageRows.length ? pageRows.map((row) => {
     const invalidBadge = row.invalid ? "<span class=\"source-badge invalid\">失效</span>" : "";
     const invalidReason = row.invalid ? "<div class=\"muted\">失效：" + escapeHTML(row.invalid_reason || "上游分组已不存在") + "</div>" : "";
     return "<tr>"
@@ -2308,6 +2329,21 @@ function renderSnapshots() {
       + "<td>" + fmt(row.request_price) + "</td>"
       + "</tr>";
   }).join("") : "<tr><td class=\"empty-state\" colspan=\"14\">暂无价格快照，运行一次监控规则后会在这里展示最新结果。</td></tr>";
+  renderSnapshotPager(rows.length, totalPages);
+}
+
+function renderSnapshotPager(totalRows, totalPages) {
+  const pager = $("#snapshotPager");
+  if (!pager) return;
+  if (totalRows <= state.snapshotPageSize) {
+    pager.hidden = true;
+    pager.innerHTML = "";
+    return;
+  }
+  pager.hidden = false;
+  pager.innerHTML = "<span class=\"pager-info\">第 " + state.snapshotPage + " / " + totalPages + " 页，共 " + totalRows + " 条</span>"
+    + "<button class=\"secondary\" type=\"button\" data-snapshot-page=\"prev\"" + (state.snapshotPage <= 1 ? " disabled" : "") + ">上一页</button>"
+    + "<button class=\"secondary\" type=\"button\" data-snapshot-page=\"next\"" + (state.snapshotPage >= totalPages ? " disabled" : "") + ">下一页</button>";
 }
 
 function renderSites() {
@@ -3138,6 +3174,15 @@ if (sub2UserPriceSearch) {
   });
 }
 
+const snapshotPageSize = $("#snapshotPageSize");
+if (snapshotPageSize) {
+  snapshotPageSize.addEventListener("change", (event) => {
+    state.snapshotPageSize = Number(event.currentTarget.value || 10);
+    state.snapshotPage = 1;
+    renderSnapshots();
+  });
+}
+
 const sub2UserPricePageSize = $("#sub2UserPricePageSize");
 if (sub2UserPricePageSize) {
   sub2UserPricePageSize.addEventListener("change", (event) => {
@@ -3308,6 +3353,7 @@ document.addEventListener("click", async (event) => {
   const filter = event.target.closest("[data-category-filter]");
   if (filter) {
     state.categoryFilter = filter.getAttribute("data-category-filter") || "all";
+    state.snapshotPage = 1;
     try {
       await loadAll();
     } catch (error) {
@@ -3328,6 +3374,14 @@ document.addEventListener("click", async (event) => {
   const categoryMainGroup = event.target.closest("[data-category-main-group]");
   if (categoryMainGroup) {
     toggleCategoryMainGroup(categoryMainGroup.getAttribute("data-category-main-group"));
+    return;
+  }
+
+  const snapshotPageButton = event.target.closest("[data-snapshot-page]");
+  if (snapshotPageButton) {
+    const direction = snapshotPageButton.getAttribute("data-snapshot-page");
+    state.snapshotPage += direction === "next" ? 1 : -1;
+    renderSnapshots();
     return;
   }
 
@@ -3353,6 +3407,7 @@ document.addEventListener("click", async (event) => {
     } else {
       state.sort = { key, dir: key === "created_at" ? "desc" : "asc" };
     }
+    state.snapshotPage = 1;
     renderSnapshots();
     renderSortHeaders();
     return;
