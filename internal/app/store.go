@@ -605,7 +605,7 @@ func (s Store) CreateRule(ctx context.Context, input RuleInput) (Rule, error) {
 				schedule_enabled, interval_minutes, next_run_at,
 				sync_enabled, sync_base_group, sync_threshold_ratio, sub2api_group_name, sub2api_group_id
 			)
-			VALUES ($1, NULLIF($2, 0), $3, $4, $5, $6, $7, true, $8, $9, CASE WHEN $8 THEN now() + ($9::text || ' minutes')::interval ELSE NULL END, $10, $11, NULLIF($12, 0), $13, $14)
+			VALUES ($1, NULLIF($2, 0), $3, $4, $5, $6, $7, true, $8, $9::int, CASE WHEN $8 THEN now() + make_interval(mins => $9::int) ELSE NULL END, $10, $11, NULLIF($12, 0), $13, $14)
 			RETURNING id, source_type, COALESCE(site_id, 0) AS site_id, sub2api_upstream_id, category, model_keyword, model_name, group_name, enabled,
 			          schedule_enabled, interval_minutes, next_run_at, last_scheduled_run_at,
 			          sync_enabled, sync_base_group, sync_threshold_ratio, sub2api_group_name, sub2api_group_id,
@@ -667,11 +667,11 @@ func (s Store) UpdateRule(ctx context.Context, ruleID int64, input RuleInput) (R
 			    group_name = $8,
 			    enabled = $9,
 			    schedule_enabled = $10,
-			    interval_minutes = $11,
+			    interval_minutes = $11::int,
 				    next_run_at = CASE
 				      WHEN $10 THEN
 				        CASE
-				          WHEN r.schedule_enabled = false OR r.interval_minutes <> $11 THEN now() + ($11::text || ' minutes')::interval
+				          WHEN r.schedule_enabled = false OR r.interval_minutes <> $11::int THEN now() + make_interval(mins => $11::int)
 				          ELSE COALESCE(r.next_run_at, now())
 				        END
 				      ELSE NULL

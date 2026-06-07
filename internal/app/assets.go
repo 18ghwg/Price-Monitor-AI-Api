@@ -136,6 +136,10 @@ const indexHTML = `<!doctype html>
             <p>启用定时后会按规则间隔自动写入价格快照；点击运行会立即登录站点并手动写入一次。</p>
           </div>
         </div>
+        <div id="ruleControls" class="table-controls" hidden>
+          <span id="ruleSummary" class="summary-line muted"></span>
+          <label class="table-page-size">每页<select id="rulePageSize"><option value="10" selected>10</option><option value="20">20</option><option value="50">50</option><option value="100">100</option></select></label>
+        </div>
         <div class="table-wrap">
           <table>
             <thead>
@@ -153,6 +157,7 @@ const indexHTML = `<!doctype html>
             <tbody id="rulesBody"></tbody>
           </table>
         </div>
+        <div id="rulePager" class="pager" hidden></div>
       </section>
 
       <section class="panel data-panel">
@@ -1785,6 +1790,8 @@ const appJS = `const state = {
   sites: [],
   categories: [],
   rules: [],
+  rulePage: 1,
+  rulePageSize: 10,
   snapshots: [],
   snapshotPage: 1,
   snapshotPageSize: 10,
@@ -2262,8 +2269,24 @@ function ensureRuleSourceSelection(sourceType) {
 
 function renderRules() {
   const body = $("#rulesBody");
+  const controls = $("#ruleControls");
+  const summary = $("#ruleSummary");
+  const pageSizeSelect = $("#rulePageSize");
   if (!body) return;
-  body.innerHTML = state.rules.length ? state.rules.map((rule) => {
+  const rows = state.rules || [];
+  const totalPages = Math.max(1, Math.ceil(rows.length / state.rulePageSize));
+  if (state.rulePage > totalPages) state.rulePage = totalPages;
+  if (state.rulePage < 1) state.rulePage = 1;
+  const start = (state.rulePage - 1) * state.rulePageSize;
+  const pageRows = rows.slice(start, start + state.rulePageSize);
+  if (controls) controls.hidden = rows.length === 0;
+  if (pageSizeSelect && String(pageSizeSelect.value) !== String(state.rulePageSize)) pageSizeSelect.value = String(state.rulePageSize);
+  if (summary) {
+    summary.textContent = rows.length
+      ? "显示 " + (start + 1) + "-" + Math.min(start + pageRows.length, rows.length) + " / " + rows.length + " 条监控规则"
+      : "暂无监控规则";
+  }
+  body.innerHTML = pageRows.length ? pageRows.map((rule) => {
     const id = rule.id;
     const isEnabled = rule.enabled;
     const enabled = isEnabled ? "启用" : "停用";
@@ -2289,6 +2312,21 @@ function renderRules() {
       + "</div></td>"
       + "</tr>";
   }).join("") : "<tr><td class=\"empty-state\" colspan=\"8\">暂无监控规则，添加站点后创建第一条关键词监控。</td></tr>";
+  renderRulePager(rows.length, totalPages);
+}
+
+function renderRulePager(totalRows, totalPages) {
+  const pager = $("#rulePager");
+  if (!pager) return;
+  if (totalRows <= state.rulePageSize) {
+    pager.hidden = true;
+    pager.innerHTML = "";
+    return;
+  }
+  pager.hidden = false;
+  pager.innerHTML = "<span class=\"pager-info\">第 " + state.rulePage + " / " + totalPages + " 页，共 " + totalRows + " 条</span>"
+    + "<button class=\"secondary\" type=\"button\" data-rule-page=\"prev\"" + (state.rulePage <= 1 ? " disabled" : "") + ">上一页</button>"
+    + "<button class=\"secondary\" type=\"button\" data-rule-page=\"next\"" + (state.rulePage >= totalPages ? " disabled" : "") + ">下一页</button>";
 }
 
 function renderSnapshots() {
@@ -3246,6 +3284,15 @@ if (snapshotPageSize) {
   });
 }
 
+const rulePageSize = $("#rulePageSize");
+if (rulePageSize) {
+  rulePageSize.addEventListener("change", (event) => {
+    state.rulePageSize = Number(event.currentTarget.value || 10);
+    state.rulePage = 1;
+    renderRules();
+  });
+}
+
 const sub2UserPricePageSize = $("#sub2UserPricePageSize");
 if (sub2UserPricePageSize) {
   sub2UserPricePageSize.addEventListener("change", (event) => {
@@ -3450,6 +3497,14 @@ document.addEventListener("click", async (event) => {
     const direction = snapshotPageButton.getAttribute("data-snapshot-page");
     state.snapshotPage += direction === "next" ? 1 : -1;
     renderSnapshots();
+    return;
+  }
+
+  const rulePageButton = event.target.closest("[data-rule-page]");
+  if (rulePageButton) {
+    const direction = rulePageButton.getAttribute("data-rule-page");
+    state.rulePage += direction === "next" ? 1 : -1;
+    renderRules();
     return;
   }
 
