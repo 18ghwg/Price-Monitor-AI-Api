@@ -6,7 +6,7 @@ const indexHTML = `<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NewAPI 价格监控</title>
-  <link rel="stylesheet" href="/static/app.css?v=20260607-smtp-encryption">
+  <link rel="stylesheet" href="/static/app.css?v=20260607-hidden-fields">
 </head>
 <body>
   <section id="loginScreen" class="login-screen" hidden>
@@ -430,7 +430,7 @@ const indexHTML = `<!doctype html>
     </footer>
   </main>
   <div id="toast" class="toast" hidden></div>
-  <script src="/static/app.js?v=20260607-smtp-encryption"></script>
+  <script src="/static/app.js?v=20260607-hidden-fields"></script>
 </body>
 </html>`
 
@@ -789,6 +789,10 @@ button.nav-tab[aria-selected="true"] {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
   margin-bottom: 16px;
+}
+
+[hidden] {
+  display: none !important;
 }
 
 .view[hidden] {
