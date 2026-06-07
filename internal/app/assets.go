@@ -15,7 +15,7 @@ const indexHTML = `<!doctype html>
       <h1>后台管理登录</h1>
       <p>输入部署时配置的管理员账号和密码。</p>
       <div id="loginError" class="login-error" role="alert" hidden></div>
-      <label>账号<input name="username" required autocomplete="username" placeholder="ghwg"></label>
+      <label>账号<input name="username" required autocomplete="username" placeholder="admin"></label>
       <label>密码<input name="password" type="password" required autocomplete="current-password"></label>
       <button type="submit">登录</button>
     </form>
@@ -235,7 +235,7 @@ const indexHTML = `<!doctype html>
             </div>
             <form id="adminPasswordForm" class="settings-form">
               <div class="form-grid">
-                <label>账号<input name="username" required autocomplete="username" placeholder="ghwg"></label>
+                <label>账号<input name="username" required autocomplete="username" placeholder="admin"></label>
                 <label>当前密码<input name="current_password" type="password" required autocomplete="current-password"></label>
               </div>
               <label>新密码<input name="new_password" type="password" required minlength="6" autocomplete="new-password" placeholder="至少 6 位"></label>
