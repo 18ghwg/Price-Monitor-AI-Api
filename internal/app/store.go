@@ -94,10 +94,7 @@ type AdminCredentialInput struct {
 }
 
 func (s Store) CreateSite(ctx context.Context, input SiteInput) (Site, error) {
-	input.Name = strings.TrimSpace(input.Name)
-	input.BaseURL = normalizeBaseURL(input.BaseURL)
-	input.Username = strings.TrimSpace(input.Username)
-	input.TOTPCode = strings.TrimSpace(input.TOTPCode)
+	input = normalizeSiteInput(input)
 	if input.Name == "" || input.BaseURL == "" || input.Username == "" || input.Password == "" {
 		return Site{}, fmt.Errorf("site name, base url, username and password are required")
 	}
@@ -162,11 +159,21 @@ func (s Store) ListSites(ctx context.Context) ([]Site, error) {
 	return sites, rows.Err()
 }
 
+func (s Store) GetSite(ctx context.Context, siteID int64) (Site, error) {
+	var site Site
+	err := s.db.QueryRow(ctx, `
+		SELECT id, name, base_url, username, password, totp_code, user_id, access_token, last_error, last_run_at, created_at, updated_at
+		FROM sites
+		WHERE id = $1
+	`, siteID).Scan(
+		&site.ID, &site.Name, &site.BaseURL, &site.Username, &site.Password, &site.TOTPCode,
+		&site.UserID, &site.AccessToken, &site.LastError, &site.LastRunAt, &site.CreatedAt, &site.UpdatedAt,
+	)
+	return site, err
+}
+
 func (s Store) UpdateSite(ctx context.Context, siteID int64, input SiteInput) (Site, error) {
-	input.Name = strings.TrimSpace(input.Name)
-	input.BaseURL = normalizeBaseURL(input.BaseURL)
-	input.Username = strings.TrimSpace(input.Username)
-	input.TOTPCode = strings.TrimSpace(input.TOTPCode)
+	input = normalizeSiteInput(input)
 	if siteID <= 0 || input.Name == "" || input.BaseURL == "" || input.Username == "" {
 		return Site{}, fmt.Errorf("site id, name, base url and username are required")
 	}
@@ -1618,6 +1625,14 @@ func normalizeSub2APIUpstreamInput(input Sub2APIUpstreamInput) Sub2APIUpstreamIn
 	input.Email = strings.TrimSpace(input.Email)
 	input.Password = strings.TrimSpace(input.Password)
 	input.AuthToken = strings.TrimSpace(input.AuthToken)
+	input.TOTPCode = strings.TrimSpace(input.TOTPCode)
+	return input
+}
+
+func normalizeSiteInput(input SiteInput) SiteInput {
+	input.Name = strings.TrimSpace(input.Name)
+	input.BaseURL = normalizeBaseURL(input.BaseURL)
+	input.Username = strings.TrimSpace(input.Username)
 	input.TOTPCode = strings.TrimSpace(input.TOTPCode)
 	return input
 }

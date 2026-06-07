@@ -792,10 +792,40 @@ func (s *Server) sub2GroupFromRequest(ctx context.Context, client *Sub2APIClient
 	return client.EnsureGroupByIDOrName(ctx, groupID, groupName)
 }
 
+func (s *Server) verifyNewAPISiteInput(ctx context.Context, input SiteInput) (int64, string, error) {
+	input = normalizeSiteInput(input)
+	if input.Name == "" || input.BaseURL == "" || input.Username == "" || input.Password == "" {
+		return 0, "", fmt.Errorf("site name, base url, username and password are required")
+	}
+	client, err := NewNewAPIClient(input.BaseURL)
+	if err != nil {
+		return 0, "", err
+	}
+	userID, err := client.Login(ctx, input.Username, input.Password, input.TOTPCode)
+	if err != nil {
+		return 0, "", fmt.Errorf("login NewAPI upstream: %w", err)
+	}
+	token, err := client.GenerateSystemAccessToken(ctx, userID)
+	if err != nil {
+		return 0, "", fmt.Errorf("generate NewAPI system access token: %w", err)
+	}
+	return userID, token, nil
+}
+
 func (s *Server) createSite(w http.ResponseWriter, r *http.Request) {
 	var input SiteInput
 	if err := decodeRequest(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	input = normalizeSiteInput(input)
+	if err := s.store.ensureUniqueSite(r.Context(), input, 0); err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	userID, token, err := s.verifyNewAPISiteInput(r.Context(), input)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	site, err := s.store.CreateSite(r.Context(), input)
@@ -803,6 +833,15 @@ func (s *Server) createSite(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
+	runAt := time.Now()
+	if err := s.store.UpdateSiteRun(r.Context(), site.ID, userID, token, runAt, ""); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	site.UserID = userID
+	site.AccessToken = token
+	site.LastError = ""
+	site.LastRunAt = &runAt
 	writeJSON(w, http.StatusCreated, map[string]any{"data": site})
 }
 
@@ -817,6 +856,33 @@ func (s *Server) updateSite(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	input = normalizeSiteInput(input)
+	existing, err := s.store.GetSite(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if err := s.store.ensureUniqueSite(r.Context(), input, id); err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	credentialsChanged := input.BaseURL != existing.BaseURL ||
+		input.Username != existing.Username ||
+		strings.TrimSpace(input.Password) != "" ||
+		input.TOTPCode != ""
+	var userID int64
+	var token string
+	if credentialsChanged {
+		verifyInput := input
+		if strings.TrimSpace(verifyInput.Password) == "" {
+			verifyInput.Password = existing.Password
+		}
+		userID, token, err = s.verifyNewAPISiteInput(r.Context(), verifyInput)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+	}
 	site, err := s.store.UpdateSite(r.Context(), id, input)
 	if err != nil {
 		status := http.StatusUnprocessableEntity
@@ -825,6 +891,17 @@ func (s *Server) updateSite(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, status, err.Error())
 		return
+	}
+	if credentialsChanged {
+		runAt := time.Now()
+		if err := s.store.UpdateSiteRun(r.Context(), site.ID, userID, token, runAt, ""); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		site.UserID = userID
+		site.AccessToken = token
+		site.LastError = ""
+		site.LastRunAt = &runAt
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": site})
 }
