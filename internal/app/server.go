@@ -1123,6 +1123,7 @@ func (s *Server) runNewAPIRule(ctx context.Context, rule Rule, site Site) ([]Pri
 			return nil, err
 		}
 	}
+	s.recordNewAPIRuleCheckin(ctx, rule.ID, site.ID, client, userID, token)
 
 	pricing, _, err := client.FetchPricing(ctx, userID, token)
 	if err != nil {
@@ -1234,6 +1235,7 @@ func (s *Server) runSub2APIRule(ctx context.Context, rule Rule, upstream Sub2API
 	if err != nil {
 		return nil, err
 	}
+	s.recordSub2APIRuleCheckin(ctx, rule.ID, upstream.ID, client)
 	balance, balanceErr := client.FetchBalance(ctx)
 	if balanceErr != nil {
 		log.Printf("fetch sub2api balance for upstream %d: %v", upstream.ID, balanceErr)
@@ -1331,6 +1333,38 @@ func (s *Server) runSub2APIRule(ctx context.Context, rule Rule, upstream Sub2API
 		_ = s.store.UpdateRuleSyncStatus(ctx, rule.ID, "not current cheapest", "")
 	}
 	return snapshots, nil
+}
+
+func (s *Server) recordNewAPIRuleCheckin(ctx context.Context, ruleID, siteID int64, client *NewAPIClient, userID int64, token string) {
+	result, err := client.EnsureDailyCheckin(ctx, userID, token, time.Now())
+	if err != nil {
+		result = CheckinResult{
+			Enabled:   true,
+			Status:    "failed",
+			Unit:      "usd",
+			Message:   err.Error(),
+			CheckedAt: time.Now(),
+		}
+	}
+	if err := s.store.UpdateRuleCheckinStatus(ctx, ruleID, result); err != nil {
+		log.Printf("update newapi checkin status for rule %d site %d: %v", ruleID, siteID, err)
+	}
+}
+
+func (s *Server) recordSub2APIRuleCheckin(ctx context.Context, ruleID, upstreamID int64, client *Sub2APIClient) {
+	result, err := client.EnsureDailyCheckin(ctx, time.Now())
+	if err != nil {
+		result = CheckinResult{
+			Enabled:   false,
+			Status:    "disabled",
+			Unit:      "usd",
+			Message:   err.Error(),
+			CheckedAt: time.Now(),
+		}
+	}
+	if err := s.store.UpdateRuleCheckinStatus(ctx, ruleID, result); err != nil {
+		log.Printf("update sub2api checkin status for rule %d upstream %d: %v", ruleID, upstreamID, err)
+	}
 }
 
 func pricingRowFromSub2APIUserPriceRow(row Sub2APIUserPriceRow) PricingRow {

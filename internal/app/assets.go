@@ -148,6 +148,7 @@ const indexHTML = `<!doctype html>
                 <th>ID</th>
                 <th>站点</th>
                 <th>账户余额</th>
+                <th>签到</th>
                 <th>分类</th>
                 <th>关键词</th>
                 <th>定时</th>
@@ -2155,6 +2156,36 @@ function fmtBalance(value, unit) {
   return normalized ? label + " " + normalized : label;
 }
 
+function checkinBadge(rule) {
+  const status = String(rule?.checkin_status || "").trim().toLowerCase();
+  const message = String(rule?.checkin_message || "").trim();
+  const reward = fmtBalance(rule?.checkin_reward, rule?.checkin_reward_unit || "usd");
+  const hasReward = rule?.checkin_reward !== null && rule?.checkin_reward !== undefined && rule?.checkin_reward !== "";
+  let label = "尚未检测签到";
+  let cls = "disabled";
+  if (status === "signed") {
+    label = "自动签到成功";
+    cls = "";
+  } else if (status === "checked") {
+    label = "今日已签到";
+    cls = "";
+  } else if (status === "disabled") {
+    label = rule?.checkin_enabled ? "签到不可用" : "未开启签到";
+    cls = "disabled";
+  } else if (status === "failed") {
+    label = "签到失败";
+    cls = "error";
+  } else if (status) {
+    label = status;
+  }
+  const detail = [];
+  if (hasReward) detail.push("奖励：" + reward);
+  if (message) detail.push(message);
+  if (rule?.checkin_checked_at) detail.push("检测：" + fmtTime(rule.checkin_checked_at));
+  return "<span class=\"status " + cls + "\">" + escapeHTML(label) + "</span>"
+    + (detail.length ? "<div class=\"muted\">" + escapeHTML(detail.join(" · ")) + "</div>" : "");
+}
+
 function rechargeBadge(row) {
   if (!row || !row.online_topup_enabled) {
     return "<span class=\"source-badge recharge-off\">未开启在线充值</span>";
@@ -2645,6 +2676,7 @@ function renderRules() {
       + (rule.source_account ? "<div class=\"muted\">账号：" + escapeHTML(rule.source_account) + "</div>" : "")
       + "</td>"
       + "<td data-label=\"账户余额\">" + fmtBalance(rule.upstream_balance, rule.balance_unit) + "</td>"
+      + "<td data-label=\"签到\">" + checkinBadge(rule) + "</td>"
       + "<td data-label=\"分类\">" + categoryTag(rule.category, rule.category_name) + "</td>"
       + "<td data-label=\"关键词\">" + escapeHTML(rule.model_keyword || rule.model_name || "") + "<div class=\"muted\">基准：" + escapeHTML(rule.sync_base_group || rule.group_name || "未设置") + "</div></td>"
       + "<td data-label=\"定时\">" + escapeHTML(schedule)
@@ -2658,7 +2690,7 @@ function renderRules() {
       + "<button class=\"secondary\" data-run=\"" + id + "\" type=\"button\">运行一次</button>"
       + "</div></td>"
       + "</tr>";
-  }).join("") : "<tr><td class=\"empty-state\" colspan=\"9\">暂无监控规则，添加站点后创建第一条关键词监控。</td></tr>";
+  }).join("") : "<tr><td class=\"empty-state\" colspan=\"10\">暂无监控规则，添加站点后创建第一条关键词监控。</td></tr>";
   renderRulePager(rows.length, totalPages);
 }
 

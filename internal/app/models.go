@@ -78,6 +78,12 @@ type Rule struct {
 	SyncError           string     `json:"sync_error"`
 	UpstreamBalance     *float64   `json:"upstream_balance"`
 	BalanceUnit         string     `json:"balance_unit"`
+	CheckinEnabled      bool       `json:"checkin_enabled"`
+	CheckinStatus       string     `json:"checkin_status"`
+	CheckinReward       *float64   `json:"checkin_reward"`
+	CheckinRewardUnit   string     `json:"checkin_reward_unit"`
+	CheckinMessage      string     `json:"checkin_message"`
+	CheckinCheckedAt    *time.Time `json:"checkin_checked_at"`
 	CreatedAt           time.Time  `json:"created_at"`
 	UpdatedAt           time.Time  `json:"updated_at"`
 }
@@ -150,6 +156,15 @@ type UpstreamBalance struct {
 type RechargeStatus struct {
 	Enabled    bool     `json:"enabled"`
 	Multiplier *float64 `json:"multiplier"`
+}
+
+type CheckinResult struct {
+	Enabled   bool
+	Status    string
+	Reward    *float64
+	Unit      string
+	Message   string
+	CheckedAt time.Time
 }
 
 const newAPIQuotaPerUSD = 500 * 1000.0

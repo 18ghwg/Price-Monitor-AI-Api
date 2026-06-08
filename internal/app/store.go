@@ -620,7 +620,9 @@ func (s Store) CreateRule(ctx context.Context, input RuleInput) (Rule, error) {
 			RETURNING id, source_type, COALESCE(site_id, 0) AS site_id, sub2api_upstream_id, category, model_keyword, model_name, group_name, enabled,
 			          schedule_enabled, interval_minutes, next_run_at, last_scheduled_run_at,
 			          sync_enabled, sync_base_group, sync_threshold_ratio, sub2api_group_name, sub2api_group_id,
-			          last_sync_at, sync_status, sync_error, created_at, updated_at
+			          last_sync_at, sync_status, sync_error,
+			          checkin_enabled, checkin_status, checkin_reward, checkin_reward_unit, checkin_message, checkin_checked_at,
+			          created_at, updated_at
 		)
 		SELECT r.id, r.source_type, r.site_id, COALESCE(s.name, ''), r.sub2api_upstream_id, COALESCE(u.name, ''),
 		       CASE WHEN r.source_type = 'sub2api' THEN COALESCE(u.name, '') ELSE COALESCE(s.name, '') END AS source_name,
@@ -632,6 +634,7 @@ func (s Store) CreateRule(ctx context.Context, input RuleInput) (Rule, error) {
 		       r.sync_enabled, r.sync_base_group, r.sync_threshold_ratio, r.sub2api_group_name, r.sub2api_group_id,
 		       r.last_sync_at, r.sync_status, r.sync_error,
 		       NULL::double precision AS upstream_balance, '' AS balance_unit,
+		       r.checkin_enabled, r.checkin_status, r.checkin_reward, r.checkin_reward_unit, r.checkin_message, r.checkin_checked_at,
 		       r.created_at, r.updated_at
 		FROM inserted r
 		LEFT JOIN sites s ON s.id = r.site_id
@@ -645,7 +648,9 @@ func (s Store) CreateRule(ctx context.Context, input RuleInput) (Rule, error) {
 		&rule.ModelKeyword, &rule.ModelName, &rule.GroupName, &rule.Enabled,
 		&rule.ScheduleEnabled, &rule.IntervalMinutes, &rule.NextRunAt, &rule.LastScheduledRunAt,
 		&rule.SyncEnabled, &rule.SyncBaseGroup, &rule.SyncThresholdRatio, &rule.Sub2APIGroupName, &rule.Sub2APIGroupID,
-		&rule.LastSyncAt, &rule.SyncStatus, &rule.SyncError, &rule.UpstreamBalance, &rule.BalanceUnit, &rule.CreatedAt, &rule.UpdatedAt,
+		&rule.LastSyncAt, &rule.SyncStatus, &rule.SyncError, &rule.UpstreamBalance, &rule.BalanceUnit,
+		&rule.CheckinEnabled, &rule.CheckinStatus, &rule.CheckinReward, &rule.CheckinRewardUnit, &rule.CheckinMessage, &rule.CheckinCheckedAt,
+		&rule.CreatedAt, &rule.UpdatedAt,
 	)
 	if err != nil {
 		return Rule{}, err
@@ -709,11 +714,20 @@ func (s Store) UpdateRule(ctx context.Context, ruleID int64, input RuleInput) (R
 		       r.sync_enabled, r.sync_base_group, r.sync_threshold_ratio, r.sub2api_group_name, r.sub2api_group_id,
 		       r.last_sync_at, r.sync_status, r.sync_error,
 		       latest_price.upstream_balance, COALESCE(latest_price.balance_unit, ''),
+		       r.checkin_enabled, r.checkin_status, r.checkin_reward, r.checkin_reward_unit, r.checkin_message, r.checkin_checked_at,
 		       r.created_at, r.updated_at
 		FROM updated r
 		LEFT JOIN sites s ON s.id = r.site_id
 		LEFT JOIN sub2api_upstreams u ON u.id = r.sub2api_upstream_id
 		LEFT JOIN categories c ON c.slug = r.category
+		LEFT JOIN LATERAL (
+			SELECT p.upstream_balance, p.balance_unit
+			FROM price_snapshots p
+			WHERE p.rule_id = r.id
+			  AND p.invalid = false
+			ORDER BY p.created_at DESC, p.id DESC
+			LIMIT 1
+		) latest_price ON true
 	`, ruleID, input.SourceType, input.SiteID, input.Sub2APIUpstreamID, input.Category, input.ModelKeyword, input.ModelName, input.GroupName, input.Enabled,
 		input.ScheduleEnabled, input.IntervalMinutes, input.SyncEnabled, input.SyncBaseGroup,
 		input.SyncThresholdRatio, input.Sub2APIGroupName, input.Sub2APIGroupID).Scan(
@@ -722,7 +736,9 @@ func (s Store) UpdateRule(ctx context.Context, ruleID int64, input RuleInput) (R
 		&rule.ModelKeyword, &rule.ModelName, &rule.GroupName, &rule.Enabled,
 		&rule.ScheduleEnabled, &rule.IntervalMinutes, &rule.NextRunAt, &rule.LastScheduledRunAt,
 		&rule.SyncEnabled, &rule.SyncBaseGroup, &rule.SyncThresholdRatio, &rule.Sub2APIGroupName, &rule.Sub2APIGroupID,
-		&rule.LastSyncAt, &rule.SyncStatus, &rule.SyncError, &rule.CreatedAt, &rule.UpdatedAt,
+		&rule.LastSyncAt, &rule.SyncStatus, &rule.SyncError, &rule.UpstreamBalance, &rule.BalanceUnit,
+		&rule.CheckinEnabled, &rule.CheckinStatus, &rule.CheckinReward, &rule.CheckinRewardUnit, &rule.CheckinMessage, &rule.CheckinCheckedAt,
+		&rule.CreatedAt, &rule.UpdatedAt,
 	)
 	if err != nil {
 		return Rule{}, err
@@ -899,6 +915,7 @@ func (s Store) ListRules(ctx context.Context) ([]Rule, error) {
 		       r.sync_enabled, r.sync_base_group, r.sync_threshold_ratio, r.sub2api_group_name, r.sub2api_group_id,
 		       r.last_sync_at, r.sync_status, r.sync_error,
 		       latest_price.upstream_balance, COALESCE(latest_price.balance_unit, ''),
+		       r.checkin_enabled, r.checkin_status, r.checkin_reward, r.checkin_reward_unit, r.checkin_message, r.checkin_checked_at,
 		       r.created_at, r.updated_at
 		FROM monitor_rules r
 		LEFT JOIN sites s ON s.id = r.site_id
@@ -931,7 +948,9 @@ func (s Store) ListRules(ctx context.Context) ([]Rule, error) {
 			&rule.ModelKeyword, &rule.ModelName, &rule.GroupName,
 			&rule.Enabled, &rule.ScheduleEnabled, &rule.IntervalMinutes, &rule.NextRunAt, &rule.LastScheduledRunAt,
 			&rule.SyncEnabled, &rule.SyncBaseGroup, &rule.SyncThresholdRatio, &rule.Sub2APIGroupName, &rule.Sub2APIGroupID,
-			&rule.LastSyncAt, &rule.SyncStatus, &rule.SyncError, &rule.UpstreamBalance, &rule.BalanceUnit, &rule.CreatedAt, &rule.UpdatedAt,
+			&rule.LastSyncAt, &rule.SyncStatus, &rule.SyncError, &rule.UpstreamBalance, &rule.BalanceUnit,
+			&rule.CheckinEnabled, &rule.CheckinStatus, &rule.CheckinReward, &rule.CheckinRewardUnit, &rule.CheckinMessage, &rule.CheckinCheckedAt,
+			&rule.CreatedAt, &rule.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -954,7 +973,9 @@ func (s Store) GetRuleWithSource(ctx context.Context, ruleID int64) (Rule, Site,
 			r.model_keyword, r.model_name, COALESCE(r.group_name, ''), r.enabled,
 			r.schedule_enabled, r.interval_minutes, r.next_run_at, r.last_scheduled_run_at,
 			r.sync_enabled, r.sync_base_group, r.sync_threshold_ratio, r.sub2api_group_name, r.sub2api_group_id,
-			r.last_sync_at, r.sync_status, r.sync_error, r.created_at, r.updated_at,
+			r.last_sync_at, r.sync_status, r.sync_error,
+			r.checkin_enabled, r.checkin_status, r.checkin_reward, r.checkin_reward_unit, r.checkin_message, r.checkin_checked_at,
+			r.created_at, r.updated_at,
 			COALESCE(s.id, 0), COALESCE(s.name, ''), COALESCE(s.base_url, ''), COALESCE(s.username, ''), COALESCE(s.password, ''), COALESCE(s.totp_code, ''), COALESCE(s.user_id, 0), COALESCE(s.access_token, ''), COALESCE(s.last_error, ''), s.last_run_at, COALESCE(s.created_at, now()), COALESCE(s.updated_at, now()),
 			COALESCE(u.id, 0), COALESCE(u.name, ''), COALESCE(u.base_url, ''), COALESCE(u.email, ''), COALESCE(u.password, ''), COALESCE(u.auth_token, ''), COALESCE(u.totp_code, ''), COALESCE(u.last_error, ''), u.last_check_at, COALESCE(u.created_at, now()), COALESCE(u.updated_at, now())
 		FROM monitor_rules r
@@ -968,7 +989,9 @@ func (s Store) GetRuleWithSource(ctx context.Context, ruleID int64) (Rule, Site,
 		&rule.ModelKeyword, &rule.ModelName, &rule.GroupName, &rule.Enabled,
 		&rule.ScheduleEnabled, &rule.IntervalMinutes, &rule.NextRunAt, &rule.LastScheduledRunAt,
 		&rule.SyncEnabled, &rule.SyncBaseGroup, &rule.SyncThresholdRatio, &rule.Sub2APIGroupName, &rule.Sub2APIGroupID,
-		&rule.LastSyncAt, &rule.SyncStatus, &rule.SyncError, &rule.CreatedAt, &rule.UpdatedAt,
+		&rule.LastSyncAt, &rule.SyncStatus, &rule.SyncError,
+		&rule.CheckinEnabled, &rule.CheckinStatus, &rule.CheckinReward, &rule.CheckinRewardUnit, &rule.CheckinMessage, &rule.CheckinCheckedAt,
+		&rule.CreatedAt, &rule.UpdatedAt,
 		&site.ID, &site.Name, &site.BaseURL, &site.Username, &site.Password, &site.TOTPCode, &site.UserID, &site.AccessToken, &site.LastError, &site.LastRunAt, &site.CreatedAt, &site.UpdatedAt,
 		&upstream.ID, &upstream.Name, &upstream.BaseURL, &upstream.Email, &upstream.Password, &upstream.AuthToken, &upstream.TOTPCode, &upstream.LastError, &upstream.LastCheckAt, &upstream.CreatedAt, &upstream.UpdatedAt,
 	)
@@ -1078,6 +1101,33 @@ func (s Store) UpdateRuleSyncStatus(ctx context.Context, ruleID int64, status st
 		    updated_at = now()
 		WHERE id = $1
 	`, ruleID, status, errText)
+	return err
+}
+
+func (s Store) UpdateRuleCheckinStatus(ctx context.Context, ruleID int64, result CheckinResult) error {
+	status := strings.TrimSpace(result.Status)
+	if status == "" {
+		status = "unknown"
+	}
+	unit := strings.TrimSpace(result.Unit)
+	if unit == "" {
+		unit = "usd"
+	}
+	checkedAt := result.CheckedAt
+	if checkedAt.IsZero() {
+		checkedAt = time.Now()
+	}
+	_, err := s.db.Exec(ctx, `
+		UPDATE monitor_rules
+		SET checkin_enabled = $2,
+		    checkin_status = $3,
+		    checkin_reward = $4,
+		    checkin_reward_unit = $5,
+		    checkin_message = $6,
+		    checkin_checked_at = $7,
+		    updated_at = now()
+		WHERE id = $1
+	`, ruleID, result.Enabled, status, result.Reward, unit, strings.TrimSpace(result.Message), checkedAt)
 	return err
 }
 

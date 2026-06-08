@@ -264,6 +264,20 @@ func (c *Sub2APIClient) FetchRechargeStatus(ctx context.Context) (RechargeStatus
 	return RechargeStatus{Enabled: true, Multiplier: best}, nil
 }
 
+func (c *Sub2APIClient) EnsureDailyCheckin(ctx context.Context, now time.Time) (CheckinResult, error) {
+	checkedAt := now
+	if checkedAt.IsZero() {
+		checkedAt = time.Now()
+	}
+	return CheckinResult{
+		Enabled:   false,
+		Status:    "disabled",
+		Unit:      "usd",
+		Message:   "sub2api 源码未提供用户签到接口",
+		CheckedAt: checkedAt,
+	}, nil
+}
+
 func (c *Sub2APIClient) addPaymentOrderMultiplier(ctx context.Context, best **float64) error {
 	var page struct {
 		Items []struct {

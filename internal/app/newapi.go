@@ -148,6 +148,130 @@ func (c *NewAPIClient) FetchRechargeStatus(ctx context.Context, userID int64, to
 	return RechargeStatus{Enabled: true, Multiplier: best}, nil
 }
 
+func (c *NewAPIClient) EnsureDailyCheckin(ctx context.Context, userID int64, token string, now time.Time) (CheckinResult, error) {
+	checkedAt := now
+	if checkedAt.IsZero() {
+		checkedAt = time.Now()
+	}
+	result := CheckinResult{
+		Enabled:   true,
+		Status:    "unknown",
+		Unit:      "usd",
+		CheckedAt: checkedAt,
+	}
+	headers := newAPIAuthHeaders(userID, token)
+	statusPath := "api/user/checkin?month=" + url.QueryEscape(checkedAt.Format("2006-01"))
+	status, err := c.fetchCheckinStatus(ctx, statusPath, headers)
+	if err != nil {
+		if isCheckinDisabledError(err) {
+			result.Enabled = false
+			result.Status = "disabled"
+			result.Message = "站点未开启签到功能"
+			return result, nil
+		}
+		result.Status = "failed"
+		result.Message = "查询签到状态失败：" + err.Error()
+		return result, nil
+	}
+	if status.CheckedToday {
+		result.Status = "checked"
+		result.Message = "今日已签到"
+		if reward, ok := checkinRewardForDate(status.Records, checkedAt); ok {
+			result.Reward = ptr(newAPIQuotaToUSD(reward))
+		}
+		return result, nil
+	}
+
+	reward, checkinDate, err := c.doCheckin(ctx, headers)
+	if err != nil {
+		if isCheckinDisabledError(err) {
+			result.Enabled = false
+			result.Status = "disabled"
+			result.Message = "站点未开启签到功能"
+			return result, nil
+		}
+		if strings.Contains(err.Error(), "今日已签到") {
+			result.Status = "checked"
+			result.Message = "今日已签到"
+			return result, nil
+		}
+		result.Status = "failed"
+		result.Message = "签到失败：" + err.Error()
+		return result, nil
+	}
+	result.Status = "signed"
+	if strings.TrimSpace(checkinDate) != "" {
+		result.Message = "自动签到成功：" + strings.TrimSpace(checkinDate)
+	} else {
+		result.Message = "自动签到成功"
+	}
+	result.Reward = ptr(newAPIQuotaToUSD(reward))
+	return result, nil
+}
+
+type newAPICheckinStatus struct {
+	Enabled      bool
+	CheckedToday bool
+	Records      []newAPICheckinRecord
+}
+
+type newAPICheckinRecord struct {
+	CheckinDate  string
+	QuotaAwarded float64
+}
+
+func (c *NewAPIClient) fetchCheckinStatus(ctx context.Context, path string, headers map[string]string) (newAPICheckinStatus, error) {
+	var data struct {
+		Enabled bool `json:"enabled"`
+		Stats   struct {
+			CheckedToday bool `json:"checked_in_today"`
+			Records      []struct {
+				CheckinDate  string `json:"checkin_date"`
+				QuotaAwarded any    `json:"quota_awarded"`
+			} `json:"records"`
+		} `json:"stats"`
+	}
+	if err := c.request(ctx, http.MethodGet, path, headers, nil, &data); err != nil {
+		return newAPICheckinStatus{}, err
+	}
+	status := newAPICheckinStatus{Enabled: data.Enabled, CheckedToday: data.Stats.CheckedToday}
+	for _, record := range data.Stats.Records {
+		if quota, ok := nullableFloat(record.QuotaAwarded); ok {
+			status.Records = append(status.Records, newAPICheckinRecord{
+				CheckinDate:  strings.TrimSpace(record.CheckinDate),
+				QuotaAwarded: quota,
+			})
+		}
+	}
+	return status, nil
+}
+
+func (c *NewAPIClient) doCheckin(ctx context.Context, headers map[string]string) (float64, string, error) {
+	var data struct {
+		QuotaAwarded any    `json:"quota_awarded"`
+		CheckinDate  string `json:"checkin_date"`
+	}
+	if err := c.request(ctx, http.MethodPost, "api/user/checkin", headers, nil, &data); err != nil {
+		return 0, "", err
+	}
+	reward, _ := nullableFloat(data.QuotaAwarded)
+	return reward, data.CheckinDate, nil
+}
+
+func checkinRewardForDate(records []newAPICheckinRecord, now time.Time) (float64, bool) {
+	today := now.Format("2006-01-02")
+	for _, record := range records {
+		if strings.TrimSpace(record.CheckinDate) == today {
+			return record.QuotaAwarded, true
+		}
+	}
+	return 0, false
+}
+
+func isCheckinDisabledError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "签到功能未启用")
+}
+
 func (c *NewAPIClient) addTopupHistoryMultiplier(ctx context.Context, headers map[string]string, best **float64) error {
 	var page struct {
 		Items []struct {

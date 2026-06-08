@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestNewAPIClientCreateAPIKeyForGroup(t *testing.T) {
@@ -223,6 +224,80 @@ func TestNewAPIClientFetchRechargeStatus(t *testing.T) {
 	}
 	if status.Multiplier == nil || *status.Multiplier != 10 {
 		t.Fatalf("Multiplier = %v, want 10", status.Multiplier)
+	}
+}
+
+func TestNewAPIClientEnsureDailyCheckinSignsWhenNeeded(t *testing.T) {
+	var sawPost bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("Authorization") != "Bearer system-token" {
+			t.Fatalf("Authorization = %q, want Bearer system-token", r.Header.Get("Authorization"))
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/user/checkin":
+			if got := r.URL.Query().Get("month"); got != "2026-06" {
+				t.Fatalf("month = %q, want 2026-06", got)
+			}
+			writeNewAPITestJSON(w, map[string]any{
+				"enabled": true,
+				"stats": map[string]any{
+					"checked_in_today": false,
+					"records":          []map[string]any{},
+				},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/user/checkin":
+			sawPost = true
+			writeNewAPITestJSON(w, map[string]any{
+				"quota_awarded": 250000,
+				"checkin_date":  "2026-06-08",
+			})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewNewAPIClient(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.EnsureDailyCheckin(context.Background(), 99, "system-token", time.Date(2026, 6, 8, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("EnsureDailyCheckin() error = %v", err)
+	}
+	if !sawPost {
+		t.Fatalf("expected checkin POST")
+	}
+	if !result.Enabled || result.Status != "signed" {
+		t.Fatalf("result status = %+v, want enabled signed", result)
+	}
+	wantReward := 250000.0 / newAPIQuotaPerUSD
+	if result.Reward == nil || *result.Reward != wantReward || result.Unit != "usd" {
+		t.Fatalf("reward = %+v %s, want %v usd", result.Reward, result.Unit, wantReward)
+	}
+}
+
+func TestNewAPIClientEnsureDailyCheckinDisabled(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": false,
+			"message": "签到功能未启用",
+		})
+	}))
+	defer server.Close()
+
+	client, err := NewNewAPIClient(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.EnsureDailyCheckin(context.Background(), 99, "system-token", time.Date(2026, 6, 8, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("EnsureDailyCheckin() error = %v", err)
+	}
+	if result.Enabled || result.Status != "disabled" {
+		t.Fatalf("result = %+v, want disabled", result)
 	}
 }
 

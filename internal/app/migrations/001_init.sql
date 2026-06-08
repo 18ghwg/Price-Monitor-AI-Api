@@ -48,6 +48,12 @@ CREATE TABLE IF NOT EXISTS monitor_rules (
   sync_signature TEXT NOT NULL DEFAULT '',
   sync_failure_count INTEGER NOT NULL DEFAULT 0,
   sync_failure_signature TEXT NOT NULL DEFAULT '',
+  checkin_enabled BOOLEAN NOT NULL DEFAULT false,
+  checkin_status TEXT NOT NULL DEFAULT '',
+  checkin_reward DOUBLE PRECISION,
+  checkin_reward_unit TEXT NOT NULL DEFAULT '',
+  checkin_message TEXT NOT NULL DEFAULT '',
+  checkin_checked_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -285,6 +291,24 @@ ALTER TABLE IF EXISTS monitor_rules
 
 ALTER TABLE IF EXISTS monitor_rules
   ADD COLUMN IF NOT EXISTS sync_failure_signature TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE IF EXISTS monitor_rules
+  ADD COLUMN IF NOT EXISTS checkin_enabled BOOLEAN NOT NULL DEFAULT false;
+
+ALTER TABLE IF EXISTS monitor_rules
+  ADD COLUMN IF NOT EXISTS checkin_status TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE IF EXISTS monitor_rules
+  ADD COLUMN IF NOT EXISTS checkin_reward DOUBLE PRECISION;
+
+ALTER TABLE IF EXISTS monitor_rules
+  ADD COLUMN IF NOT EXISTS checkin_reward_unit TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE IF EXISTS monitor_rules
+  ADD COLUMN IF NOT EXISTS checkin_message TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE IF EXISTS monitor_rules
+  ADD COLUMN IF NOT EXISTS checkin_checked_at TIMESTAMPTZ;
 
 UPDATE monitor_rules
 SET sync_base_group = COALESCE(group_name, '')
