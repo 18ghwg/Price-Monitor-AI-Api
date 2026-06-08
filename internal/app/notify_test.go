@@ -220,7 +220,7 @@ func TestRenderEmailTemplateUsesParsedNotificationVariables(t *testing.T) {
 		EmailTemplateEnabled: true,
 		EmailTemplateSubject: "【{{notification_type}}】{{site_name}} {{model_name}}",
 		EmailTemplateBody:    "站点={{site_name}}\n账号={{upstream_account}}\n余额={{upstream_balance}}\n倍率={{group_ratio}}\n默认:\n{{body}}",
-	}, "[主站账号同步] created chat.ekti default", defaultBody)
+	}, "sync_update", "[主站账号同步] created chat.ekti default", defaultBody)
 
 	if subject != "【主站账号同步】chat.ekti gpt-5.5" {
 		t.Fatalf("renderEmailTemplate subject = %q", subject)
@@ -232,6 +232,38 @@ func TestRenderEmailTemplateUsesParsedNotificationVariables(t *testing.T) {
 		"倍率=0.05",
 		"主站 sub2api 渠道账号已同步。",
 	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("renderEmailTemplate body = %q, want %q", body, want)
+		}
+	}
+}
+
+func TestRenderEmailTemplateUsesTypedTemplate(t *testing.T) {
+	defaultBody := strings.Join([]string{
+		"主站 sub2api 渠道账号同步失败。",
+		"",
+		"站点: huanapi",
+		"模型: gpt-5.5",
+		"最低价分组: free",
+		"错误: 当前套餐不支持",
+	}, "\n")
+
+	subject, body := renderEmailTemplate(IntegrationSettings{
+		EmailTemplateEnabled: true,
+		EmailTemplateSubject: "默认 {{notification_type}}",
+		EmailTemplateBody:    "默认正文 {{body}}",
+		EmailTemplateConfigs: map[string]EmailTemplateConfig{
+			"sync_failure": {
+				Subject: "失败：{{site_name}} {{group_name}}",
+				Body:    "错误={{error}}\n原文={{body}}",
+			},
+		},
+	}, "sync_failure", "[主站账号同步失败] huanapi / free", defaultBody)
+
+	if subject != "失败：huanapi free" {
+		t.Fatalf("renderEmailTemplate subject = %q", subject)
+	}
+	for _, want := range []string{"错误=当前套餐不支持", "主站 sub2api 渠道账号同步失败。"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("renderEmailTemplate body = %q, want %q", body, want)
 		}

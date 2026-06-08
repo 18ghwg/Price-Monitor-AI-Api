@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS integration_settings (
   email_template_enabled BOOLEAN NOT NULL DEFAULT false,
   email_template_subject TEXT NOT NULL DEFAULT '',
   email_template_body TEXT NOT NULL DEFAULT '',
+  email_template_configs JSONB NOT NULL DEFAULT '{}'::jsonb,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT integration_settings_singleton CHECK (id)
 );
@@ -144,6 +145,8 @@ ALTER TABLE IF EXISTS integration_settings
   ADD COLUMN IF NOT EXISTS email_template_subject TEXT NOT NULL DEFAULT '';
 ALTER TABLE IF EXISTS integration_settings
   ADD COLUMN IF NOT EXISTS email_template_body TEXT NOT NULL DEFAULT '';
+ALTER TABLE IF EXISTS integration_settings
+  ADD COLUMN IF NOT EXISTS email_template_configs JSONB NOT NULL DEFAULT '{}'::jsonb;
 UPDATE integration_settings
 SET sub2api_main_base_url = COALESCE(NULLIF(sub2api_main_base_url, ''), sub2api_base_url),
     sub2api_admin_key = COALESCE(NULLIF(sub2api_admin_key, ''), sub2api_access_token)

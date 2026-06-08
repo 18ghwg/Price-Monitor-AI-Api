@@ -318,6 +318,7 @@ const indexHTML = `<!doctype html>
                 <div class="switch-row">
                   <label class="checkbox-label"><input name="email_template_enabled" type="checkbox">启用自定义邮件模板</label>
                 </div>
+                <div id="emailTemplateTabs" class="segmented-tabs template-tabs" role="tablist" aria-label="邮件通知模板类型"></div>
                 <label>标题模板<input name="email_template_subject" id="emailTemplateSubject" placeholder="{{subject}}"></label>
                 <label>正文模板<textarea name="email_template_body" id="emailTemplateBody" rows="10" placeholder="{{body}}"></textarea></label>
                 <div class="template-variable-panel">
@@ -1233,6 +1234,10 @@ button.filter.active {
   min-width: 0;
 }
 
+.template-tabs {
+  justify-content: flex-start;
+}
+
 .template-variable-buttons {
   display: flex;
   flex-wrap: wrap;
@@ -2075,6 +2080,7 @@ const appJS = `const state = {
   activeSiteSourceType: "newapi",
   activeSiteListType: "newapi",
   activeRuleSourceType: "newapi",
+  activeEmailTemplateType: "price_change",
   categoryFilter: "all",
   sort: { key: "effective_price", dir: "asc" },
 };
@@ -2108,6 +2114,15 @@ const emailTemplateVariables = [
   ["action", "动作"],
   ["main_account", "主站账号"],
   ["error", "错误"],
+];
+
+const emailTemplateTypes = [
+  { key: "price_change", label: "新低价" },
+  { key: "sync_update", label: "同步成功" },
+  { key: "sync_failure", label: "同步失败" },
+  { key: "account_update", label: "账号更新" },
+  { key: "low_balance_skip", label: "余额不足" },
+  { key: "default", label: "默认兜底" },
 ];
 
 async function api(path, options = {}) {
@@ -2838,8 +2853,63 @@ function renderSettings() {
   form.elements.smtp_from.value = state.settings.smtp_from || "";
   form.elements.smtp_to.value = state.settings.smtp_to || "";
   if (form.elements.email_template_enabled) form.elements.email_template_enabled.checked = !!state.settings.email_template_enabled;
-  if (form.elements.email_template_subject) form.elements.email_template_subject.value = state.settings.email_template_subject || "";
-  if (form.elements.email_template_body) form.elements.email_template_body.value = state.settings.email_template_body || "";
+  renderEmailTemplateTabs();
+  renderActiveEmailTemplate();
+}
+
+function emailTemplateConfigs() {
+  if (!state.settings) return {};
+  if (!state.settings.email_template_configs || typeof state.settings.email_template_configs !== "object") {
+    state.settings.email_template_configs = {};
+  }
+  return state.settings.email_template_configs;
+}
+
+function activeEmailTemplateConfig() {
+  if (state.activeEmailTemplateType === "default") {
+    return {
+      subject: state.settings?.email_template_subject || "",
+      body: state.settings?.email_template_body || "",
+    };
+  }
+  const configs = emailTemplateConfigs();
+  const key = state.activeEmailTemplateType;
+  if (!configs[key]) configs[key] = { subject: "", body: "" };
+  return configs[key];
+}
+
+function renderEmailTemplateTabs() {
+  const tabs = $("#emailTemplateTabs");
+  if (!tabs) return;
+  tabs.innerHTML = emailTemplateTypes.map((item) => {
+    const active = item.key === state.activeEmailTemplateType;
+    return "<button class=\"" + (active ? "active" : "") + "\" type=\"button\" role=\"tab\" aria-selected=\"" + (active ? "true" : "false") + "\" data-email-template-type=\"" + escapeAttr(item.key) + "\">" + escapeHTML(item.label) + "</button>";
+  }).join("");
+}
+
+function renderActiveEmailTemplate() {
+  const subjectInput = $("#emailTemplateSubject");
+  const bodyInput = $("#emailTemplateBody");
+  const config = activeEmailTemplateConfig();
+  if (subjectInput) subjectInput.value = config.subject || "";
+  if (bodyInput) bodyInput.value = config.body || "";
+  const preview = $("#emailTemplatePreview");
+  if (preview) {
+    preview.hidden = true;
+    preview.textContent = "";
+  }
+}
+
+function persistActiveEmailTemplateInputs() {
+  if (!state.settings) return;
+  if (state.activeEmailTemplateType === "default") {
+    state.settings.email_template_subject = $("#emailTemplateSubject")?.value || "";
+    state.settings.email_template_body = $("#emailTemplateBody")?.value || "";
+    return;
+  }
+  const config = activeEmailTemplateConfig();
+  config.subject = $("#emailTemplateSubject")?.value || "";
+  config.body = $("#emailTemplateBody")?.value || "";
 }
 
 function renderEmailTemplateVariables() {
@@ -2865,31 +2935,113 @@ function insertEmailTemplateVariable(key) {
   target.setSelectionRange(next, next);
 }
 
-function sampleEmailTemplateValues() {
-  const body = [
-    "主站 sub2api 渠道账号已同步。",
-    "",
-    "站点: chat.ekti",
-    "地址: https://chat.ekti.cc/",
-    "规则: #35 gpt-5.5",
-    "上游账号: ghwg@example.com",
-    "上游账户余额: $12.340000",
-    "模型: gpt-5.5",
-    "最低价分组: default",
-    "分组倍率: 0.05",
-    "输入价格: 0.25",
-    "输出价格: 1.5",
-    "缓存读价格: 0.025",
-    "缓存写价格: 0.25",
-    "请求价格: 未提供",
-    "主站分组: Codex",
-    "动作: created",
-    "主站账号: #54 chat.ekti openai-local+VIP default",
-  ].join("\\n");
+function sampleEmailTemplateValues(type) {
+  const samples = {
+    price_change: {
+      subject: "[新低价] 1024token / gpt-5.5 / Codex Team",
+      notification_type: "新低价",
+      lines: [
+        "价格快照列表检测到新的最低价。",
+        "",
+        "站点: 1024token",
+        "地址: https://1024token.click/",
+        "分类: Codex",
+        "关键词: gpt-5.5",
+        "模型: gpt-5.5",
+        "当前分组: Codex Team",
+        "当前快照: 2026-06-08T21:41:31+08:00",
+        "",
+        "变化:",
+        "- 最低价渠道: 无 -> sub2api / 1024token / 账号 ghwg@example.com / Codex Team",
+        "- 分组倍率: 空 -> 0.001",
+        "- 输入价格: 空 -> 0.005",
+      ],
+    },
+    sync_update: {
+      subject: "[主站账号同步] created chat.ekti default",
+      notification_type: "主站账号同步",
+      lines: [
+        "主站 sub2api 渠道账号已同步。",
+        "",
+        "站点: chat.ekti",
+        "地址: https://chat.ekti.cc/",
+        "规则: #35 gpt-5.5",
+        "上游账号: ghwg@example.com",
+        "上游账户余额: $12.340000",
+        "模型: gpt-5.5",
+        "最低价分组: default",
+        "分组倍率: 0.05",
+        "输入价格: 0.25",
+        "输出价格: 1.5",
+        "缓存读价格: 0.025",
+        "缓存写价格: 0.25",
+        "请求价格: 未提供",
+        "主站分组: Codex",
+        "动作: created",
+        "主站账号: #54 chat.ekti openai-local+VIP default",
+      ],
+    },
+    sync_failure: {
+      subject: "[主站账号同步失败] huanapi / free",
+      notification_type: "主站账号同步失败",
+      lines: [
+        "主站 sub2api 渠道账号同步失败。",
+        "",
+        "站点: huanapi",
+        "地址: https://www.huanapi.com/",
+        "规则: #30 gpt-5.5",
+        "上游账号: ghwg@example.com",
+        "模型: gpt-5.5",
+        "最低价分组: free",
+        "错误: 当前套餐或者余额不支持所选分组 free 倍率 0.001",
+      ],
+    },
+    account_update: {
+      subject: "[主站账号更新] updated #54 chat.ekti",
+      notification_type: "主站账号更新",
+      lines: [
+        "主站 sub2api 渠道账号已更新。",
+        "",
+        "动作: updated",
+        "账号: #54 chat.ekti",
+        "apiurl: https://chat.ekti.cc/",
+        "平台/类型: openai / apikey",
+        "分组: Codex #1, VIP #2",
+        "状态: active",
+        "调度: true",
+      ],
+    },
+    low_balance_skip: {
+      subject: "[低价上游余额不足] codex2api-ghwg / gpt-5.5",
+      notification_type: "低价上游余额不足",
+      lines: [
+        "最低价上游账号余额不足，已跳过该低价渠道同步。",
+        "",
+        "规则: #9 gpt-5.5",
+        "分类: Codex",
+        "模型: gpt-5.5",
+        "",
+        "被跳过的低价上游:",
+        "- 站点: codex2api-ghwg",
+        "  地址: https://www.codex2api.com/",
+        "  登录账号: ghwg@example.com",
+        "  分组: 特价分组-0.005x",
+        "  分组倍率: 0.005",
+        "  输入价格: 0.025",
+        "  输出价格: 0.150",
+        "  缓存读价格: 0.0025",
+        "  缓存写价格: 0.025",
+        "  请求价格: 空",
+        "  余额: $0.000000",
+      ],
+    },
+  };
+  const sample = samples[type] || samples.sync_update;
+  const body = sample.lines.join("\\n");
   return {
-    subject: "[主站账号同步] created chat.ekti default",
-    notification_subject: "[主站账号同步] created chat.ekti default",
-    notification_type: "主站账号同步",
+    subject: sample.subject,
+    notification_subject: sample.subject,
+    notification_type: sample.notification_type,
     body,
     default_body: body,
     site_name: "chat.ekti",
@@ -2924,9 +3076,10 @@ function renderClientEmailTemplate(template, values) {
 }
 
 function previewEmailTemplate() {
+  persistActiveEmailTemplateInputs();
   const subjectTemplate = ($("#emailTemplateSubject")?.value || "{{subject}}").trim() || "{{subject}}";
   const bodyTemplate = $("#emailTemplateBody")?.value || "{{body}}";
-  const values = sampleEmailTemplateValues();
+  const values = sampleEmailTemplateValues(state.activeEmailTemplateType);
   const subject = renderClientEmailTemplate(subjectTemplate, values);
   const body = renderClientEmailTemplate(bodyTemplate.trim() ? bodyTemplate : "{{body}}", values);
   const preview = $("#emailTemplatePreview");
@@ -3672,9 +3825,13 @@ if (settingsForm) {
   settingsForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
+    persistActiveEmailTemplateInputs();
     const payload = formJSON(form);
     payload.smtp_port = Number(payload.smtp_port || 587);
     payload.sync_threshold_ratio = Number(payload.sync_threshold_ratio || 0);
+    payload.email_template_subject = state.settings?.email_template_subject || "";
+    payload.email_template_body = state.settings?.email_template_body || "";
+    payload.email_template_configs = emailTemplateConfigs();
     try {
       await api("/api/settings", { method: "POST", body: JSON.stringify(payload) });
       toast("主站 sub2api 设置已保存");
@@ -3688,6 +3845,14 @@ if (settingsForm) {
 const emailTemplatePreviewBtn = $("#emailTemplatePreviewBtn");
 if (emailTemplatePreviewBtn) {
   emailTemplatePreviewBtn.addEventListener("click", previewEmailTemplate);
+}
+const emailTemplateSubjectInput = $("#emailTemplateSubject");
+if (emailTemplateSubjectInput) {
+  emailTemplateSubjectInput.addEventListener("input", persistActiveEmailTemplateInputs);
+}
+const emailTemplateBodyInput = $("#emailTemplateBody");
+if (emailTemplateBodyInput) {
+  emailTemplateBodyInput.addEventListener("input", persistActiveEmailTemplateInputs);
 }
 
 const adminPasswordForm = $("#adminPasswordForm");
@@ -3956,6 +4121,15 @@ document.addEventListener("click", async (event) => {
   const emailTemplateVar = event.target.closest("[data-email-template-var]");
   if (emailTemplateVar) {
     insertEmailTemplateVariable(emailTemplateVar.getAttribute("data-email-template-var") || "");
+    return;
+  }
+
+  const emailTemplateType = event.target.closest("[data-email-template-type]");
+  if (emailTemplateType) {
+    persistActiveEmailTemplateInputs();
+    state.activeEmailTemplateType = emailTemplateType.getAttribute("data-email-template-type") || "price_change";
+    renderEmailTemplateTabs();
+    renderActiveEmailTemplate();
     return;
   }
 

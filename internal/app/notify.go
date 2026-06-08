@@ -53,7 +53,7 @@ func (s *Server) notifyPriceChange(ctx context.Context, previous PriceSnapshot, 
 	for _, change := range changes {
 		body.WriteString(fmt.Sprintf("- %s: %s -> %s\n", change.Label, change.Old, change.New))
 	}
-	s.sendEmailAsync(settings, subject, body.String())
+	s.sendEmailAsync(settings, "price_change", subject, body.String())
 }
 
 func (s *Server) notifySyncUpdate(ctx context.Context, rule Rule, site Site, snapshot PriceSnapshot, action string, account sub2Account) {
@@ -67,7 +67,7 @@ func (s *Server) notifySyncUpdate(ctx context.Context, rule Rule, site Site, sna
 	}
 
 	subject := fmt.Sprintf("[主站账号同步] %s %s %s", action, site.Name, snapshot.GroupName)
-	s.sendEmailAsync(settings, subject, syncUpdateEmailBody(rule, site, snapshot, action, account))
+	s.sendEmailAsync(settings, "sync_update", subject, syncUpdateEmailBody(rule, site, snapshot, action, account))
 }
 
 func syncUpdateEmailBody(rule Rule, site Site, snapshot PriceSnapshot, action string, account sub2Account) string {
@@ -114,7 +114,7 @@ func (s *Server) notifySyncFailure(ctx context.Context, rule Rule, site Site, ro
 		row.GroupName,
 		err,
 	)
-	s.sendEmailAsync(settings, subject, body)
+	s.sendEmailAsync(settings, "sync_failure", subject, body)
 }
 
 func (s *Server) notifySub2APIAccountUpdate(ctx context.Context, action string, account sub2Account) {
@@ -151,7 +151,7 @@ func (s *Server) notifySub2APIAccountUpdate(ctx context.Context, action string, 
 		account.Status,
 		account.Schedulable,
 	)
-	s.sendEmailAsync(settings, subject, body)
+	s.sendEmailAsync(settings, "account_update", subject, body)
 }
 
 func (s *Server) notifyLowBalanceSkip(ctx context.Context, rule Rule, skipped []PriceSnapshot, candidate PriceSnapshot) {
@@ -195,7 +195,7 @@ func (s *Server) notifyLowBalanceSkip(ctx context.Context, rule Rule, skipped []
 		body.WriteString(formatSnapshotPriceLines(candidate, ""))
 		body.WriteString(fmt.Sprintf("余额: %s\n", formatBalance(candidate.UpstreamBalance, candidate.BalanceUnit)))
 	}
-	s.sendEmailAsync(settings, subject, body.String())
+	s.sendEmailAsync(settings, "low_balance_skip", subject, body.String())
 }
 
 func snapshotPriceChanges(previous PriceSnapshot, current PriceSnapshot) []priceChange {
@@ -333,18 +333,18 @@ func formatBalance(value *float64, unit string) string {
 	}
 }
 
-func (s *Server) sendEmailAsync(settings IntegrationSettings, subject string, body string) {
+func (s *Server) sendEmailAsync(settings IntegrationSettings, templateType string, subject string, body string) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		if err := sendEmail(ctx, settings, subject, body); err != nil {
+		if err := sendEmail(ctx, settings, templateType, subject, body); err != nil {
 			log.Printf("send email notification: %v", err)
 		}
 	}()
 }
 
-func sendEmail(ctx context.Context, settings IntegrationSettings, subject string, body string) error {
-	subject, body = renderEmailTemplate(settings, subject, body)
+func sendEmail(ctx context.Context, settings IntegrationSettings, templateType string, subject string, body string) error {
+	subject, body = renderEmailTemplate(settings, templateType, subject, body)
 	host := strings.TrimSpace(settings.SMTPHost)
 	if host == "" || settings.SMTPPort <= 0 {
 		return errors.New("smtp host or port is not configured")
@@ -401,16 +401,24 @@ func sendEmail(ctx context.Context, settings IntegrationSettings, subject string
 	}
 }
 
-func renderEmailTemplate(settings IntegrationSettings, subject string, body string) (string, string) {
+func renderEmailTemplate(settings IntegrationSettings, templateType string, subject string, body string) (string, string) {
 	if !settings.EmailTemplateEnabled {
 		return subject, body
 	}
 	values := emailTemplateValues(subject, body)
 	subjectTemplate := strings.TrimSpace(settings.EmailTemplateSubject)
+	bodyTemplate := settings.EmailTemplateBody
+	if config, ok := settings.EmailTemplateConfigs[normalizeEmailTemplateType(templateType)]; ok {
+		if strings.TrimSpace(config.Subject) != "" {
+			subjectTemplate = strings.TrimSpace(config.Subject)
+		}
+		if strings.TrimSpace(config.Body) != "" {
+			bodyTemplate = config.Body
+		}
+	}
 	if subjectTemplate == "" {
 		subjectTemplate = "{{subject}}"
 	}
-	bodyTemplate := settings.EmailTemplateBody
 	if strings.TrimSpace(bodyTemplate) == "" {
 		bodyTemplate = "{{body}}"
 	}

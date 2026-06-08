@@ -68,27 +68,28 @@ type RuleInput struct {
 }
 
 type SettingsInput struct {
-	Sub2APIEnabled         bool    `json:"sub2api_enabled"`
-	Sub2APIMainBaseURL     string  `json:"sub2api_main_base_url"`
-	Sub2APIAdminKey        string  `json:"sub2api_admin_key"`
-	Sub2APIBaseURL         string  `json:"sub2api_base_url"`
-	Sub2APIAccessToken     string  `json:"sub2api_access_token"`
-	Sub2APIEmail           string  `json:"sub2api_email"`
-	Sub2APIPassword        string  `json:"sub2api_password"`
-	SyncThresholdRatio     float64 `json:"sync_threshold_ratio"`
-	EmailNotifyEnabled     bool    `json:"email_notify_enabled"`
-	EmailNotifyPriceChange bool    `json:"email_notify_price_change"`
-	EmailNotifySyncUpdate  bool    `json:"email_notify_sync_update"`
-	SMTPHost               string  `json:"smtp_host"`
-	SMTPPort               int     `json:"smtp_port"`
-	SMTPEncryption         string  `json:"smtp_encryption"`
-	SMTPUsername           string  `json:"smtp_username"`
-	SMTPPassword           string  `json:"smtp_password"`
-	SMTPFrom               string  `json:"smtp_from"`
-	SMTPTo                 string  `json:"smtp_to"`
-	EmailTemplateEnabled   bool    `json:"email_template_enabled"`
-	EmailTemplateSubject   string  `json:"email_template_subject"`
-	EmailTemplateBody      string  `json:"email_template_body"`
+	Sub2APIEnabled         bool                           `json:"sub2api_enabled"`
+	Sub2APIMainBaseURL     string                         `json:"sub2api_main_base_url"`
+	Sub2APIAdminKey        string                         `json:"sub2api_admin_key"`
+	Sub2APIBaseURL         string                         `json:"sub2api_base_url"`
+	Sub2APIAccessToken     string                         `json:"sub2api_access_token"`
+	Sub2APIEmail           string                         `json:"sub2api_email"`
+	Sub2APIPassword        string                         `json:"sub2api_password"`
+	SyncThresholdRatio     float64                        `json:"sync_threshold_ratio"`
+	EmailNotifyEnabled     bool                           `json:"email_notify_enabled"`
+	EmailNotifyPriceChange bool                           `json:"email_notify_price_change"`
+	EmailNotifySyncUpdate  bool                           `json:"email_notify_sync_update"`
+	SMTPHost               string                         `json:"smtp_host"`
+	SMTPPort               int                            `json:"smtp_port"`
+	SMTPEncryption         string                         `json:"smtp_encryption"`
+	SMTPUsername           string                         `json:"smtp_username"`
+	SMTPPassword           string                         `json:"smtp_password"`
+	SMTPFrom               string                         `json:"smtp_from"`
+	SMTPTo                 string                         `json:"smtp_to"`
+	EmailTemplateEnabled   bool                           `json:"email_template_enabled"`
+	EmailTemplateSubject   string                         `json:"email_template_subject"`
+	EmailTemplateBody      string                         `json:"email_template_body"`
+	EmailTemplateConfigs   map[string]EmailTemplateConfig `json:"email_template_configs"`
 }
 
 type AdminCredentialInput struct {
@@ -1619,13 +1620,14 @@ func snapshotBalanceInsufficient(snapshot PriceSnapshot) bool {
 func (s Store) GetIntegrationSettings(ctx context.Context) (IntegrationSettings, error) {
 	var settings IntegrationSettings
 	var syncThresholdRatio sql.NullFloat64
+	var templateConfigsRaw []byte
 	err := s.db.QueryRow(ctx, `
 		SELECT sub2api_enabled, sub2api_main_base_url, sub2api_admin_key,
 		       sub2api_base_url, sub2api_access_token, sub2api_email, sub2api_password,
 		       sync_threshold_ratio,
 		       email_notify_enabled, email_notify_price_change, email_notify_sync_update,
 		       smtp_host, smtp_port, smtp_encryption, smtp_username, smtp_password, smtp_from, smtp_to,
-		       email_template_enabled, email_template_subject, email_template_body,
+		       email_template_enabled, email_template_subject, email_template_body, email_template_configs,
 		       updated_at
 		FROM integration_settings
 		WHERE id = true
@@ -1637,12 +1639,13 @@ func (s Store) GetIntegrationSettings(ctx context.Context) (IntegrationSettings,
 		&settings.EmailNotifyEnabled, &settings.EmailNotifyPriceChange, &settings.EmailNotifySyncUpdate,
 		&settings.SMTPHost, &settings.SMTPPort, &settings.SMTPEncryption, &settings.SMTPUsername, &settings.SMTPPassword,
 		&settings.SMTPFrom, &settings.SMTPTo,
-		&settings.EmailTemplateEnabled, &settings.EmailTemplateSubject, &settings.EmailTemplateBody,
+		&settings.EmailTemplateEnabled, &settings.EmailTemplateSubject, &settings.EmailTemplateBody, &templateConfigsRaw,
 		&settings.UpdatedAt,
 	)
 	if err == pgx.ErrNoRows {
 		return IntegrationSettings{}, nil
 	}
+	settings.EmailTemplateConfigs = decodeEmailTemplateConfigs(templateConfigsRaw)
 	settings.SyncThresholdRatio = floatPtr(syncThresholdRatio)
 	if settings.Sub2APIMainBaseURL == "" {
 		settings.Sub2APIMainBaseURL = settings.Sub2APIBaseURL
@@ -1666,6 +1669,7 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 	input.SMTPFrom = strings.TrimSpace(input.SMTPFrom)
 	input.SMTPTo = strings.TrimSpace(input.SMTPTo)
 	input.EmailTemplateSubject = strings.TrimSpace(input.EmailTemplateSubject)
+	input.EmailTemplateConfigs = normalizeEmailTemplateConfigs(input.EmailTemplateConfigs)
 	if input.SMTPPort <= 0 {
 		input.SMTPPort = 587
 	}
@@ -1709,17 +1713,22 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 
 	var settings IntegrationSettings
 	var syncThresholdRatio sql.NullFloat64
-	err := s.db.QueryRow(ctx, `
+	templateConfigsRaw, err := json.Marshal(input.EmailTemplateConfigs)
+	if err != nil {
+		return IntegrationSettings{}, err
+	}
+	var savedTemplateConfigsRaw []byte
+	err = s.db.QueryRow(ctx, `
 		INSERT INTO integration_settings (
 			id, sub2api_enabled, sub2api_main_base_url, sub2api_admin_key,
 			sub2api_base_url, sub2api_access_token, sub2api_email, sub2api_password,
 			sync_threshold_ratio,
 			email_notify_enabled, email_notify_price_change, email_notify_sync_update,
 			smtp_host, smtp_port, smtp_encryption, smtp_username, smtp_password, smtp_from, smtp_to,
-			email_template_enabled, email_template_subject, email_template_body,
+			email_template_enabled, email_template_subject, email_template_body, email_template_configs,
 			updated_at
 		)
-		VALUES (true, $1, $2, $3, $2, $3, $4, $5, CASE WHEN $6::double precision > 0 THEN $6::double precision ELSE NULL END, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, now())
+		VALUES (true, $1, $2, $3, $2, $3, $4, $5, CASE WHEN $6::double precision > 0 THEN $6::double precision ELSE NULL END, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19::jsonb, now())
 		ON CONFLICT (id) DO UPDATE
 		SET sub2api_enabled = EXCLUDED.sub2api_enabled,
 		    sub2api_main_base_url = EXCLUDED.sub2api_main_base_url,
@@ -1742,19 +1751,20 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 		    email_template_enabled = EXCLUDED.email_template_enabled,
 		    email_template_subject = EXCLUDED.email_template_subject,
 		    email_template_body = EXCLUDED.email_template_body,
+		    email_template_configs = EXCLUDED.email_template_configs,
 		    updated_at = now()
 		RETURNING sub2api_enabled, sub2api_main_base_url, sub2api_admin_key,
 		          sub2api_base_url, sub2api_access_token, sub2api_email, sub2api_password,
 		          sync_threshold_ratio,
 		          email_notify_enabled, email_notify_price_change, email_notify_sync_update,
 		          smtp_host, smtp_port, smtp_encryption, smtp_username, smtp_password, smtp_from, smtp_to,
-		          email_template_enabled, email_template_subject, email_template_body,
+		          email_template_enabled, email_template_subject, email_template_body, email_template_configs,
 		          updated_at
 	`,
 		input.Sub2APIEnabled, input.Sub2APIMainBaseURL, input.Sub2APIAdminKey, input.Sub2APIEmail, input.Sub2APIPassword,
 		input.SyncThresholdRatio, input.EmailNotifyEnabled, input.EmailNotifyPriceChange, input.EmailNotifySyncUpdate,
 		input.SMTPHost, input.SMTPPort, input.SMTPEncryption, input.SMTPUsername, input.SMTPPassword, input.SMTPFrom, input.SMTPTo,
-		input.EmailTemplateEnabled, input.EmailTemplateSubject, input.EmailTemplateBody,
+		input.EmailTemplateEnabled, input.EmailTemplateSubject, input.EmailTemplateBody, string(templateConfigsRaw),
 	).Scan(
 		&settings.Sub2APIEnabled, &settings.Sub2APIMainBaseURL, &settings.Sub2APIAdminKey,
 		&settings.Sub2APIBaseURL, &settings.Sub2APIAccessToken,
@@ -1763,11 +1773,49 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 		&settings.EmailNotifyEnabled, &settings.EmailNotifyPriceChange, &settings.EmailNotifySyncUpdate,
 		&settings.SMTPHost, &settings.SMTPPort, &settings.SMTPEncryption, &settings.SMTPUsername, &settings.SMTPPassword,
 		&settings.SMTPFrom, &settings.SMTPTo,
-		&settings.EmailTemplateEnabled, &settings.EmailTemplateSubject, &settings.EmailTemplateBody,
+		&settings.EmailTemplateEnabled, &settings.EmailTemplateSubject, &settings.EmailTemplateBody, &savedTemplateConfigsRaw,
 		&settings.UpdatedAt,
 	)
+	settings.EmailTemplateConfigs = decodeEmailTemplateConfigs(savedTemplateConfigsRaw)
 	settings.SyncThresholdRatio = floatPtr(syncThresholdRatio)
 	return settings, err
+}
+
+func normalizeEmailTemplateConfigs(configs map[string]EmailTemplateConfig) map[string]EmailTemplateConfig {
+	normalized := map[string]EmailTemplateConfig{}
+	for key, config := range configs {
+		key = normalizeEmailTemplateType(key)
+		if key == "" {
+			continue
+		}
+		config.Subject = strings.TrimSpace(config.Subject)
+		if config.Subject == "" && strings.TrimSpace(config.Body) == "" {
+			continue
+		}
+		normalized[key] = config
+	}
+	return normalized
+}
+
+func decodeEmailTemplateConfigs(raw []byte) map[string]EmailTemplateConfig {
+	if len(raw) == 0 || strings.TrimSpace(string(raw)) == "" {
+		return map[string]EmailTemplateConfig{}
+	}
+	var configs map[string]EmailTemplateConfig
+	if err := json.Unmarshal(raw, &configs); err != nil {
+		return map[string]EmailTemplateConfig{}
+	}
+	return normalizeEmailTemplateConfigs(configs)
+}
+
+func normalizeEmailTemplateType(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	switch value {
+	case "price_change", "sync_update", "sync_failure", "account_update", "low_balance_skip":
+		return value
+	default:
+		return ""
+	}
 }
 
 func (s Store) EnsureAdminCredentials(ctx context.Context, username string, passwordHash string) error {

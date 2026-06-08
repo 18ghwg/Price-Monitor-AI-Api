@@ -198,26 +198,32 @@ type Sub2APIUserPriceRow struct {
 }
 
 type IntegrationSettings struct {
-	Sub2APIEnabled         bool      `json:"sub2api_enabled"`
-	Sub2APIMainBaseURL     string    `json:"sub2api_main_base_url"`
-	Sub2APIAdminKey        string    `json:"sub2api_admin_key,omitempty"`
-	Sub2APIBaseURL         string    `json:"sub2api_base_url,omitempty"`
-	Sub2APIAccessToken     string    `json:"sub2api_access_token,omitempty"`
-	Sub2APIEmail           string    `json:"sub2api_email"`
-	Sub2APIPassword        string    `json:"sub2api_password,omitempty"`
-	SyncThresholdRatio     *float64  `json:"sync_threshold_ratio"`
-	EmailNotifyEnabled     bool      `json:"email_notify_enabled"`
-	EmailNotifyPriceChange bool      `json:"email_notify_price_change"`
-	EmailNotifySyncUpdate  bool      `json:"email_notify_sync_update"`
-	SMTPHost               string    `json:"smtp_host"`
-	SMTPPort               int       `json:"smtp_port"`
-	SMTPEncryption         string    `json:"smtp_encryption"`
-	SMTPUsername           string    `json:"smtp_username"`
-	SMTPPassword           string    `json:"smtp_password,omitempty"`
-	SMTPFrom               string    `json:"smtp_from"`
-	SMTPTo                 string    `json:"smtp_to"`
-	EmailTemplateEnabled   bool      `json:"email_template_enabled"`
-	EmailTemplateSubject   string    `json:"email_template_subject"`
-	EmailTemplateBody      string    `json:"email_template_body"`
-	UpdatedAt              time.Time `json:"updated_at"`
+	Sub2APIEnabled         bool                           `json:"sub2api_enabled"`
+	Sub2APIMainBaseURL     string                         `json:"sub2api_main_base_url"`
+	Sub2APIAdminKey        string                         `json:"sub2api_admin_key,omitempty"`
+	Sub2APIBaseURL         string                         `json:"sub2api_base_url,omitempty"`
+	Sub2APIAccessToken     string                         `json:"sub2api_access_token,omitempty"`
+	Sub2APIEmail           string                         `json:"sub2api_email"`
+	Sub2APIPassword        string                         `json:"sub2api_password,omitempty"`
+	SyncThresholdRatio     *float64                       `json:"sync_threshold_ratio"`
+	EmailNotifyEnabled     bool                           `json:"email_notify_enabled"`
+	EmailNotifyPriceChange bool                           `json:"email_notify_price_change"`
+	EmailNotifySyncUpdate  bool                           `json:"email_notify_sync_update"`
+	SMTPHost               string                         `json:"smtp_host"`
+	SMTPPort               int                            `json:"smtp_port"`
+	SMTPEncryption         string                         `json:"smtp_encryption"`
+	SMTPUsername           string                         `json:"smtp_username"`
+	SMTPPassword           string                         `json:"smtp_password,omitempty"`
+	SMTPFrom               string                         `json:"smtp_from"`
+	SMTPTo                 string                         `json:"smtp_to"`
+	EmailTemplateEnabled   bool                           `json:"email_template_enabled"`
+	EmailTemplateSubject   string                         `json:"email_template_subject"`
+	EmailTemplateBody      string                         `json:"email_template_body"`
+	EmailTemplateConfigs   map[string]EmailTemplateConfig `json:"email_template_configs"`
+	UpdatedAt              time.Time                      `json:"updated_at"`
+}
+
+type EmailTemplateConfig struct {
+	Subject string `json:"subject"`
+	Body    string `json:"body"`
 }
