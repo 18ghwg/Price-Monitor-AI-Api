@@ -153,3 +153,50 @@ func TestFormatSnapshotPriceLinesIncludesAllPriceDimensions(t *testing.T) {
 		}
 	}
 }
+
+func TestSyncUpdateEmailBodyIncludesUpstreamAccountBalanceAndRateDetails(t *testing.T) {
+	body := syncUpdateEmailBody(
+		Rule{
+			ID:                  35,
+			ModelKeyword:        "gpt-5.5",
+			CategoryName:        "Codex",
+			Sub2APIUpstreamName: "",
+		},
+		Site{Name: "chat.ekti", BaseURL: "https://chat.ekti.cc/"},
+		PriceSnapshot{
+			SourceAccount:   "ghwg@example.com",
+			ModelName:       "gpt-5.5",
+			GroupName:       "default",
+			GroupRatio:      ptr(0.05),
+			InputPrice:      ptr(0.25),
+			OutputPrice:     ptr(1.5),
+			CacheReadPrice:  ptr(0.025),
+			CacheWritePrice: ptr(0.25),
+			UpstreamBalance: ptr(12.34),
+			BalanceUnit:     "usd",
+		},
+		"created",
+		sub2Account{ID: 54, Name: "chat.ekti openai-local+hermes-openclaw-long+VIP default", Rate: ptr(0.05)},
+	)
+
+	for _, want := range []string{
+		"上游账号: ghwg@example.com",
+		"上游账户余额: $12.340000",
+		"分组倍率: 0.05",
+		"输入价格: 0.25",
+		"输出价格: 1.5",
+		"缓存读价格: 0.025",
+		"缓存写价格: 0.25",
+		"分组倍率变动明细:",
+		"- 上游最低价分组: default，倍率 0.05",
+		"- 主站账号倍率: 0.05",
+		"主站账号: #54 chat.ekti openai-local+hermes-openclaw-long+VIP default",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("syncUpdateEmailBody() = %q, want to include %q", body, want)
+		}
+	}
+	if strings.Contains(body, "上游账号: 未绑定") {
+		t.Fatalf("syncUpdateEmailBody() = %q, should not show upstream account as unbound", body)
+	}
+}

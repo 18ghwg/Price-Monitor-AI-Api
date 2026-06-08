@@ -1566,7 +1566,7 @@ func (s *Server) syncCandidateSnapshotToMain(ctx context.Context, rule Rule, can
 		if err != nil {
 			return true, fmt.Errorf("candidate %s create NewAPI key for group %s: %w", candidateLabel(candidate), candidate.GroupName, err)
 		}
-		return true, s.syncUpstreamKeyToMainSub2APIWithSignature(ctx, rule, site.Name, site.BaseURL, apiKey, row, keyAction, signature)
+		return true, s.syncUpstreamKeyToMainSub2APIWithSignature(ctx, rule, site.Name, site.BaseURL, apiKey, row, candidate, keyAction, signature)
 	case RuleSourceSub2API:
 		group, err := sub2GroupFromSnapshot(candidate)
 		if err != nil {
@@ -1576,7 +1576,7 @@ func (s *Server) syncCandidateSnapshotToMain(ctx context.Context, rule Rule, can
 		if err != nil {
 			return true, fmt.Errorf("candidate %s create sub2api key for group %s: %w", candidateLabel(candidate), candidate.GroupName, err)
 		}
-		return true, s.syncUpstreamKeyToMainSub2APIWithSignature(ctx, rule, upstream.Name, upstream.BaseURL, apiKey, row, keyAction, signature)
+		return true, s.syncUpstreamKeyToMainSub2APIWithSignature(ctx, rule, upstream.Name, upstream.BaseURL, apiKey, row, candidate, keyAction, signature)
 	default:
 		return false, fmt.Errorf("unsupported sync candidate source type %q", candidate.SourceType)
 	}
@@ -1598,6 +1598,23 @@ func pricingRowFromSnapshot(snapshot PriceSnapshot) PricingRow {
 		CacheReadPrice:  snapshot.CacheReadPrice,
 		CacheWritePrice: snapshot.CacheWritePrice,
 		RequestPrice:    snapshot.RequestPrice,
+	}
+}
+
+func priceSnapshotFromPricingRow(row PricingRow, sourceName string, sourceBaseURL string) PriceSnapshot {
+	return PriceSnapshot{
+		SiteName:        sourceName,
+		SiteBaseURL:     sourceBaseURL,
+		ModelName:       row.ModelName,
+		GroupName:       row.GroupName,
+		GroupDesc:       row.GroupDesc,
+		QuotaType:       row.QuotaType,
+		GroupRatio:      ptr(row.GroupRatio),
+		InputPrice:      row.InputPrice,
+		OutputPrice:     row.OutputPrice,
+		CacheReadPrice:  row.CacheReadPrice,
+		CacheWritePrice: row.CacheWritePrice,
+		RequestPrice:    row.RequestPrice,
 	}
 }
 
@@ -1876,10 +1893,10 @@ func upstreamKeyName(rule Rule, modelName string) string {
 }
 
 func (s *Server) syncUpstreamKeyToMainSub2API(ctx context.Context, rule Rule, sourceName string, sourceBaseURL string, apiKey string, row PricingRow, keyAction string) error {
-	return s.syncUpstreamKeyToMainSub2APIWithSignature(ctx, rule, sourceName, sourceBaseURL, apiKey, row, keyAction, "")
+	return s.syncUpstreamKeyToMainSub2APIWithSignature(ctx, rule, sourceName, sourceBaseURL, apiKey, row, PriceSnapshot{}, keyAction, "")
 }
 
-func (s *Server) syncUpstreamKeyToMainSub2APIWithSignature(ctx context.Context, rule Rule, sourceName string, sourceBaseURL string, apiKey string, row PricingRow, keyAction string, signature string) error {
+func (s *Server) syncUpstreamKeyToMainSub2APIWithSignature(ctx context.Context, rule Rule, sourceName string, sourceBaseURL string, apiKey string, row PricingRow, snapshot PriceSnapshot, keyAction string, signature string) error {
 	settings, err := s.store.GetIntegrationSettings(ctx)
 	if err != nil {
 		return fmt.Errorf("load integration settings: %w", err)
@@ -1925,7 +1942,10 @@ func (s *Server) syncUpstreamKeyToMainSub2APIWithSignature(ctx context.Context, 
 	if err := sub2.DisableOtherAPIKeyAccountsForGroups(ctx, platform, account.ID, groups); err != nil {
 		return fmt.Errorf("disable other main sub2api accounts for groups %s: %w", strings.Join(groupNames, ", "), err)
 	}
-	s.notifySyncUpdate(ctx, rule, Site{Name: sourceName, BaseURL: sourceBaseURL}, row, action, account)
+	if snapshot.ID == 0 {
+		snapshot = priceSnapshotFromPricingRow(row, sourceName, sourceBaseURL)
+	}
+	s.notifySyncUpdate(ctx, rule, Site{Name: sourceName, BaseURL: sourceBaseURL}, snapshot, action, account)
 	status := action + " " + keyAction + " " + row.GroupName + " rate " + fmtFloat(row.GroupRatio) + " -> " + strings.Join(groupNames, ", ") + " tested " + row.ModelName
 	if strings.TrimSpace(signature) != "" {
 		return s.store.UpdateRuleSyncSuccess(ctx, rule.ID, status, signature)

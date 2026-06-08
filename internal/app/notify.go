@@ -56,7 +56,7 @@ func (s *Server) notifyPriceChange(ctx context.Context, previous PriceSnapshot, 
 	s.sendEmailAsync(settings, subject, body.String())
 }
 
-func (s *Server) notifySyncUpdate(ctx context.Context, rule Rule, site Site, row PricingRow, action string, account sub2Account) {
+func (s *Server) notifySyncUpdate(ctx context.Context, rule Rule, site Site, snapshot PriceSnapshot, action string, account sub2Account) {
 	settings, err := s.store.GetIntegrationSettings(ctx)
 	if err != nil {
 		log.Printf("load email settings for sync notification: %v", err)
@@ -66,22 +66,30 @@ func (s *Server) notifySyncUpdate(ctx context.Context, rule Rule, site Site, row
 		return
 	}
 
-	subject := fmt.Sprintf("[主站账号同步] %s %s %s", action, site.Name, row.GroupName)
-	body := fmt.Sprintf(
-		"主站 sub2api 渠道账号已同步。\n\n站点: %s\n地址: %s\n规则: #%d %s\n上游账号: %s\n模型: %s\n最低价分组: %s\n主站分组: %s\n动作: %s\n主站账号: #%d %s\n",
-		site.Name,
-		site.BaseURL,
-		rule.ID,
-		rule.ModelKeyword,
-		firstNonEmpty(rule.Sub2APIUpstreamName, "未绑定"),
-		row.ModelName,
-		row.GroupName,
-		firstNonEmpty(rule.Sub2APIGroupName, rule.CategoryName),
-		action,
-		account.ID,
-		account.Name,
-	)
-	s.sendEmailAsync(settings, subject, body)
+	subject := fmt.Sprintf("[主站账号同步] %s %s %s", action, site.Name, snapshot.GroupName)
+	s.sendEmailAsync(settings, subject, syncUpdateEmailBody(rule, site, snapshot, action, account))
+}
+
+func syncUpdateEmailBody(rule Rule, site Site, snapshot PriceSnapshot, action string, account sub2Account) string {
+	var body strings.Builder
+	body.WriteString("主站 sub2api 渠道账号已同步。\n\n")
+	body.WriteString(fmt.Sprintf("站点: %s\n", site.Name))
+	body.WriteString(fmt.Sprintf("地址: %s\n", site.BaseURL))
+	body.WriteString(fmt.Sprintf("规则: #%d %s\n", rule.ID, rule.ModelKeyword))
+	body.WriteString(fmt.Sprintf("上游账号: %s\n", firstNonEmpty(snapshot.SourceAccount, rule.SourceAccount, "未获取")))
+	body.WriteString(fmt.Sprintf("上游账户余额: %s\n", formatBalance(snapshot.UpstreamBalance, snapshot.BalanceUnit)))
+	body.WriteString(fmt.Sprintf("模型: %s\n", snapshot.ModelName))
+	body.WriteString(fmt.Sprintf("最低价分组: %s\n", snapshot.GroupName))
+	body.WriteString(fmt.Sprintf("分组倍率: %s\n", formatFloatPtr(snapshot.GroupRatio)))
+	body.WriteString(formatSnapshotPriceLines(snapshot, ""))
+	body.WriteString(fmt.Sprintf("主站分组: %s\n", firstNonEmpty(rule.Sub2APIGroupName, rule.CategoryName)))
+	body.WriteString(fmt.Sprintf("动作: %s\n", action))
+	body.WriteString(fmt.Sprintf("主站账号: #%d %s\n", account.ID, account.Name))
+	body.WriteString("分组倍率变动明细:\n")
+	body.WriteString(fmt.Sprintf("- 上游最低价分组: %s，倍率 %s\n", snapshot.GroupName, formatFloatPtr(snapshot.GroupRatio)))
+	body.WriteString(fmt.Sprintf("- 主站账号倍率: %s\n", formatFloatPtr(account.Rate)))
+	body.WriteString(fmt.Sprintf("- 同步动作: %s\n", action))
+	return body.String()
 }
 
 func (s *Server) notifySyncFailure(ctx context.Context, rule Rule, site Site, row PricingRow, err error) {
