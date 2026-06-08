@@ -183,6 +183,49 @@ func TestNewAPIClientFetchBalance(t *testing.T) {
 	}
 }
 
+func TestNewAPIClientFetchRechargeStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("Authorization") != "Bearer system-token" {
+			t.Fatalf("Authorization = %q, want Bearer system-token", r.Header.Get("Authorization"))
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/user/topup/info":
+			writeNewAPITestJSON(w, map[string]any{
+				"enable_online_topup": true,
+				"min_topup":           10,
+				"amount_options":      []int{10, 100},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/user/topup/self":
+			writeNewAPITestJSON(w, map[string]any{"items": []map[string]any{}})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/user/amount":
+			var payload map[string]float64
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode amount payload: %v", err)
+			}
+			writeNewAPITestJSON(w, payload["amount"]/10)
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewNewAPIClient(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := client.FetchRechargeStatus(context.Background(), 99, "system-token")
+	if err != nil {
+		t.Fatalf("FetchRechargeStatus() error = %v", err)
+	}
+	if !status.Enabled {
+		t.Fatalf("Enabled = false, want true")
+	}
+	if status.Multiplier == nil || *status.Multiplier != 10 {
+		t.Fatalf("Multiplier = %v, want 10", status.Multiplier)
+	}
+}
+
 func writeNewAPITestJSON(w http.ResponseWriter, data any) {
 	raw, _ := json.Marshal(data)
 	if data == nil {

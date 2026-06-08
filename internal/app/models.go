@@ -97,34 +97,36 @@ type Sub2APIUpstream struct {
 }
 
 type PriceSnapshot struct {
-	ID                int64      `json:"id"`
-	RuleID            int64      `json:"rule_id"`
-	SourceType        string     `json:"source_type"`
-	SiteID            int64      `json:"site_id"`
-	Sub2APIUpstreamID int64      `json:"sub2api_upstream_id"`
-	SiteName          string     `json:"site_name"`
-	SiteBaseURL       string     `json:"site_base_url"`
-	SourceAccount     string     `json:"source_account"`
-	Category          string     `json:"category"`
-	CategoryName      string     `json:"category_name"`
-	ModelKeyword      string     `json:"model_keyword"`
-	ModelName         string     `json:"model_name"`
-	GroupName         string     `json:"group_name"`
-	GroupDesc         string     `json:"group_desc"`
-	QuotaType         int        `json:"quota_type"`
-	GroupRatio        *float64   `json:"group_ratio"`
-	InputPrice        *float64   `json:"input_price"`
-	OutputPrice       *float64   `json:"output_price"`
-	CacheReadPrice    *float64   `json:"cache_read_price"`
-	CacheWritePrice   *float64   `json:"cache_write_price"`
-	RequestPrice      *float64   `json:"request_price"`
-	UpstreamBalance   *float64   `json:"upstream_balance"`
-	BalanceUnit       string     `json:"balance_unit"`
-	Invalid           bool       `json:"invalid"`
-	InvalidReason     string     `json:"invalid_reason"`
-	InvalidAt         *time.Time `json:"invalid_at"`
-	Raw               []byte     `json:"-"`
-	CreatedAt         time.Time  `json:"created_at"`
+	ID                 int64      `json:"id"`
+	RuleID             int64      `json:"rule_id"`
+	SourceType         string     `json:"source_type"`
+	SiteID             int64      `json:"site_id"`
+	Sub2APIUpstreamID  int64      `json:"sub2api_upstream_id"`
+	SiteName           string     `json:"site_name"`
+	SiteBaseURL        string     `json:"site_base_url"`
+	SourceAccount      string     `json:"source_account"`
+	Category           string     `json:"category"`
+	CategoryName       string     `json:"category_name"`
+	ModelKeyword       string     `json:"model_keyword"`
+	ModelName          string     `json:"model_name"`
+	GroupName          string     `json:"group_name"`
+	GroupDesc          string     `json:"group_desc"`
+	QuotaType          int        `json:"quota_type"`
+	GroupRatio         *float64   `json:"group_ratio"`
+	InputPrice         *float64   `json:"input_price"`
+	OutputPrice        *float64   `json:"output_price"`
+	CacheReadPrice     *float64   `json:"cache_read_price"`
+	CacheWritePrice    *float64   `json:"cache_write_price"`
+	RequestPrice       *float64   `json:"request_price"`
+	UpstreamBalance    *float64   `json:"upstream_balance"`
+	BalanceUnit        string     `json:"balance_unit"`
+	OnlineTopupEnabled bool       `json:"online_topup_enabled"`
+	RechargeMultiplier *float64   `json:"recharge_multiplier"`
+	Invalid            bool       `json:"invalid"`
+	InvalidReason      string     `json:"invalid_reason"`
+	InvalidAt          *time.Time `json:"invalid_at"`
+	Raw                []byte     `json:"-"`
+	CreatedAt          time.Time  `json:"created_at"`
 }
 
 type PricingRow struct {
@@ -143,6 +145,11 @@ type PricingRow struct {
 type UpstreamBalance struct {
 	Value *float64 `json:"value"`
 	Unit  string   `json:"unit"`
+}
+
+type RechargeStatus struct {
+	Enabled    bool     `json:"enabled"`
+	Multiplier *float64 `json:"multiplier"`
 }
 
 const newAPIQuotaPerUSD = 500 * 1000.0

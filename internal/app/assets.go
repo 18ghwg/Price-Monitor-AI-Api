@@ -188,6 +188,7 @@ const indexHTML = `<!doctype html>
                 <th data-sort="group_name">最低价分组</th>
                 <th data-sort="group_ratio">分组倍率</th>
                 <th data-sort="upstream_balance">余额</th>
+                <th data-sort="recharge_multiplier">在线充值</th>
                 <th data-sort="effective_price">最低有效价</th>
                 <th data-sort="input_price">输入</th>
                 <th data-sort="output_price">输出</th>
@@ -1348,6 +1349,16 @@ button.filter.active {
   color: #667085;
 }
 
+.source-badge.recharge-on {
+  background: #ecfdf3;
+  color: #027a48;
+}
+
+.source-badge.recharge-off {
+  background: #fff1f3;
+  color: #c01048;
+}
+
 .source-site {
   display: inline-flex;
   align-items: center;
@@ -2144,6 +2155,15 @@ function fmtBalance(value, unit) {
   return normalized ? label + " " + normalized : label;
 }
 
+function rechargeBadge(row) {
+  if (!row || !row.online_topup_enabled) {
+    return "<span class=\"source-badge recharge-off\">未开启在线充值</span>";
+  }
+  const value = Number(row.recharge_multiplier);
+  const label = Number.isFinite(value) && value > 0 ? fmt(value) + " 倍" : "倍率未知";
+  return "<span class=\"source-badge recharge-on\">" + escapeHTML(label) + "</span>";
+}
+
 function fmtTime(value) {
   if (!value) return "";
   return new Date(value).toLocaleString();
@@ -2688,6 +2708,7 @@ function renderSnapshots() {
       + "<td data-label=\"最低价分组\"><span class=\"group-badge\">" + escapeHTML(row.group_name || "") + "</span>" + invalidBadge + invalidReason + "</td>"
       + "<td data-label=\"分组倍率\">" + fmt(row.group_ratio) + "</td>"
       + "<td data-label=\"余额\">" + fmtBalance(row.upstream_balance, row.balance_unit) + "</td>"
+      + "<td data-label=\"在线充值\">" + rechargeBadge(row) + "</td>"
       + "<td data-label=\"最低有效价\">" + fmt(effectivePrice(row)) + "</td>"
       + "<td data-label=\"输入\">" + fmt(row.input_price) + "</td>"
       + "<td data-label=\"输出\">" + fmt(row.output_price) + "</td>"
@@ -2695,7 +2716,7 @@ function renderSnapshots() {
       + "<td data-label=\"缓存写\">" + fmt(row.cache_write_price) + "</td>"
       + "<td data-label=\"请求\">" + fmt(row.request_price) + "</td>"
       + "</tr>";
-  }).join("") : "<tr><td class=\"empty-state\" colspan=\"14\">暂无价格快照，运行一次监控规则后会在这里展示最新结果。</td></tr>";
+  }).join("") : "<tr><td class=\"empty-state\" colspan=\"15\">暂无价格快照，运行一次监控规则后会在这里展示最新结果。</td></tr>";
   renderSnapshotPager(rows.length, totalPages);
 }
 
@@ -3207,7 +3228,7 @@ function sortedSnapshots() {
 function compareSnapshot(left, right, key, dir) {
   if (!!left.invalid !== !!right.invalid) return left.invalid ? 1 : -1;
   const factor = dir === "desc" ? -1 : 1;
-  const numericKeys = new Set(["group_ratio", "upstream_balance", "effective_price", "input_price", "output_price", "cache_read_price", "cache_write_price", "request_price"]);
+  const numericKeys = new Set(["group_ratio", "upstream_balance", "recharge_multiplier", "effective_price", "input_price", "output_price", "cache_read_price", "cache_write_price", "request_price"]);
   let result;
   if (key === "created_at") {
     result = new Date(left.created_at || 0).getTime() - new Date(right.created_at || 0).getTime();

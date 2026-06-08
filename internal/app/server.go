@@ -1140,6 +1140,10 @@ func (s *Server) runNewAPIRule(ctx context.Context, rule Rule, site Site) ([]Pri
 		log.Printf("fetch newapi balance for site %d: %v", site.ID, balanceErr)
 		balance.Unit = "usd"
 	}
+	rechargeStatus, rechargeErr := client.FetchRechargeStatus(ctx, userID, token)
+	if rechargeErr != nil {
+		log.Printf("fetch newapi recharge status for site %d: %v", site.ID, rechargeErr)
+	}
 
 	rows, err := BuildCheapestKeywordRows(pricing, rule.ModelKeyword)
 	if err != nil {
@@ -1162,28 +1166,30 @@ func (s *Server) runNewAPIRule(ctx context.Context, rule Rule, site Site) ([]Pri
 		activeGroups = append(activeGroups, row.GroupName)
 		previousLowest, previousLowestErr := s.store.CheapestLatestSnapshot(ctx, rule.Category, row.ModelName)
 		snapshot := PriceSnapshot{
-			RuleID:          rule.ID,
-			SourceType:      RuleSourceNewAPI,
-			SiteID:          site.ID,
-			SiteName:        site.Name,
-			SiteBaseURL:     site.BaseURL,
-			SourceAccount:   sourceAccountForSite(site),
-			Category:        rule.Category,
-			CategoryName:    rule.CategoryName,
-			ModelKeyword:    rule.ModelKeyword,
-			ModelName:       row.ModelName,
-			GroupName:       row.GroupName,
-			GroupDesc:       row.GroupDesc,
-			QuotaType:       row.QuotaType,
-			GroupRatio:      ptr(row.GroupRatio),
-			InputPrice:      row.InputPrice,
-			OutputPrice:     row.OutputPrice,
-			CacheReadPrice:  row.CacheReadPrice,
-			CacheWritePrice: row.CacheWritePrice,
-			RequestPrice:    row.RequestPrice,
-			UpstreamBalance: balance.Value,
-			BalanceUnit:     balance.Unit,
-			Raw:             PricingRowRaw(row),
+			RuleID:             rule.ID,
+			SourceType:         RuleSourceNewAPI,
+			SiteID:             site.ID,
+			SiteName:           site.Name,
+			SiteBaseURL:        site.BaseURL,
+			SourceAccount:      sourceAccountForSite(site),
+			Category:           rule.Category,
+			CategoryName:       rule.CategoryName,
+			ModelKeyword:       rule.ModelKeyword,
+			ModelName:          row.ModelName,
+			GroupName:          row.GroupName,
+			GroupDesc:          row.GroupDesc,
+			QuotaType:          row.QuotaType,
+			GroupRatio:         ptr(row.GroupRatio),
+			InputPrice:         row.InputPrice,
+			OutputPrice:        row.OutputPrice,
+			CacheReadPrice:     row.CacheReadPrice,
+			CacheWritePrice:    row.CacheWritePrice,
+			RequestPrice:       row.RequestPrice,
+			UpstreamBalance:    balance.Value,
+			BalanceUnit:        balance.Unit,
+			OnlineTopupEnabled: rechargeStatus.Enabled,
+			RechargeMultiplier: rechargeStatus.Multiplier,
+			Raw:                PricingRowRaw(row),
 		}
 		snapshot, err = s.store.InsertSnapshot(ctx, snapshot)
 		if err != nil {
@@ -1233,6 +1239,10 @@ func (s *Server) runSub2APIRule(ctx context.Context, rule Rule, upstream Sub2API
 		log.Printf("fetch sub2api balance for upstream %d: %v", upstream.ID, balanceErr)
 		balance.Unit = "usd"
 	}
+	rechargeStatus, rechargeErr := client.FetchRechargeStatus(ctx)
+	if rechargeErr != nil {
+		log.Printf("fetch sub2api recharge status for upstream %d: %v", upstream.ID, rechargeErr)
+	}
 	priceURL := defaultOfficialPriceURL
 	officialPrices, _, err := loadOfficialPrices(ctx, priceURL)
 	if err != nil {
@@ -1267,27 +1277,29 @@ func (s *Server) runSub2APIRule(ctx context.Context, rule Rule, upstream Sub2API
 			cacheWritePrice = row.FinalCacheWrite1hPerMillion
 		}
 		snapshot := PriceSnapshot{
-			RuleID:            rule.ID,
-			SourceType:        RuleSourceSub2API,
-			Sub2APIUpstreamID: upstream.ID,
-			SiteName:          upstream.Name,
-			SiteBaseURL:       upstream.BaseURL,
-			SourceAccount:     sourceAccountForSub2APIUpstream(upstream),
-			Category:          rule.Category,
-			CategoryName:      rule.CategoryName,
-			ModelKeyword:      rule.ModelKeyword,
-			ModelName:         row.ModelName,
-			GroupName:         row.GroupName,
-			GroupDesc:         strings.TrimSpace(row.GroupPlatform),
-			QuotaType:         0,
-			GroupRatio:        ptr(row.EffectiveRate),
-			InputPrice:        row.FinalInputPerMillion,
-			OutputPrice:       row.FinalOutputPerMillion,
-			CacheReadPrice:    row.FinalCacheReadPerMillion,
-			CacheWritePrice:   cacheWritePrice,
-			UpstreamBalance:   balance.Value,
-			BalanceUnit:       balance.Unit,
-			Raw:               sub2APIUserPriceRowRaw(row),
+			RuleID:             rule.ID,
+			SourceType:         RuleSourceSub2API,
+			Sub2APIUpstreamID:  upstream.ID,
+			SiteName:           upstream.Name,
+			SiteBaseURL:        upstream.BaseURL,
+			SourceAccount:      sourceAccountForSub2APIUpstream(upstream),
+			Category:           rule.Category,
+			CategoryName:       rule.CategoryName,
+			ModelKeyword:       rule.ModelKeyword,
+			ModelName:          row.ModelName,
+			GroupName:          row.GroupName,
+			GroupDesc:          strings.TrimSpace(row.GroupPlatform),
+			QuotaType:          0,
+			GroupRatio:         ptr(row.EffectiveRate),
+			InputPrice:         row.FinalInputPerMillion,
+			OutputPrice:        row.FinalOutputPerMillion,
+			CacheReadPrice:     row.FinalCacheReadPerMillion,
+			CacheWritePrice:    cacheWritePrice,
+			UpstreamBalance:    balance.Value,
+			BalanceUnit:        balance.Unit,
+			OnlineTopupEnabled: rechargeStatus.Enabled,
+			RechargeMultiplier: rechargeStatus.Multiplier,
+			Raw:                sub2APIUserPriceRowRaw(row),
 		}
 		snapshot, err = s.store.InsertSnapshot(ctx, snapshot)
 		if err != nil {

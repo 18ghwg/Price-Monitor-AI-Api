@@ -1177,9 +1177,9 @@ func (s Store) InsertSnapshot(ctx context.Context, snapshot PriceSnapshot) (Pric
 	err := s.db.QueryRow(ctx, `
 		INSERT INTO price_snapshots (
 			rule_id, source_type, site_id, sub2api_upstream_id, source_base_url, source_account, category, model_keyword, model_name, group_name, group_desc, quota_type, group_ratio,
-			input_price, output_price, cache_read_price, cache_write_price, request_price, upstream_balance, balance_unit, raw
+			input_price, output_price, cache_read_price, cache_write_price, request_price, upstream_balance, balance_unit, online_topup_enabled, recharge_multiplier, raw
 		)
-		VALUES ($1, $2, NULLIF($3, 0), $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+		VALUES ($1, $2, NULLIF($3, 0), $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
 		ON CONFLICT (
 			COALESCE(source_type, 'newapi'),
 			lower(regexp_replace(trim(source_base_url), '/+$', '')),
@@ -1206,6 +1206,8 @@ func (s Store) InsertSnapshot(ctx context.Context, snapshot PriceSnapshot) (Pric
 			request_price = EXCLUDED.request_price,
 			upstream_balance = EXCLUDED.upstream_balance,
 			balance_unit = EXCLUDED.balance_unit,
+			online_topup_enabled = EXCLUDED.online_topup_enabled,
+			recharge_multiplier = EXCLUDED.recharge_multiplier,
 			invalid = false,
 			invalid_reason = '',
 			invalid_at = NULL,
@@ -1216,7 +1218,7 @@ func (s Store) InsertSnapshot(ctx context.Context, snapshot PriceSnapshot) (Pric
 		snapshot.RuleID, snapshot.SourceType, snapshot.SiteID, snapshot.Sub2APIUpstreamID, normalizeBaseURL(snapshot.SiteBaseURL), strings.TrimSpace(snapshot.SourceAccount), normalizeCategorySlug(snapshot.Category), snapshot.ModelKeyword,
 		snapshot.ModelName, snapshot.GroupName, snapshot.GroupDesc,
 		snapshot.QuotaType, snapshot.GroupRatio, snapshot.InputPrice, snapshot.OutputPrice,
-		snapshot.CacheReadPrice, snapshot.CacheWritePrice, snapshot.RequestPrice, snapshot.UpstreamBalance, snapshot.BalanceUnit, string(snapshot.Raw),
+		snapshot.CacheReadPrice, snapshot.CacheWritePrice, snapshot.RequestPrice, snapshot.UpstreamBalance, snapshot.BalanceUnit, snapshot.OnlineTopupEnabled, snapshot.RechargeMultiplier, string(snapshot.Raw),
 	).Scan(&snapshot.ID, &snapshot.CreatedAt)
 	return snapshot, err
 }
@@ -1274,7 +1276,7 @@ func (s Store) PruneExpiredInvalidSnapshots(ctx context.Context, olderThan time.
 
 func (s Store) PreviousSnapshot(ctx context.Context, ruleID int64, modelName string) (PriceSnapshot, error) {
 	var snapshot PriceSnapshot
-	var groupRatio, inputPrice, outputPrice, cacheReadPrice, cacheWritePrice, requestPrice, upstreamBalance sql.NullFloat64
+	var groupRatio, inputPrice, outputPrice, cacheReadPrice, cacheWritePrice, requestPrice, upstreamBalance, rechargeMultiplier sql.NullFloat64
 	var invalidAt sql.NullTime
 	err := s.db.QueryRow(ctx, `
 		SELECT p.id, p.rule_id, COALESCE(p.source_type, 'newapi'), COALESCE(p.site_id, 0), p.sub2api_upstream_id,
@@ -1284,6 +1286,7 @@ func (s Store) PreviousSnapshot(ctx context.Context, ruleID int64, modelName str
 		       p.category, COALESCE(c.name, p.category) AS category_name, p.model_keyword, p.model_name,
 		       p.group_name, p.group_desc, p.quota_type, p.group_ratio, p.input_price, p.output_price,
 		       p.cache_read_price, p.cache_write_price, p.request_price, p.upstream_balance, p.balance_unit,
+		       p.online_topup_enabled, p.recharge_multiplier,
 		       p.invalid, p.invalid_reason, p.invalid_at, p.raw, p.created_at
 		FROM price_snapshots p
 		LEFT JOIN sites s ON s.id = p.site_id
@@ -1297,6 +1300,7 @@ func (s Store) PreviousSnapshot(ctx context.Context, ruleID int64, modelName str
 		&snapshot.Category, &snapshot.CategoryName, &snapshot.ModelKeyword, &snapshot.ModelName,
 		&snapshot.GroupName, &snapshot.GroupDesc, &snapshot.QuotaType, &groupRatio, &inputPrice,
 		&outputPrice, &cacheReadPrice, &cacheWritePrice, &requestPrice, &upstreamBalance, &snapshot.BalanceUnit,
+		&snapshot.OnlineTopupEnabled, &rechargeMultiplier,
 		&snapshot.Invalid, &snapshot.InvalidReason, &invalidAt, &snapshot.Raw, &snapshot.CreatedAt,
 	)
 	if err != nil {
@@ -1309,13 +1313,14 @@ func (s Store) PreviousSnapshot(ctx context.Context, ruleID int64, modelName str
 	snapshot.CacheWritePrice = floatPtr(cacheWritePrice)
 	snapshot.RequestPrice = floatPtr(requestPrice)
 	snapshot.UpstreamBalance = floatPtr(upstreamBalance)
+	snapshot.RechargeMultiplier = floatPtr(rechargeMultiplier)
 	snapshot.InvalidAt = timePtr(invalidAt)
 	return snapshot, nil
 }
 
 func (s Store) CheapestLatestSnapshot(ctx context.Context, category string, modelName string) (PriceSnapshot, error) {
 	var snapshot PriceSnapshot
-	var groupRatio, inputPrice, outputPrice, cacheReadPrice, cacheWritePrice, requestPrice, upstreamBalance sql.NullFloat64
+	var groupRatio, inputPrice, outputPrice, cacheReadPrice, cacheWritePrice, requestPrice, upstreamBalance, rechargeMultiplier sql.NullFloat64
 	var invalidAt sql.NullTime
 	err := s.db.QueryRow(ctx, `
 		WITH latest AS (
@@ -1327,6 +1332,7 @@ func (s Store) CheapestLatestSnapshot(ctx context.Context, category string, mode
 		       r.category, COALESCE(c.name, r.category) AS category_name, p.model_keyword, p.model_name,
 		       p.group_name, p.group_desc, p.quota_type, p.group_ratio, p.input_price, p.output_price,
 		       p.cache_read_price, p.cache_write_price, p.request_price, p.upstream_balance, p.balance_unit,
+		       p.online_topup_enabled, p.recharge_multiplier,
 		       p.invalid, p.invalid_reason, p.invalid_at, p.raw, p.created_at
 			FROM price_snapshots p
 			JOIN monitor_rules r ON r.id = p.rule_id
@@ -1343,7 +1349,7 @@ func (s Store) CheapestLatestSnapshot(ctx context.Context, category string, mode
 		SELECT id, rule_id, source_type, site_id, sub2api_upstream_id, site_name, site_base_url, source_account, category, category_name, model_keyword,
 		       model_name, group_name, group_desc, quota_type,
 		       group_ratio, input_price, output_price, cache_read_price, cache_write_price,
-		       request_price, upstream_balance, balance_unit, invalid, invalid_reason, invalid_at, raw, created_at
+		       request_price, upstream_balance, balance_unit, online_topup_enabled, recharge_multiplier, invalid, invalid_reason, invalid_at, raw, created_at
 		FROM latest
 		ORDER BY COALESCE(input_price, request_price, output_price, 1e308) ASC,
 		         COALESCE(output_price, 1e308) ASC,
@@ -1355,6 +1361,7 @@ func (s Store) CheapestLatestSnapshot(ctx context.Context, category string, mode
 		&snapshot.Category, &snapshot.CategoryName, &snapshot.ModelKeyword, &snapshot.ModelName,
 		&snapshot.GroupName, &snapshot.GroupDesc, &snapshot.QuotaType, &groupRatio, &inputPrice,
 		&outputPrice, &cacheReadPrice, &cacheWritePrice, &requestPrice, &upstreamBalance, &snapshot.BalanceUnit,
+		&snapshot.OnlineTopupEnabled, &rechargeMultiplier,
 		&snapshot.Invalid, &snapshot.InvalidReason, &invalidAt, &snapshot.Raw, &snapshot.CreatedAt,
 	)
 	if err != nil {
@@ -1367,6 +1374,7 @@ func (s Store) CheapestLatestSnapshot(ctx context.Context, category string, mode
 	snapshot.CacheWritePrice = floatPtr(cacheWritePrice)
 	snapshot.RequestPrice = floatPtr(requestPrice)
 	snapshot.UpstreamBalance = floatPtr(upstreamBalance)
+	snapshot.RechargeMultiplier = floatPtr(rechargeMultiplier)
 	snapshot.InvalidAt = timePtr(invalidAt)
 	return snapshot, nil
 }
@@ -1401,6 +1409,7 @@ func (s Store) LatestSnapshots(ctx context.Context, limit int, category string) 
 			       p.rule_category AS category, COALESCE(c.name, p.rule_category) AS category_name, p.model_keyword, p.model_name, p.group_name,
 			       p.group_desc, p.quota_type, p.group_ratio, p.input_price, p.output_price,
 			       p.cache_read_price, p.cache_write_price, p.request_price, p.upstream_balance, p.balance_unit,
+			       p.online_topup_enabled, p.recharge_multiplier,
 			       p.invalid, p.invalid_reason, p.invalid_at, p.raw, p.created_at
 			FROM filtered p
 			LEFT JOIN sites s ON s.id = p.site_id
@@ -1411,7 +1420,7 @@ func (s Store) LatestSnapshots(ctx context.Context, limit int, category string) 
 		SELECT id, rule_id, source_type, site_id, sub2api_upstream_id, site_name, site_base_url, source_account, category, category_name, model_keyword,
 		       model_name, group_name, group_desc, quota_type,
 		       group_ratio, input_price, output_price, cache_read_price, cache_write_price,
-		       request_price, upstream_balance, balance_unit, invalid, invalid_reason, invalid_at, raw, created_at
+		       request_price, upstream_balance, balance_unit, online_topup_enabled, recharge_multiplier, invalid, invalid_reason, invalid_at, raw, created_at
 		FROM latest
 		ORDER BY category,
 		         invalid ASC,
@@ -1430,13 +1439,14 @@ func (s Store) LatestSnapshots(ctx context.Context, limit int, category string) 
 	var snapshots []PriceSnapshot
 	for rows.Next() {
 		var snapshot PriceSnapshot
-		var groupRatio, inputPrice, outputPrice, cacheReadPrice, cacheWritePrice, requestPrice, upstreamBalance sql.NullFloat64
+		var groupRatio, inputPrice, outputPrice, cacheReadPrice, cacheWritePrice, requestPrice, upstreamBalance, rechargeMultiplier sql.NullFloat64
 		var invalidAt sql.NullTime
 		if err := rows.Scan(
 			&snapshot.ID, &snapshot.RuleID, &snapshot.SourceType, &snapshot.SiteID, &snapshot.Sub2APIUpstreamID, &snapshot.SiteName, &snapshot.SiteBaseURL, &snapshot.SourceAccount,
 			&snapshot.Category, &snapshot.CategoryName, &snapshot.ModelKeyword, &snapshot.ModelName,
 			&snapshot.GroupName, &snapshot.GroupDesc, &snapshot.QuotaType, &groupRatio, &inputPrice,
 			&outputPrice, &cacheReadPrice, &cacheWritePrice, &requestPrice, &upstreamBalance, &snapshot.BalanceUnit,
+			&snapshot.OnlineTopupEnabled, &rechargeMultiplier,
 			&snapshot.Invalid, &snapshot.InvalidReason, &invalidAt, &snapshot.Raw, &snapshot.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -1448,6 +1458,7 @@ func (s Store) LatestSnapshots(ctx context.Context, limit int, category string) 
 		snapshot.CacheWritePrice = floatPtr(cacheWritePrice)
 		snapshot.RequestPrice = floatPtr(requestPrice)
 		snapshot.UpstreamBalance = floatPtr(upstreamBalance)
+		snapshot.RechargeMultiplier = floatPtr(rechargeMultiplier)
 		snapshot.InvalidAt = timePtr(invalidAt)
 		snapshots = append(snapshots, snapshot)
 	}
@@ -1493,6 +1504,7 @@ func (s Store) latestSnapshotsForModel(ctx context.Context, category string, mod
 			       r.category, COALESCE(c.name, r.category) AS category_name, p.model_keyword, p.model_name,
 			       p.group_name, p.group_desc, p.quota_type, p.group_ratio, p.input_price, p.output_price,
 			       p.cache_read_price, p.cache_write_price, p.request_price, p.upstream_balance, p.balance_unit,
+			       p.online_topup_enabled, p.recharge_multiplier,
 			       p.invalid, p.invalid_reason, p.invalid_at, p.raw, p.created_at
 			FROM price_snapshots p
 			JOIN monitor_rules r ON r.id = p.rule_id
@@ -1509,7 +1521,7 @@ func (s Store) latestSnapshotsForModel(ctx context.Context, category string, mod
 		SELECT id, rule_id, source_type, site_id, sub2api_upstream_id, site_name, site_base_url, source_account, category, category_name, model_keyword,
 		       model_name, group_name, group_desc, quota_type,
 		       group_ratio, input_price, output_price, cache_read_price, cache_write_price,
-		       request_price, upstream_balance, balance_unit, invalid, invalid_reason, invalid_at, raw, created_at
+		       request_price, upstream_balance, balance_unit, online_topup_enabled, recharge_multiplier, invalid, invalid_reason, invalid_at, raw, created_at
 		FROM latest
 		ORDER BY COALESCE(input_price, request_price, output_price, 1e308) ASC,
 		         COALESCE(output_price, 1e308) ASC,
@@ -1524,13 +1536,14 @@ func (s Store) latestSnapshotsForModel(ctx context.Context, category string, mod
 	var snapshots []PriceSnapshot
 	for rows.Next() {
 		var snapshot PriceSnapshot
-		var groupRatio, inputPrice, outputPrice, cacheReadPrice, cacheWritePrice, requestPrice, upstreamBalance sql.NullFloat64
+		var groupRatio, inputPrice, outputPrice, cacheReadPrice, cacheWritePrice, requestPrice, upstreamBalance, rechargeMultiplier sql.NullFloat64
 		var invalidAt sql.NullTime
 		if err := rows.Scan(
 			&snapshot.ID, &snapshot.RuleID, &snapshot.SourceType, &snapshot.SiteID, &snapshot.Sub2APIUpstreamID, &snapshot.SiteName, &snapshot.SiteBaseURL, &snapshot.SourceAccount,
 			&snapshot.Category, &snapshot.CategoryName, &snapshot.ModelKeyword, &snapshot.ModelName,
 			&snapshot.GroupName, &snapshot.GroupDesc, &snapshot.QuotaType, &groupRatio, &inputPrice,
 			&outputPrice, &cacheReadPrice, &cacheWritePrice, &requestPrice, &upstreamBalance, &snapshot.BalanceUnit,
+			&snapshot.OnlineTopupEnabled, &rechargeMultiplier,
 			&snapshot.Invalid, &snapshot.InvalidReason, &invalidAt, &snapshot.Raw, &snapshot.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -1542,6 +1555,7 @@ func (s Store) latestSnapshotsForModel(ctx context.Context, category string, mod
 		snapshot.CacheWritePrice = floatPtr(cacheWritePrice)
 		snapshot.RequestPrice = floatPtr(requestPrice)
 		snapshot.UpstreamBalance = floatPtr(upstreamBalance)
+		snapshot.RechargeMultiplier = floatPtr(rechargeMultiplier)
 		snapshot.InvalidAt = timePtr(invalidAt)
 		snapshots = append(snapshots, snapshot)
 	}

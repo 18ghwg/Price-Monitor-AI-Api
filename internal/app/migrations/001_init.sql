@@ -179,6 +179,8 @@ CREATE TABLE IF NOT EXISTS price_snapshots (
   request_price DOUBLE PRECISION,
   upstream_balance DOUBLE PRECISION,
   balance_unit TEXT NOT NULL DEFAULT '',
+  online_topup_enabled BOOLEAN NOT NULL DEFAULT false,
+  recharge_multiplier DOUBLE PRECISION,
   invalid BOOLEAN NOT NULL DEFAULT false,
   invalid_reason TEXT NOT NULL DEFAULT '',
   invalid_at TIMESTAMPTZ,
@@ -191,6 +193,12 @@ ALTER TABLE IF EXISTS price_snapshots
 
 ALTER TABLE IF EXISTS price_snapshots
   ADD COLUMN IF NOT EXISTS balance_unit TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE IF EXISTS price_snapshots
+  ADD COLUMN IF NOT EXISTS online_topup_enabled BOOLEAN NOT NULL DEFAULT false;
+
+ALTER TABLE IF EXISTS price_snapshots
+  ADD COLUMN IF NOT EXISTS recharge_multiplier DOUBLE PRECISION;
 
 ALTER TABLE IF EXISTS price_snapshots
   ADD COLUMN IF NOT EXISTS invalid BOOLEAN NOT NULL DEFAULT false;

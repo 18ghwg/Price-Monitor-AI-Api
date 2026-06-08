@@ -237,6 +237,59 @@ func (c *Sub2APIClient) FetchBalance(ctx context.Context) (UpstreamBalance, erro
 	return UpstreamBalance{Value: ptr(balance), Unit: "usd"}, nil
 }
 
+func (c *Sub2APIClient) FetchRechargeStatus(ctx context.Context) (RechargeStatus, error) {
+	var cfg struct {
+		Enabled                   bool    `json:"enabled"`
+		PaymentEnabled            bool    `json:"payment_enabled"`
+		BalanceDisabled           bool    `json:"balance_disabled"`
+		BalanceRechargeMultiplier float64 `json:"balance_recharge_multiplier"`
+		RechargeFeeRate           float64 `json:"recharge_fee_rate"`
+	}
+	if err := c.request(ctx, http.MethodGet, "api/v1/payment/config", nil, nil, &cfg); err != nil {
+		return RechargeStatus{}, fmt.Errorf("fetch sub2api payment config: %w", err)
+	}
+	enabled := (cfg.Enabled || cfg.PaymentEnabled) && !cfg.BalanceDisabled
+	if !enabled {
+		return RechargeStatus{}, nil
+	}
+	var best *float64
+	if cfg.BalanceRechargeMultiplier > 0 {
+		paidFactor := 1 + cfg.RechargeFeeRate/100
+		if paidFactor <= 0 {
+			paidFactor = 1
+		}
+		addRechargeMultiplier(&best, cfg.BalanceRechargeMultiplier, paidFactor)
+	}
+	_ = c.addPaymentOrderMultiplier(ctx, &best)
+	return RechargeStatus{Enabled: true, Multiplier: best}, nil
+}
+
+func (c *Sub2APIClient) addPaymentOrderMultiplier(ctx context.Context, best **float64) error {
+	var page struct {
+		Items []struct {
+			Amount    float64 `json:"amount"`
+			PayAmount float64 `json:"pay_amount"`
+			Status    string  `json:"status"`
+			OrderType string  `json:"order_type"`
+		} `json:"items"`
+	}
+	if err := c.request(ctx, http.MethodGet, "api/v1/payment/orders/my?page=1&page_size=20&order_type=balance", nil, nil, &page); err != nil {
+		return err
+	}
+	for _, item := range page.Items {
+		orderType := strings.ToLower(strings.TrimSpace(item.OrderType))
+		if orderType != "" && orderType != "balance" {
+			continue
+		}
+		status := strings.ToUpper(strings.TrimSpace(item.Status))
+		if status != "COMPLETED" && status != "PAID" && status != "RECHARGING" {
+			continue
+		}
+		addRechargeMultiplier(best, item.Amount, item.PayAmount)
+	}
+	return nil
+}
+
 func (c *Sub2APIClient) EnsureAPIKeyForGroup(ctx context.Context, name string, group sub2Group) (sub2APIKey, string, error) {
 	name = strings.TrimSpace(name)
 	group.Name = strings.TrimSpace(group.Name)

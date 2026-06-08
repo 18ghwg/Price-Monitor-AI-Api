@@ -1118,6 +1118,55 @@ func TestSub2APIFetchBalance(t *testing.T) {
 	}
 }
 
+func TestSub2APIFetchRechargeStatusUsesUserPaymentEndpoints(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("Authorization") != "Bearer token" {
+			t.Fatalf("Authorization = %q, want Bearer token", r.Header.Get("Authorization"))
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/payment/config":
+			writeSub2TestJSON(w, map[string]any{
+				"enabled":                     true,
+				"balance_disabled":            false,
+				"balance_recharge_multiplier": 5,
+				"recharge_fee_rate":           0,
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/payment/orders/my":
+			if got := r.URL.Query().Get("order_type"); got != "balance" {
+				t.Fatalf("order_type = %q, want balance", got)
+			}
+			writeSub2TestJSON(w, map[string]any{
+				"items": []map[string]any{{
+					"amount":     100,
+					"pay_amount": 10,
+					"status":     "COMPLETED",
+					"order_type": "balance",
+				}},
+				"total": 1,
+			})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewSub2APIClient(server.URL, "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := client.FetchRechargeStatus(context.Background())
+	if err != nil {
+		t.Fatalf("FetchRechargeStatus() error = %v", err)
+	}
+	if !status.Enabled {
+		t.Fatalf("Enabled = false, want true")
+	}
+	if status.Multiplier == nil || *status.Multiplier != 10 {
+		t.Fatalf("Multiplier = %v, want 10", status.Multiplier)
+	}
+}
+
 func pathAccountID(path string) int64 {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	if len(parts) == 0 {

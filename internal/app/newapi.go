@@ -115,6 +115,95 @@ func (c *NewAPIClient) FetchBalance(ctx context.Context, userID int64, token str
 	return UpstreamBalance{Value: ptr(newAPIQuotaToUSD(quota)), Unit: "usd"}, nil
 }
 
+func (c *NewAPIClient) FetchRechargeStatus(ctx context.Context, userID int64, token string) (RechargeStatus, error) {
+	headers := newAPIAuthHeaders(userID, token)
+	info := map[string]any{}
+	if err := c.request(ctx, http.MethodGet, "api/user/topup/info", headers, nil, &info); err != nil {
+		return RechargeStatus{}, fmt.Errorf("fetch newapi topup info: %w", err)
+	}
+	enabled := boolFromAny(info["enable_online_topup"]) ||
+		boolFromAny(info["enable_stripe_topup"]) ||
+		boolFromAny(info["enable_creem_topup"]) ||
+		boolFromAny(info["enable_waffo_topup"]) ||
+		boolFromAny(info["enable_waffo_pancake_topup"])
+	if !enabled {
+		return RechargeStatus{}, nil
+	}
+
+	var best *float64
+	_ = c.addTopupHistoryMultiplier(ctx, headers, &best)
+	if boolFromAny(info["enable_online_topup"]) {
+		c.addAmountEndpointMultipliers(ctx, headers, "api/user/amount", positiveAmountsFromTopupInfo(info, "min_topup"), &best)
+	}
+	if boolFromAny(info["enable_stripe_topup"]) {
+		c.addAmountEndpointMultipliers(ctx, headers, "api/user/stripe/amount", positiveAmountsFromTopupInfo(info, "stripe_min_topup"), &best)
+	}
+	if boolFromAny(info["enable_waffo_topup"]) {
+		c.addAmountEndpointMultipliers(ctx, headers, "api/user/waffo/amount", positiveAmountsFromTopupInfo(info, "waffo_min_topup"), &best)
+	}
+	if boolFromAny(info["enable_waffo_pancake_topup"]) {
+		c.addAmountEndpointMultipliers(ctx, headers, "api/user/waffo-pancake/amount", positiveAmountsFromTopupInfo(info, "waffo_pancake_min_topup"), &best)
+	}
+	addCreemProductMultipliers(info, &best)
+	return RechargeStatus{Enabled: true, Multiplier: best}, nil
+}
+
+func (c *NewAPIClient) addTopupHistoryMultiplier(ctx context.Context, headers map[string]string, best **float64) error {
+	var page struct {
+		Items []struct {
+			Amount int64   `json:"amount"`
+			Money  float64 `json:"money"`
+			Status string  `json:"status"`
+		} `json:"items"`
+	}
+	if err := c.request(ctx, http.MethodGet, "api/user/topup/self?p=1&page_size=20", headers, nil, &page); err != nil {
+		return err
+	}
+	for _, item := range page.Items {
+		status := strings.ToLower(strings.TrimSpace(item.Status))
+		if status != "success" && status != "completed" && status != "complete" {
+			continue
+		}
+		addRechargeMultiplier(best, float64(item.Amount), item.Money)
+	}
+	return nil
+}
+
+func (c *NewAPIClient) addAmountEndpointMultipliers(ctx context.Context, headers map[string]string, path string, amounts []int64, best **float64) {
+	for _, amount := range amounts {
+		var data any
+		if err := c.request(ctx, http.MethodPost, path, headers, map[string]int64{"amount": amount}, &data); err != nil {
+			continue
+		}
+		if paid, ok := nullableFloat(data); ok {
+			addRechargeMultiplier(best, float64(amount), paid)
+		}
+	}
+}
+
+func addCreemProductMultipliers(info map[string]any, best **float64) {
+	products, ok := info["creem_products"].([]any)
+	if !ok {
+		if raw, ok := info["creem_products"].(string); ok && strings.TrimSpace(raw) != "" {
+			_ = json.Unmarshal([]byte(raw), &products)
+		}
+	}
+	if len(products) == 0 {
+		return
+	}
+	for _, product := range products {
+		entry, ok := product.(map[string]any)
+		if !ok {
+			continue
+		}
+		quota, quotaOK := nullableFloat(entry["quota"])
+		price, priceOK := nullableFloat(entry["price"])
+		if quotaOK && priceOK {
+			addRechargeMultiplier(best, quota, price)
+		}
+	}
+}
+
 func (c *NewAPIClient) EnsureAPIKeyForGroup(ctx context.Context, userID int64, token string, name string, group string) (string, string, error) {
 	name = strings.TrimSpace(name)
 	group = strings.TrimSpace(group)
