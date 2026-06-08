@@ -1434,36 +1434,39 @@ func (s *Server) syncBestAvailableCandidate(ctx context.Context, rule Rule, mode
 		s.notifyLowBalanceSkip(ctx, rule, skippedLowBalance, candidates[0])
 	}
 
-	lastSignature, signatureErr := s.store.RuleSyncSignature(ctx, rule.ID)
-	if signatureErr != nil && !notFound(signatureErr) {
-		log.Printf("load sync signature for rule %d: %v", rule.ID, signatureErr)
-	}
-
 	var fallbackErrors []string
 	for _, candidate := range candidates {
-		if reason, ok := s.syncThresholdSkipReason(ctx, rule, candidate); !ok {
-			_ = s.store.UpdateRuleSyncStatus(ctx, rule.ID, reason, "")
-			return false, true, nil
+		candidateRule, _, _, err := s.store.GetRuleWithSource(ctx, candidate.RuleID)
+		if err != nil {
+			log.Printf("load candidate rule %d for sync: %v", candidate.RuleID, err)
+			continue
+		}
+		if reason, ok := s.syncThresholdSkipReason(ctx, candidateRule, candidate); !ok {
+			_ = s.store.UpdateRuleSyncStatus(ctx, candidateRule.ID, reason, "")
+			continue
 		}
 		signature := syncCandidateSignature(candidate)
+		lastSignature, signatureErr := s.store.RuleSyncSignature(ctx, candidateRule.ID)
+		if signatureErr != nil && !notFound(signatureErr) {
+			log.Printf("load sync signature for candidate rule %d: %v", candidateRule.ID, signatureErr)
+		}
 		if signature != "" && signature == lastSignature {
 			return false, true, nil
 		}
-		attempted, err := s.syncCandidateSnapshotToMain(ctx, rule, candidate, signature)
+		attempted, err := s.syncCandidateSnapshotToMain(ctx, candidateRule, candidate, signature)
 		if err == nil {
 			return attempted, true, nil
 		}
 		if isFallbackSyncError(err) {
 			fallbackErrors = append(fallbackErrors, fmt.Sprintf("%s/%s: %v", candidate.SiteName, candidate.GroupName, err))
-			_ = s.store.UpdateRuleSyncStatus(ctx, rule.ID, fmt.Sprintf("fallback from %s %s", candidate.SiteName, candidate.GroupName), err.Error())
+			s.recordSyncFailure(ctx, candidateRule, candidate, err)
 			continue
 		}
-		s.recordSyncFailure(ctx, rule, candidate, err)
+		s.recordSyncFailure(ctx, candidateRule, candidate, err)
 		return attempted, true, err
 	}
 	if len(fallbackErrors) > 0 {
 		err := fmt.Errorf("all sync candidates failed: %s", strings.Join(fallbackErrors, "；"))
-		s.recordSyncFailure(ctx, rule, candidates[0], err)
 		return true, true, err
 	}
 	if len(candidates) > 0 {
@@ -1564,6 +1567,9 @@ func candidateLabel(snapshot PriceSnapshot) string {
 	if groupName := strings.TrimSpace(snapshot.GroupName); groupName != "" {
 		parts = append(parts, groupName)
 	}
+	if snapshot.GroupRatio != nil {
+		parts = append(parts, fmt.Sprintf("倍率 %s", fmtFloatPtr(snapshot.GroupRatio)))
+	}
 	if len(parts) == 0 {
 		return "unknown candidate"
 	}
@@ -1629,10 +1635,13 @@ func isFallbackSyncError(err error) bool {
 		"forbidden",
 		"unauthorized",
 		"not allowed",
+		"does not support",
+		"unsupported",
 		"no access",
 		"无权",
 		"权限",
 		"禁止",
+		"不支持",
 		"不可用",
 		"not found",
 		"was not found",
