@@ -1,6 +1,9 @@
 package app
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestSnapshotPriceChangesIgnoresUpstreamBalanceOnlyChange(t *testing.T) {
 	previousBalance := 10.0
@@ -125,5 +128,28 @@ func TestLowestSnapshotChangesReportsInitialLowest(t *testing.T) {
 
 	if len(changes) != 1 || changes[0].Old != "无" {
 		t.Fatalf("lowestSnapshotChanges() = %#v, want initial lowest change", changes)
+	}
+}
+
+func TestFormatSnapshotPriceLinesIncludesAllPriceDimensions(t *testing.T) {
+	snapshot := PriceSnapshot{
+		InputPrice:      ptr(0.01),
+		OutputPrice:     ptr(0.02),
+		CacheReadPrice:  ptr(0.003),
+		CacheWritePrice: ptr(0.004),
+		RequestPrice:    ptr(0.0001),
+	}
+
+	body := formatSnapshotPriceLines(snapshot, "  ")
+	for _, want := range []string{
+		"  输入价格: 0.01",
+		"  输出价格: 0.02",
+		"  缓存读价格: 0.003",
+		"  缓存写价格: 0.004",
+		"  请求价格: 0.0001",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("formatSnapshotPriceLines() = %q, want to include %q", body, want)
+		}
 	}
 }

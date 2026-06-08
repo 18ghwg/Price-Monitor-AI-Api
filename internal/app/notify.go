@@ -169,13 +169,23 @@ func (s *Server) notifyLowBalanceSkip(ctx context.Context, rule Rule, skipped []
 	for _, snapshot := range skipped {
 		body.WriteString(fmt.Sprintf("- 站点: %s\n", snapshot.SiteName))
 		body.WriteString(fmt.Sprintf("  地址: %s\n", snapshot.SiteBaseURL))
+		if account := strings.TrimSpace(snapshot.SourceAccount); account != "" {
+			body.WriteString(fmt.Sprintf("  登录账号: %s\n", account))
+		}
 		body.WriteString(fmt.Sprintf("  分组: %s\n", snapshot.GroupName))
-		body.WriteString(fmt.Sprintf("  有效价: %s\n", formatFloatPtr(firstPricePtr(snapshot))))
+		body.WriteString(fmt.Sprintf("  分组倍率: %s\n", formatFloatPtr(snapshot.GroupRatio)))
+		body.WriteString(formatSnapshotPriceLines(snapshot, "  "))
 		body.WriteString(fmt.Sprintf("  余额: %s\n", formatBalance(snapshot.UpstreamBalance, snapshot.BalanceUnit)))
 	}
 	if candidate.ID > 0 && !snapshotBalanceInsufficient(candidate) {
 		body.WriteString("\n当前可同步候选:\n")
-		body.WriteString(fmt.Sprintf("站点: %s\n地址: %s\n分组: %s\n余额: %s\n", candidate.SiteName, candidate.SiteBaseURL, candidate.GroupName, formatBalance(candidate.UpstreamBalance, candidate.BalanceUnit)))
+		body.WriteString(fmt.Sprintf("站点: %s\n地址: %s\n", candidate.SiteName, candidate.SiteBaseURL))
+		if account := strings.TrimSpace(candidate.SourceAccount); account != "" {
+			body.WriteString(fmt.Sprintf("登录账号: %s\n", account))
+		}
+		body.WriteString(fmt.Sprintf("分组: %s\n分组倍率: %s\n", candidate.GroupName, formatFloatPtr(candidate.GroupRatio)))
+		body.WriteString(formatSnapshotPriceLines(candidate, ""))
+		body.WriteString(fmt.Sprintf("余额: %s\n", formatBalance(candidate.UpstreamBalance, candidate.BalanceUnit)))
 	}
 	s.sendEmailAsync(settings, subject, body.String())
 }
@@ -284,6 +294,16 @@ func firstPricePtr(snapshot PriceSnapshot) *float64 {
 		return snapshot.RequestPrice
 	}
 	return snapshot.OutputPrice
+}
+
+func formatSnapshotPriceLines(snapshot PriceSnapshot, prefix string) string {
+	var body strings.Builder
+	body.WriteString(fmt.Sprintf("%s输入价格: %s\n", prefix, formatFloatPtr(snapshot.InputPrice)))
+	body.WriteString(fmt.Sprintf("%s输出价格: %s\n", prefix, formatFloatPtr(snapshot.OutputPrice)))
+	body.WriteString(fmt.Sprintf("%s缓存读价格: %s\n", prefix, formatFloatPtr(snapshot.CacheReadPrice)))
+	body.WriteString(fmt.Sprintf("%s缓存写价格: %s\n", prefix, formatFloatPtr(snapshot.CacheWritePrice)))
+	body.WriteString(fmt.Sprintf("%s请求价格: %s\n", prefix, formatFloatPtr(snapshot.RequestPrice)))
+	return body.String()
 }
 
 func formatBalance(value *float64, unit string) string {
