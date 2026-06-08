@@ -1092,9 +1092,6 @@ func (s *Server) RunRule(ctx context.Context, ruleID int64) ([]PriceSnapshot, er
 	if err != nil {
 		return nil, err
 	}
-	if !rule.Enabled {
-		return nil, fmt.Errorf("rule is disabled")
-	}
 	switch strings.ToLower(strings.TrimSpace(rule.SourceType)) {
 	case "", RuleSourceNewAPI:
 		return s.runNewAPIRule(ctx, rule, site)
@@ -1986,6 +1983,10 @@ func (s *Server) runEnabledRules(ctx context.Context) {
 		if ruleErr != nil {
 			cancel()
 			log.Printf("scheduler load rule %d: %v", id, ruleErr)
+			continue
+		}
+		if !rule.Enabled || !rule.ScheduleEnabled {
+			cancel()
 			continue
 		}
 		runStartedAt := time.Now()
