@@ -2210,4 +2210,4 @@ func writeError(w http.ResponseWriter, status int, message string) {
 	})
 }
 
-var indexTemplate = template.Must(template.New("index").Parse(indexHTML))
+var indexTemplate = template.Must(template.New("index").Delims("[[", "]]").Parse(indexHTML))

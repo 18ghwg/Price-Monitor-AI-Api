@@ -344,6 +344,7 @@ func (s *Server) sendEmailAsync(settings IntegrationSettings, subject string, bo
 }
 
 func sendEmail(ctx context.Context, settings IntegrationSettings, subject string, body string) error {
+	subject, body = renderEmailTemplate(settings, subject, body)
 	host := strings.TrimSpace(settings.SMTPHost)
 	if host == "" || settings.SMTPPort <= 0 {
 		return errors.New("smtp host or port is not configured")
@@ -398,6 +399,94 @@ func sendEmail(ctx context.Context, settings IntegrationSettings, subject string
 		}
 		return sendSMTP(ctx, addr, auth, fromAddress.Address, recipients, []byte(message.String()), host, true, false)
 	}
+}
+
+func renderEmailTemplate(settings IntegrationSettings, subject string, body string) (string, string) {
+	if !settings.EmailTemplateEnabled {
+		return subject, body
+	}
+	values := emailTemplateValues(subject, body)
+	subjectTemplate := strings.TrimSpace(settings.EmailTemplateSubject)
+	if subjectTemplate == "" {
+		subjectTemplate = "{{subject}}"
+	}
+	bodyTemplate := settings.EmailTemplateBody
+	if strings.TrimSpace(bodyTemplate) == "" {
+		bodyTemplate = "{{body}}"
+	}
+	return renderSimpleTemplate(subjectTemplate, values), renderSimpleTemplate(bodyTemplate, values)
+}
+
+func renderSimpleTemplate(template string, values map[string]string) string {
+	out := template
+	for key, value := range values {
+		out = strings.ReplaceAll(out, "{{"+key+"}}", value)
+		out = strings.ReplaceAll(out, "{{ "+key+" }}", value)
+	}
+	return out
+}
+
+func emailTemplateValues(subject string, body string) map[string]string {
+	values := map[string]string{
+		"subject":              subject,
+		"notification_subject": subject,
+		"body":                 body,
+		"default_body":         body,
+		"notification_type":    notificationTypeFromSubject(subject),
+	}
+	labelVariables := map[string]string{
+		"站点":     "site_name",
+		"地址":     "site_url",
+		"分类":     "category",
+		"关键词":    "model_keyword",
+		"规则":     "rule",
+		"上游账号":   "upstream_account",
+		"上游账户余额": "upstream_balance",
+		"模型":     "model_name",
+		"当前分组":   "current_group",
+		"最低价分组":  "group_name",
+		"分组倍率":   "group_ratio",
+		"输入价格":   "input_price",
+		"输出价格":   "output_price",
+		"缓存读价格":  "cache_read_price",
+		"缓存写价格":  "cache_write_price",
+		"请求价格":   "request_price",
+		"主站分组":   "main_group",
+		"动作":     "action",
+		"主站账号":   "main_account",
+		"账号":     "account",
+		"apiurl": "apiurl",
+		"平台/类型":  "platform_type",
+		"分组":     "group",
+		"状态":     "status",
+		"调度":     "schedulable",
+		"错误":     "error",
+	}
+	for _, line := range strings.Split(body, "\n") {
+		label, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		key := labelVariables[strings.TrimSpace(label)]
+		if key == "" {
+			continue
+		}
+		if _, exists := values[key]; exists {
+			continue
+		}
+		values[key] = strings.TrimSpace(value)
+	}
+	return values
+}
+
+func notificationTypeFromSubject(subject string) string {
+	trimmed := strings.TrimSpace(subject)
+	if strings.HasPrefix(trimmed, "[") {
+		if end := strings.Index(trimmed, "]"); end > 1 {
+			return trimmed[1:end]
+		}
+	}
+	return ""
 }
 
 func sendSMTP(ctx context.Context, addr string, auth smtp.Auth, from string, recipients []string, message []byte, serverName string, allowSTARTTLS bool, requireSTARTTLS bool) error {

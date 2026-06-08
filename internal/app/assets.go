@@ -308,6 +308,25 @@ const indexHTML = `<!doctype html>
                 <label>发件人<input name="smtp_from" placeholder="Price Monitor <alerts@example.com>"></label>
                 <label>收件人<input name="smtp_to" placeholder="ops@example.com, admin@example.com"></label>
               </div>
+              <div class="email-template-panel">
+                <div class="settings-subhead compact-template-head">
+                  <span class="section-kicker">Email Template</span>
+                  <h3>自定义邮件模板</h3>
+                </div>
+                <div class="switch-row">
+                  <label class="checkbox-label"><input name="email_template_enabled" type="checkbox">启用自定义邮件模板</label>
+                </div>
+                <label>标题模板<input name="email_template_subject" id="emailTemplateSubject" placeholder="{{subject}}"></label>
+                <label>正文模板<textarea name="email_template_body" id="emailTemplateBody" rows="10" placeholder="{{body}}"></textarea></label>
+                <div class="template-variable-panel">
+                  <div class="filter-option-title">快速插入变量</div>
+                  <div id="emailTemplateVariables" class="template-variable-buttons"></div>
+                </div>
+                <div class="actions">
+                  <button id="emailTemplatePreviewBtn" class="secondary" type="button">预览模板</button>
+                </div>
+                <div id="emailTemplatePreview" class="template-preview" hidden></div>
+              </div>
               <div class="actions">
                 <button type="submit">保存主站设置</button>
               </div>
@@ -505,11 +524,11 @@ body.auth-pending .float-nav {
   display: none;
 }
 
-body, button, input, select {
+body, button, input, select, textarea {
   font: inherit;
 }
 
-button, input, select {
+button, input, select, textarea {
   min-width: 0;
 }
 
@@ -537,6 +556,7 @@ button:active {
 button:focus-visible,
 input:focus-visible,
 select:focus-visible,
+textarea:focus-visible,
 a:focus-visible {
   outline: 3px solid rgba(139, 92, 246, .26);
   outline-offset: 2px;
@@ -971,16 +991,26 @@ label {
   font-weight: 750;
 }
 
-input, select {
+input, select, textarea {
   width: 100%;
-  height: 44px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 0 13px;
   background: #fff;
   color: var(--text);
   outline: none;
   transition: border-color .18s ease, box-shadow .18s ease, background .18s ease;
+}
+
+input, select {
+  height: 44px;
+  padding: 0 13px;
+}
+
+textarea {
+  min-height: 150px;
+  padding: 12px 13px;
+  line-height: 1.55;
+  resize: vertical;
 }
 
 input[type="checkbox"] {
@@ -1102,7 +1132,8 @@ input::placeholder {
 }
 
 input:hover,
-select:hover {
+select:hover,
+textarea:hover {
   border-color: var(--line-strong);
 }
 
@@ -1113,7 +1144,8 @@ input[readonly] {
 }
 
 input:focus,
-select:focus {
+select:focus,
+textarea:focus {
   border-color: var(--primary);
   box-shadow: 0 0 0 4px rgba(139, 92, 246, .13);
 }
@@ -1176,6 +1208,59 @@ button.filter.active {
   display: grid;
   gap: 12px;
   margin: 10px 0 12px;
+}
+
+.email-template-panel {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(248, 250, 252, .78);
+}
+
+.compact-template-head {
+  margin: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.template-variable-panel {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.template-variable-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.template-variable-buttons button {
+  width: auto;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--muted-strong);
+  box-shadow: none;
+  font-size: 12px;
+}
+
+.template-preview {
+  min-height: 120px;
+  padding: 14px;
+  border: 1px solid #c7d7fe;
+  border-radius: 8px;
+  background: #fff;
+  color: #1f2937;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .filter-option-group {
@@ -1988,6 +2073,31 @@ let sub2UserFilterRequestId = 0;
 const $ = (selector) => document.querySelector(selector);
 document.body.classList.add("auth-pending");
 
+const emailTemplateVariables = [
+  ["subject", "默认标题"],
+  ["body", "默认正文"],
+  ["notification_type", "通知类型"],
+  ["site_name", "站点"],
+  ["site_url", "地址"],
+  ["category", "分类"],
+  ["rule", "规则"],
+  ["model_keyword", "关键词"],
+  ["model_name", "模型"],
+  ["group_name", "最低价分组"],
+  ["group_ratio", "分组倍率"],
+  ["upstream_account", "上游账号"],
+  ["upstream_balance", "上游余额"],
+  ["input_price", "输入价格"],
+  ["output_price", "输出价格"],
+  ["cache_read_price", "缓存读"],
+  ["cache_write_price", "缓存写"],
+  ["request_price", "请求价格"],
+  ["main_group", "主站分组"],
+  ["action", "动作"],
+  ["main_account", "主站账号"],
+  ["error", "错误"],
+];
+
 async function api(path, options = {}) {
   const url = new URL(path, window.location.origin);
   const response = await fetch(url.toString(), {
@@ -2147,6 +2257,7 @@ function render() {
   renderSnapshots();
   renderSites();
   renderSettings();
+  renderEmailTemplateVariables();
   renderSub2Accounts();
   renderSub2UserPrices();
   renderSub2UserFilterOptions();
@@ -2673,6 +2784,102 @@ function renderSettings() {
   form.elements.smtp_password.value = "";
   form.elements.smtp_from.value = state.settings.smtp_from || "";
   form.elements.smtp_to.value = state.settings.smtp_to || "";
+  if (form.elements.email_template_enabled) form.elements.email_template_enabled.checked = !!state.settings.email_template_enabled;
+  if (form.elements.email_template_subject) form.elements.email_template_subject.value = state.settings.email_template_subject || "";
+  if (form.elements.email_template_body) form.elements.email_template_body.value = state.settings.email_template_body || "";
+}
+
+function renderEmailTemplateVariables() {
+  const box = $("#emailTemplateVariables");
+  if (!box || box.dataset.rendered === "true") return;
+  box.dataset.rendered = "true";
+  box.innerHTML = emailTemplateVariables.map(([key, label]) => (
+    "<button class=\"secondary\" type=\"button\" data-email-template-var=\"" + escapeAttr(key) + "\">" + escapeHTML(label) + "</button>"
+  )).join("");
+}
+
+function insertEmailTemplateVariable(key) {
+  const subjectInput = $("#emailTemplateSubject");
+  const bodyInput = $("#emailTemplateBody");
+  const target = document.activeElement === subjectInput ? subjectInput : bodyInput;
+  if (!target) return;
+  const token = "{{" + key + "}}";
+  const start = target.selectionStart ?? target.value.length;
+  const end = target.selectionEnd ?? target.value.length;
+  target.value = target.value.slice(0, start) + token + target.value.slice(end);
+  const next = start + token.length;
+  target.focus();
+  target.setSelectionRange(next, next);
+}
+
+function sampleEmailTemplateValues() {
+  const body = [
+    "主站 sub2api 渠道账号已同步。",
+    "",
+    "站点: chat.ekti",
+    "地址: https://chat.ekti.cc/",
+    "规则: #35 gpt-5.5",
+    "上游账号: ghwg@example.com",
+    "上游账户余额: $12.340000",
+    "模型: gpt-5.5",
+    "最低价分组: default",
+    "分组倍率: 0.05",
+    "输入价格: 0.25",
+    "输出价格: 1.5",
+    "缓存读价格: 0.025",
+    "缓存写价格: 0.25",
+    "请求价格: 未提供",
+    "主站分组: Codex",
+    "动作: created",
+    "主站账号: #54 chat.ekti openai-local+VIP default",
+  ].join("\\n");
+  return {
+    subject: "[主站账号同步] created chat.ekti default",
+    notification_subject: "[主站账号同步] created chat.ekti default",
+    notification_type: "主站账号同步",
+    body,
+    default_body: body,
+    site_name: "chat.ekti",
+    site_url: "https://chat.ekti.cc/",
+    category: "Codex",
+    rule: "#35 gpt-5.5",
+    model_keyword: "gpt-5.5",
+    model_name: "gpt-5.5",
+    group_name: "default",
+    group_ratio: "0.05",
+    upstream_account: "ghwg@example.com",
+    upstream_balance: "$12.340000",
+    input_price: "0.25",
+    output_price: "1.5",
+    cache_read_price: "0.025",
+    cache_write_price: "0.25",
+    request_price: "未提供",
+    main_group: "Codex",
+    action: "created",
+    main_account: "#54 chat.ekti openai-local+VIP default",
+    error: "",
+  };
+}
+
+function renderClientEmailTemplate(template, values) {
+  let output = template || "";
+  Object.entries(values).forEach(([key, value]) => {
+    output = output.split("{{" + key + "}}").join(value);
+    output = output.split("{{ " + key + " }}").join(value);
+  });
+  return output;
+}
+
+function previewEmailTemplate() {
+  const subjectTemplate = ($("#emailTemplateSubject")?.value || "{{subject}}").trim() || "{{subject}}";
+  const bodyTemplate = $("#emailTemplateBody")?.value || "{{body}}";
+  const values = sampleEmailTemplateValues();
+  const subject = renderClientEmailTemplate(subjectTemplate, values);
+  const body = renderClientEmailTemplate(bodyTemplate.trim() ? bodyTemplate : "{{body}}", values);
+  const preview = $("#emailTemplatePreview");
+  if (!preview) return;
+  preview.hidden = false;
+  preview.textContent = "标题: " + subject + "\\n\\n" + body;
 }
 
 function renderSub2Accounts() {
@@ -3425,6 +3632,11 @@ if (settingsForm) {
   });
 }
 
+const emailTemplatePreviewBtn = $("#emailTemplatePreviewBtn");
+if (emailTemplatePreviewBtn) {
+  emailTemplatePreviewBtn.addEventListener("click", previewEmailTemplate);
+}
+
 const adminPasswordForm = $("#adminPasswordForm");
 if (adminPasswordForm) {
   adminPasswordForm.addEventListener("submit", async (event) => {
@@ -3685,6 +3897,12 @@ document.addEventListener("click", async (event) => {
   const viewButton = event.target.closest("[data-app-view]");
   if (viewButton) {
     setActiveView(viewButton.getAttribute("data-app-view"));
+    return;
+  }
+
+  const emailTemplateVar = event.target.closest("[data-email-template-var]");
+  if (emailTemplateVar) {
+    insertEmailTemplateVariable(emailTemplateVar.getAttribute("data-email-template-var") || "");
     return;
   }
 

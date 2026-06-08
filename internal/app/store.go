@@ -86,6 +86,9 @@ type SettingsInput struct {
 	SMTPPassword           string  `json:"smtp_password"`
 	SMTPFrom               string  `json:"smtp_from"`
 	SMTPTo                 string  `json:"smtp_to"`
+	EmailTemplateEnabled   bool    `json:"email_template_enabled"`
+	EmailTemplateSubject   string  `json:"email_template_subject"`
+	EmailTemplateBody      string  `json:"email_template_body"`
 }
 
 type AdminCredentialInput struct {
@@ -1558,6 +1561,7 @@ func (s Store) GetIntegrationSettings(ctx context.Context) (IntegrationSettings,
 		       sync_threshold_ratio,
 		       email_notify_enabled, email_notify_price_change, email_notify_sync_update,
 		       smtp_host, smtp_port, smtp_encryption, smtp_username, smtp_password, smtp_from, smtp_to,
+		       email_template_enabled, email_template_subject, email_template_body,
 		       updated_at
 		FROM integration_settings
 		WHERE id = true
@@ -1568,7 +1572,9 @@ func (s Store) GetIntegrationSettings(ctx context.Context) (IntegrationSettings,
 		&syncThresholdRatio,
 		&settings.EmailNotifyEnabled, &settings.EmailNotifyPriceChange, &settings.EmailNotifySyncUpdate,
 		&settings.SMTPHost, &settings.SMTPPort, &settings.SMTPEncryption, &settings.SMTPUsername, &settings.SMTPPassword,
-		&settings.SMTPFrom, &settings.SMTPTo, &settings.UpdatedAt,
+		&settings.SMTPFrom, &settings.SMTPTo,
+		&settings.EmailTemplateEnabled, &settings.EmailTemplateSubject, &settings.EmailTemplateBody,
+		&settings.UpdatedAt,
 	)
 	if err == pgx.ErrNoRows {
 		return IntegrationSettings{}, nil
@@ -1595,6 +1601,7 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 	input.SMTPUsername = strings.TrimSpace(input.SMTPUsername)
 	input.SMTPFrom = strings.TrimSpace(input.SMTPFrom)
 	input.SMTPTo = strings.TrimSpace(input.SMTPTo)
+	input.EmailTemplateSubject = strings.TrimSpace(input.EmailTemplateSubject)
 	if input.SMTPPort <= 0 {
 		input.SMTPPort = 587
 	}
@@ -1645,9 +1652,10 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 			sync_threshold_ratio,
 			email_notify_enabled, email_notify_price_change, email_notify_sync_update,
 			smtp_host, smtp_port, smtp_encryption, smtp_username, smtp_password, smtp_from, smtp_to,
+			email_template_enabled, email_template_subject, email_template_body,
 			updated_at
 		)
-		VALUES (true, $1, $2, $3, $2, $3, $4, $5, CASE WHEN $6::double precision > 0 THEN $6::double precision ELSE NULL END, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, now())
+		VALUES (true, $1, $2, $3, $2, $3, $4, $5, CASE WHEN $6::double precision > 0 THEN $6::double precision ELSE NULL END, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, now())
 		ON CONFLICT (id) DO UPDATE
 		SET sub2api_enabled = EXCLUDED.sub2api_enabled,
 		    sub2api_main_base_url = EXCLUDED.sub2api_main_base_url,
@@ -1667,17 +1675,22 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 		    smtp_password = EXCLUDED.smtp_password,
 		    smtp_from = EXCLUDED.smtp_from,
 		    smtp_to = EXCLUDED.smtp_to,
+		    email_template_enabled = EXCLUDED.email_template_enabled,
+		    email_template_subject = EXCLUDED.email_template_subject,
+		    email_template_body = EXCLUDED.email_template_body,
 		    updated_at = now()
 		RETURNING sub2api_enabled, sub2api_main_base_url, sub2api_admin_key,
 		          sub2api_base_url, sub2api_access_token, sub2api_email, sub2api_password,
 		          sync_threshold_ratio,
 		          email_notify_enabled, email_notify_price_change, email_notify_sync_update,
 		          smtp_host, smtp_port, smtp_encryption, smtp_username, smtp_password, smtp_from, smtp_to,
+		          email_template_enabled, email_template_subject, email_template_body,
 		          updated_at
 	`,
 		input.Sub2APIEnabled, input.Sub2APIMainBaseURL, input.Sub2APIAdminKey, input.Sub2APIEmail, input.Sub2APIPassword,
 		input.SyncThresholdRatio, input.EmailNotifyEnabled, input.EmailNotifyPriceChange, input.EmailNotifySyncUpdate,
 		input.SMTPHost, input.SMTPPort, input.SMTPEncryption, input.SMTPUsername, input.SMTPPassword, input.SMTPFrom, input.SMTPTo,
+		input.EmailTemplateEnabled, input.EmailTemplateSubject, input.EmailTemplateBody,
 	).Scan(
 		&settings.Sub2APIEnabled, &settings.Sub2APIMainBaseURL, &settings.Sub2APIAdminKey,
 		&settings.Sub2APIBaseURL, &settings.Sub2APIAccessToken,
@@ -1685,7 +1698,9 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 		&syncThresholdRatio,
 		&settings.EmailNotifyEnabled, &settings.EmailNotifyPriceChange, &settings.EmailNotifySyncUpdate,
 		&settings.SMTPHost, &settings.SMTPPort, &settings.SMTPEncryption, &settings.SMTPUsername, &settings.SMTPPassword,
-		&settings.SMTPFrom, &settings.SMTPTo, &settings.UpdatedAt,
+		&settings.SMTPFrom, &settings.SMTPTo,
+		&settings.EmailTemplateEnabled, &settings.EmailTemplateSubject, &settings.EmailTemplateBody,
+		&settings.UpdatedAt,
 	)
 	settings.SyncThresholdRatio = floatPtr(syncThresholdRatio)
 	return settings, err

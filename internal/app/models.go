@@ -194,5 +194,8 @@ type IntegrationSettings struct {
 	SMTPPassword           string    `json:"smtp_password,omitempty"`
 	SMTPFrom               string    `json:"smtp_from"`
 	SMTPTo                 string    `json:"smtp_to"`
+	EmailTemplateEnabled   bool      `json:"email_template_enabled"`
+	EmailTemplateSubject   string    `json:"email_template_subject"`
+	EmailTemplateBody      string    `json:"email_template_body"`
 	UpdatedAt              time.Time `json:"updated_at"`
 }

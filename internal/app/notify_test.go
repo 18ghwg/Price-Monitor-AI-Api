@@ -200,3 +200,40 @@ func TestSyncUpdateEmailBodyIncludesUpstreamAccountBalanceAndRateDetails(t *test
 		t.Fatalf("syncUpdateEmailBody() = %q, should not show upstream account as unbound", body)
 	}
 }
+
+func TestRenderEmailTemplateUsesParsedNotificationVariables(t *testing.T) {
+	defaultBody := strings.Join([]string{
+		"主站 sub2api 渠道账号已同步。",
+		"",
+		"站点: chat.ekti",
+		"地址: https://chat.ekti.cc/",
+		"上游账号: ghwg@example.com",
+		"上游账户余额: $12.340000",
+		"模型: gpt-5.5",
+		"最低价分组: default",
+		"分组倍率: 0.05",
+		"输入价格: 0.25",
+		"动作: created",
+	}, "\n")
+
+	subject, body := renderEmailTemplate(IntegrationSettings{
+		EmailTemplateEnabled: true,
+		EmailTemplateSubject: "【{{notification_type}}】{{site_name}} {{model_name}}",
+		EmailTemplateBody:    "站点={{site_name}}\n账号={{upstream_account}}\n余额={{upstream_balance}}\n倍率={{group_ratio}}\n默认:\n{{body}}",
+	}, "[主站账号同步] created chat.ekti default", defaultBody)
+
+	if subject != "【主站账号同步】chat.ekti gpt-5.5" {
+		t.Fatalf("renderEmailTemplate subject = %q", subject)
+	}
+	for _, want := range []string{
+		"站点=chat.ekti",
+		"账号=ghwg@example.com",
+		"余额=$12.340000",
+		"倍率=0.05",
+		"主站 sub2api 渠道账号已同步。",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("renderEmailTemplate body = %q, want %q", body, want)
+		}
+	}
+}
