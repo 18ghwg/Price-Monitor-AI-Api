@@ -868,7 +868,18 @@ func (s Store) ListRules(ctx context.Context) ([]Rule, error) {
 		LEFT JOIN sites s ON s.id = r.site_id
 		LEFT JOIN sub2api_upstreams u ON u.id = r.sub2api_upstream_id
 		LEFT JOIN categories c ON c.slug = r.category
-		ORDER BY r.id ASC
+		LEFT JOIN LATERAL (
+			SELECT p.input_price, p.request_price, p.output_price, p.group_ratio
+			FROM price_snapshots p
+			WHERE p.rule_id = r.id
+			  AND p.invalid = false
+			ORDER BY p.created_at DESC, p.id DESC
+			LIMIT 1
+		) latest_price ON true
+		ORDER BY COALESCE(latest_price.input_price, latest_price.request_price, latest_price.output_price) ASC NULLS LAST,
+		         latest_price.output_price ASC NULLS LAST,
+		         latest_price.group_ratio ASC NULLS LAST,
+		         r.id ASC
 	`)
 	if err != nil {
 		return nil, err
