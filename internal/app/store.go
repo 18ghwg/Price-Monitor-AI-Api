@@ -1013,6 +1013,25 @@ func nextScheduledRunAt(runAt time.Time, intervalMinutes int) time.Time {
 	return runAt.Add(time.Duration(intervalMinutes) * time.Minute)
 }
 
+func (s Store) RestoreRuleAfterManualRun(ctx context.Context, ruleID int64) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE monitor_rules
+		SET enabled = true,
+		    schedule_enabled = true,
+		    next_run_at = now() + make_interval(mins => CASE WHEN interval_minutes > 0 THEN interval_minutes ELSE 15 END),
+		    sync_status = CASE
+		      WHEN sync_status LIKE 'paused after %' OR sync_status = 'error' OR sync_status LIKE 'skip low balance:%' THEN 'manual run ok'
+		      ELSE sync_status
+		    END,
+		    sync_error = '',
+		    sync_failure_count = 0,
+		    sync_failure_signature = '',
+		    updated_at = now()
+		WHERE id = $1
+	`, ruleID)
+	return err
+}
+
 func (s Store) UpdateRuleSyncStatus(ctx context.Context, ruleID int64, status string, errText string) error {
 	_, err := s.db.Exec(ctx, `
 		UPDATE monitor_rules

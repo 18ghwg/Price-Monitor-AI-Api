@@ -124,7 +124,6 @@ func (s *Server) auth(next http.Handler) http.Handler {
 		}
 		user, pass, ok := r.BasicAuth()
 		if !ok || !s.validateAdminPassword(r.Context(), user, pass) {
-			w.Header().Set("WWW-Authenticate", `Basic realm="newapi-price-monitor"`)
 			writeError(w, http.StatusUnauthorized, "authentication required")
 			return
 		}
@@ -1064,6 +1063,10 @@ func (s *Server) runRule(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusNotFound
 		}
 		writeError(w, status, err.Error())
+		return
+	}
+	if err := s.store.RestoreRuleAfterManualRun(r.Context(), id); err != nil {
+		writeError(w, http.StatusInternalServerError, "restore rule after manual run failed")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
