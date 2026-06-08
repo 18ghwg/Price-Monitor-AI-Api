@@ -911,6 +911,115 @@ func TestSub2APISetAccountEnabled(t *testing.T) {
 	}
 }
 
+func TestSub2APITestAccountConnectionUsesModelID(t *testing.T) {
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/admin/accounts/42/test" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+		if got := r.Header.Get("x-api-key"); got != "admin-key" {
+			t.Fatalf("x-api-key = %q, want admin-key", got)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"type":"test_complete","success":true}` + "\n\n"))
+	}))
+	defer server.Close()
+
+	client, err := NewSub2APIAdminClient(server.URL, "admin-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.TestAccountConnection(context.Background(), 42, "gpt-5.5"); err != nil {
+		t.Fatalf("TestAccountConnection() error = %v", err)
+	}
+	if payload["model_id"] != "gpt-5.5" {
+		t.Fatalf("model_id = %v, want gpt-5.5", payload["model_id"])
+	}
+}
+
+func TestSub2APITestAccountConnectionReportsSSEError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"type":"error","error":"model rejected"}` + "\n\n"))
+	}))
+	defer server.Close()
+
+	client, err := NewSub2APIAdminClient(server.URL, "admin-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = client.TestAccountConnection(context.Background(), 42, "gpt-5.5")
+	if err == nil || !strings.Contains(err.Error(), "model rejected") {
+		t.Fatalf("TestAccountConnection() error = %v, want model rejected", err)
+	}
+}
+
+func TestSub2APIDisableOtherAPIKeyAccountsForGroupsKeepsSyncedAccount(t *testing.T) {
+	disabled := map[int64]bool{}
+	schedulable := map[int64]bool{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/admin/accounts":
+			if got := r.URL.Query().Get("group"); got != "7" {
+				t.Fatalf("group query = %q, want 7", got)
+			}
+			writeSub2TestJSON(w, map[string]any{
+				"items": []map[string]any{
+					{"id": 42, "platform": "openai", "type": "apikey", "group_ids": []int64{7}, "status": "active", "schedulable": true},
+					{"id": 43, "platform": "openai", "type": "apikey", "group_ids": []int64{7}, "status": "active", "schedulable": true},
+					{"id": 44, "platform": "openai", "type": "apikey", "group_ids": []int64{7}, "status": "active", "schedulable": true},
+				},
+				"total": 3,
+			})
+		case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/api/v1/admin/accounts/"):
+			id := pathAccountID(r.URL.Path)
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode disable payload: %v", err)
+			}
+			if payload["status"] == "inactive" {
+				disabled[id] = true
+			}
+			writeSub2TestJSON(w, map[string]any{"id": id, "status": payload["status"]})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/schedulable"):
+			id := pathAccountID(strings.TrimSuffix(r.URL.Path, "/schedulable"))
+			var payload map[string]bool
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode schedulable payload: %v", err)
+			}
+			schedulable[id] = payload["schedulable"]
+			writeSub2TestJSON(w, map[string]any{"id": id, "schedulable": payload["schedulable"]})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewSub2APIClient(server.URL, "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.DisableOtherAPIKeyAccountsForGroups(context.Background(), "openai", 42, []sub2Group{{ID: 7, Name: "Codex"}}); err != nil {
+		t.Fatalf("DisableOtherAPIKeyAccountsForGroups() error = %v", err)
+	}
+	if disabled[42] {
+		t.Fatalf("kept account was disabled")
+	}
+	for _, id := range []int64{43, 44} {
+		if !disabled[id] {
+			t.Fatalf("account %d was not disabled", id)
+		}
+		if schedulable[id] {
+			t.Fatalf("account %d schedulable = true, want false", id)
+		}
+	}
+}
+
 func TestSub2APIAdminClientUsesAdminKeyHeader(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("x-api-key"); got != "admin-key" {
@@ -1010,17 +1119,12 @@ func TestSub2APIFetchBalance(t *testing.T) {
 }
 
 func pathAccountID(path string) int64 {
-	switch path {
-	case "/api/v1/admin/accounts/41":
-		return 41
-	case "/api/v1/admin/accounts/42":
-		return 42
-	case "/api/v1/admin/accounts/88":
-		return 88
-	case "/api/v1/admin/accounts/90":
-		return 90
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) == 0 {
+		return 0
 	}
-	return 0
+	id, _ := strconv.ParseInt(parts[len(parts)-1], 10, 64)
+	return id
 }
 
 func assertPriorityPayload(t *testing.T, payload map[string]any, priority int, status string) {

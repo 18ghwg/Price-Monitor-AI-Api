@@ -73,6 +73,13 @@ type sub2Account struct {
 	Rate        *float64       `json:"rate_multiplier"`
 }
 
+type sub2AccountTestEvent struct {
+	Type    string `json:"type"`
+	Success bool   `json:"success,omitempty"`
+	Error   string `json:"error,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
 type sub2APIKey struct {
 	ID        int64      `json:"id"`
 	UserID    int64      `json:"user_id"`
@@ -621,6 +628,116 @@ func (c *Sub2APIClient) PrioritizeOpenAIAPIKeyAccountForGroupsWithRate(ctx conte
 	}
 	if err := c.request(ctx, http.MethodPost, fmt.Sprintf("api/v1/admin/accounts/%d/schedulable", accountID), nil, map[string]bool{"schedulable": true}, nil); err != nil {
 		return fmt.Errorf("set sub2api account %d schedulable: %w", accountID, err)
+	}
+	return nil
+}
+
+func (c *Sub2APIClient) TestAccountConnection(ctx context.Context, accountID int64, modelName string) error {
+	if accountID <= 0 {
+		return fmt.Errorf("sub2api account id is required")
+	}
+	modelName = strings.TrimSpace(modelName)
+	payload := map[string]string{
+		"model_id": modelName,
+		"prompt":   "hi",
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	endpoint, err := url.JoinPath(c.baseURL, fmt.Sprintf("api/v1/admin/accounts/%d/test", accountID))
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", newAPIUserAgent)
+	if c.token != "" {
+		token := strings.TrimSpace(c.token)
+		switch c.auth {
+		case sub2APIAuthAdminKey:
+			req.Header.Set("x-api-key", token)
+		default:
+			req.Header.Set("Authorization", "Bearer "+trimBearerPrefix(token))
+		}
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("request %s: %w", endpoint, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if resp.StatusCode == http.StatusUnauthorized {
+			return fmt.Errorf("sub2api %s returned HTTP 401: %s; main sub2api admin auth failed", endpoint, strings.TrimSpace(string(body)))
+		}
+		return fmt.Errorf("sub2api %s returned HTTP %d: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	if err := parseSub2AccountTestSSE(string(body)); err != nil {
+		return err
+	}
+	return nil
+}
+
+func parseSub2AccountTestSSE(body string) error {
+	var sawCompletion bool
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		raw := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if raw == "" || raw == "[DONE]" {
+			continue
+		}
+		var event sub2AccountTestEvent
+		if err := json.Unmarshal([]byte(raw), &event); err != nil {
+			continue
+		}
+		if strings.EqualFold(event.Type, "error") {
+			return errors.New(firstNonEmpty(event.Error, event.Message, raw))
+		}
+		if strings.EqualFold(event.Type, "test_complete") && event.Success {
+			sawCompletion = true
+		}
+	}
+	if !sawCompletion {
+		return fmt.Errorf("sub2api account test did not report success")
+	}
+	return nil
+}
+
+func (c *Sub2APIClient) DisableOtherAPIKeyAccountsForGroups(ctx context.Context, platform string, keepID int64, groups []sub2Group) error {
+	if keepID <= 0 {
+		return fmt.Errorf("sub2api account id is required")
+	}
+	platform = normalizeSub2Platform(platform)
+	groups = normalizeSub2Groups(groups)
+	disabled := map[int64]struct{}{}
+	for _, group := range groups {
+		accounts, err := c.listAccountsFiltered(ctx, platform, "", group, "apikey")
+		if err != nil {
+			return err
+		}
+		for _, account := range accounts {
+			if account.ID <= 0 || account.ID == keepID {
+				continue
+			}
+			if _, ok := disabled[account.ID]; ok {
+				continue
+			}
+			if _, err := c.SetAccountEnabled(ctx, account.ID, false); err != nil {
+				return fmt.Errorf("disable sub2api account %d in group %s: %w", account.ID, group.Name, err)
+			}
+			disabled[account.ID] = struct{}{}
+		}
 	}
 	return nil
 }

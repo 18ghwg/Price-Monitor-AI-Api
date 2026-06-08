@@ -1702,6 +1702,8 @@ func isFallbackSyncError(err error) bool {
 		"not allowed",
 		"does not support",
 		"unsupported",
+		"test main sub2api account",
+		"test failed",
 		"no access",
 		"无权",
 		"权限",
@@ -1890,8 +1892,14 @@ func (s *Server) syncUpstreamKeyToMainSub2APIWithSignature(ctx context.Context, 
 	if err := sub2.PrioritizeOpenAIAPIKeyAccountForGroupsWithRate(ctx, account.ID, groups, accountRate); err != nil {
 		return err
 	}
+	if err := sub2.TestAccountConnection(ctx, account.ID, row.ModelName); err != nil {
+		return fmt.Errorf("test main sub2api account %d model %s failed: %w", account.ID, row.ModelName, err)
+	}
+	if err := sub2.DisableOtherAPIKeyAccountsForGroups(ctx, platform, account.ID, groups); err != nil {
+		return fmt.Errorf("disable other main sub2api accounts for groups %s: %w", strings.Join(groupNames, ", "), err)
+	}
 	s.notifySyncUpdate(ctx, rule, Site{Name: sourceName, BaseURL: sourceBaseURL}, row, action, account)
-	status := action + " " + keyAction + " " + row.GroupName + " rate " + fmtFloat(row.GroupRatio) + " -> " + strings.Join(groupNames, ", ")
+	status := action + " " + keyAction + " " + row.GroupName + " rate " + fmtFloat(row.GroupRatio) + " -> " + strings.Join(groupNames, ", ") + " tested " + row.ModelName
 	if strings.TrimSpace(signature) != "" {
 		return s.store.UpdateRuleSyncSuccess(ctx, rule.ID, status, signature)
 	}
