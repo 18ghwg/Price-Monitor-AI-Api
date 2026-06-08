@@ -273,7 +273,7 @@ func (c *Sub2APIClient) EnsureDailyCheckin(ctx context.Context, now time.Time) (
 		Enabled:   false,
 		Status:    "disabled",
 		Unit:      "usd",
-		Message:   "sub2api 源码未提供用户签到接口",
+		Message:   "不支持签到功能",
 		CheckedAt: checkedAt,
 	}, nil
 }
