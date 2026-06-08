@@ -627,7 +627,9 @@ func (s Store) CreateRule(ctx context.Context, input RuleInput) (Rule, error) {
 		       r.model_keyword, r.model_name, COALESCE(r.group_name, ''), r.enabled,
 		       r.schedule_enabled, r.interval_minutes, r.next_run_at, r.last_scheduled_run_at,
 		       r.sync_enabled, r.sync_base_group, r.sync_threshold_ratio, r.sub2api_group_name, r.sub2api_group_id,
-		       r.last_sync_at, r.sync_status, r.sync_error, r.created_at, r.updated_at
+		       r.last_sync_at, r.sync_status, r.sync_error,
+		       NULL::double precision AS upstream_balance, '' AS balance_unit,
+		       r.created_at, r.updated_at
 		FROM inserted r
 		LEFT JOIN sites s ON s.id = r.site_id
 		LEFT JOIN sub2api_upstreams u ON u.id = r.sub2api_upstream_id
@@ -702,7 +704,9 @@ func (s Store) UpdateRule(ctx context.Context, ruleID int64, input RuleInput) (R
 		       r.model_keyword, r.model_name, COALESCE(r.group_name, ''), r.enabled,
 		       r.schedule_enabled, r.interval_minutes, r.next_run_at, r.last_scheduled_run_at,
 		       r.sync_enabled, r.sync_base_group, r.sync_threshold_ratio, r.sub2api_group_name, r.sub2api_group_id,
-		       r.last_sync_at, r.sync_status, r.sync_error, r.created_at, r.updated_at
+		       r.last_sync_at, r.sync_status, r.sync_error,
+		       latest_price.upstream_balance, COALESCE(latest_price.balance_unit, ''),
+		       r.created_at, r.updated_at
 		FROM updated r
 		LEFT JOIN sites s ON s.id = r.site_id
 		LEFT JOIN sub2api_upstreams u ON u.id = r.sub2api_upstream_id
@@ -896,7 +900,7 @@ func (s Store) ListRules(ctx context.Context) ([]Rule, error) {
 		LEFT JOIN sub2api_upstreams u ON u.id = r.sub2api_upstream_id
 		LEFT JOIN categories c ON c.slug = r.category
 		LEFT JOIN LATERAL (
-			SELECT p.input_price, p.request_price, p.output_price, p.group_ratio
+			SELECT p.input_price, p.request_price, p.output_price, p.group_ratio, p.upstream_balance, p.balance_unit
 			FROM price_snapshots p
 			WHERE p.rule_id = r.id
 			  AND p.invalid = false
@@ -922,7 +926,7 @@ func (s Store) ListRules(ctx context.Context) ([]Rule, error) {
 			&rule.ModelKeyword, &rule.ModelName, &rule.GroupName,
 			&rule.Enabled, &rule.ScheduleEnabled, &rule.IntervalMinutes, &rule.NextRunAt, &rule.LastScheduledRunAt,
 			&rule.SyncEnabled, &rule.SyncBaseGroup, &rule.SyncThresholdRatio, &rule.Sub2APIGroupName, &rule.Sub2APIGroupID,
-			&rule.LastSyncAt, &rule.SyncStatus, &rule.SyncError, &rule.CreatedAt, &rule.UpdatedAt,
+			&rule.LastSyncAt, &rule.SyncStatus, &rule.SyncError, &rule.UpstreamBalance, &rule.BalanceUnit, &rule.CreatedAt, &rule.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}

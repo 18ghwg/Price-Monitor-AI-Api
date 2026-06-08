@@ -6,7 +6,7 @@ const indexHTML = `<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NewAPI 价格监控</title>
-  <link rel="stylesheet" href="/static/app.css?v=20260607-snapshot-pagination">
+  <link rel="stylesheet" href="/static/app.css?v=20260608-async-mobile-nav">
 </head>
 <body>
   <section id="loginScreen" class="login-screen" hidden>
@@ -69,7 +69,7 @@ const indexHTML = `<!doctype html>
 
     <div id="monitorView" class="view" data-view-panel="monitor">
       <section class="workspace">
-        <form id="siteForm" class="panel form-panel">
+        <form id="siteForm" class="panel form-panel" data-section-nav="site-form">
           <div class="panel-head">
             <span class="section-kicker">Step 01</span>
             <h2 id="siteFormTitle">添加上游站点账号</h2>
@@ -95,7 +95,7 @@ const indexHTML = `<!doctype html>
           </div>
         </form>
 
-        <form id="ruleForm" class="panel form-panel">
+        <form id="ruleForm" class="panel form-panel" data-section-nav="rule-form">
           <div class="panel-head">
             <span class="section-kicker">Step 02</span>
             <h2 id="ruleFormTitle">添加监控规则</h2>
@@ -128,7 +128,7 @@ const indexHTML = `<!doctype html>
         </form>
       </section>
 
-      <section class="panel data-panel">
+      <section class="panel data-panel" data-section-nav="rules">
         <div class="panel-head row">
           <div>
             <span class="section-kicker">Rules</span>
@@ -138,14 +138,16 @@ const indexHTML = `<!doctype html>
         </div>
         <div id="ruleControls" class="table-controls" hidden>
           <span id="ruleSummary" class="summary-line muted"></span>
+          <button id="refreshRulesBtn" class="secondary table-refresh" type="button">刷新规则</button>
           <label class="table-page-size">每页<select id="rulePageSize"><option value="10" selected>10</option><option value="20">20</option><option value="50">50</option><option value="100">100</option></select></label>
         </div>
-        <div class="table-wrap">
-          <table>
+        <div class="table-wrap responsive-wrap">
+          <table class="responsive-table">
             <thead>
               <tr>
                 <th>ID</th>
                 <th>站点</th>
+                <th>账户余额</th>
                 <th>分类</th>
                 <th>关键词</th>
                 <th>定时</th>
@@ -160,7 +162,7 @@ const indexHTML = `<!doctype html>
         <div id="rulePager" class="pager" hidden></div>
       </section>
 
-      <section class="panel data-panel">
+      <section class="panel data-panel" data-section-nav="snapshots">
         <div class="panel-head">
           <span class="section-kicker">Snapshots</span>
           <h2>最新价格快照</h2>
@@ -171,10 +173,11 @@ const indexHTML = `<!doctype html>
         </div>
         <div id="snapshotControls" class="table-controls" hidden>
           <span id="snapshotSummary" class="summary-line muted"></span>
+          <button id="refreshSnapshotsBtn" class="secondary table-refresh" type="button">刷新快照</button>
           <label class="table-page-size">每页<select id="snapshotPageSize"><option value="10" selected>10</option><option value="20">20</option><option value="50">50</option><option value="100">100</option></select></label>
         </div>
-        <div class="table-wrap">
-          <table>
+        <div class="table-wrap responsive-wrap">
+          <table class="responsive-table">
             <thead>
               <tr>
                 <th data-sort="created_at">时间</th>
@@ -199,7 +202,7 @@ const indexHTML = `<!doctype html>
         <div id="snapshotPager" class="pager" hidden></div>
       </section>
 
-      <section class="panel data-panel">
+      <section class="panel data-panel" data-section-nav="sites">
         <div class="panel-head">
           <span class="section-kicker">Sites</span>
           <h2>站点状态</h2>
@@ -230,7 +233,7 @@ const indexHTML = `<!doctype html>
     </div>
 
     <div id="settingsView" class="view" data-view-panel="settings" hidden>
-      <section class="panel data-panel settings-page">
+      <section class="panel data-panel settings-page" data-section-nav="settings">
         <div class="panel-head settings-page-head">
           <span class="section-kicker">System Settings</span>
           <h2>系统设置</h2>
@@ -439,8 +442,16 @@ const indexHTML = `<!doctype html>
       <a href="https://github.com/18ghwg/Price-Monitor-AI-Api.git" target="_blank" rel="noopener noreferrer">github.com/18ghwg/Price-Monitor-AI-Api</a>
     </footer>
   </main>
+  <nav class="float-nav" aria-label="后台快速导航">
+    <button type="button" data-jump-section="site-form">账号</button>
+    <button type="button" data-jump-section="rule-form">规则表单</button>
+    <button type="button" data-jump-section="rules">规则</button>
+    <button type="button" data-jump-section="snapshots">快照</button>
+    <button type="button" data-jump-section="sites">站点</button>
+    <button type="button" data-jump-view="settings" data-jump-section="settings">设置</button>
+  </nav>
   <div id="toast" class="toast" hidden></div>
-  <script src="/static/app.js?v=20260607-snapshot-pagination"></script>
+  <script src="/static/app.js?v=20260608-async-mobile-nav"></script>
 </body>
 </html>`
 
@@ -487,6 +498,10 @@ body {
 }
 
 body.auth-pending .shell {
+  display: none;
+}
+
+body.auth-pending .float-nav {
   display: none;
 }
 
@@ -1646,11 +1661,37 @@ tr:last-child td {
   overflow-wrap: anywhere;
 }
 
+.float-nav {
+  position: fixed;
+  right: 16px;
+  bottom: 18px;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: min(148px, calc(100vw - 24px));
+  padding: 8px;
+  border: 1px solid rgba(219, 227, 239, .92);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .94);
+  box-shadow: 0 16px 42px rgba(15, 23, 42, .16);
+  backdrop-filter: blur(12px);
+}
+
+.float-nav button {
+  width: 100%;
+  min-height: 31px;
+  padding: 0 10px;
+  border-radius: 7px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .toast {
   position: fixed;
   right: 20px;
   bottom: 20px;
-  z-index: 20;
+  z-index: 40;
   max-width: min(420px, calc(100vw - 40px));
   padding: 14px 16px;
   border: 1px solid rgba(255, 255, 255, .12);
@@ -1688,7 +1729,7 @@ tr:last-child td {
   .shell {
     width: min(100% - 24px, 1320px);
     padding-top: 12px;
-    padding-bottom: 36px;
+    padding-bottom: 92px;
   }
 
   .topbar,
@@ -1783,6 +1824,129 @@ tr:last-child td {
   button.nav-tab,
   button.segment {
     width: auto;
+  }
+
+  .table-controls,
+  .pager {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .summary-line,
+  .table-page-size,
+  .table-refresh {
+    width: 100%;
+  }
+
+  .responsive-wrap {
+    overflow: visible;
+    border: 0;
+    background: transparent;
+  }
+
+  .responsive-table {
+    min-width: 0;
+  }
+
+  .responsive-table thead {
+    display: none;
+  }
+
+  .responsive-table,
+  .responsive-table tbody,
+  .responsive-table tr,
+  .responsive-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .responsive-table tbody {
+    display: grid;
+    gap: 12px;
+  }
+
+  .responsive-table tr {
+    min-width: 0;
+    padding: 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel-solid);
+    box-shadow: var(--shadow-soft);
+  }
+
+  .responsive-table tr:hover {
+    background: var(--panel-solid);
+  }
+
+  .responsive-table td {
+    display: grid;
+    grid-template-columns: minmax(72px, 28%) minmax(0, 1fr);
+    gap: 10px;
+    min-width: 0;
+    padding: 8px 4px;
+    border-bottom: 1px solid #edf1f7;
+    font-size: 13px;
+  }
+
+  .responsive-table td::before {
+    content: attr(data-label);
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 850;
+  }
+
+  .responsive-table td:last-child {
+    border-bottom: 0;
+  }
+
+  .responsive-table td.empty-state {
+    display: block;
+    padding: 18px 10px;
+  }
+
+  .responsive-table td.empty-state::before {
+    content: none;
+  }
+
+  .responsive-table .source-site {
+    flex-wrap: wrap;
+    white-space: normal;
+  }
+
+  .responsive-table .source-site .site-link,
+  .responsive-table .source-site-name {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .responsive-table .table-actions {
+    min-width: 0;
+  }
+
+  .responsive-table .table-actions button {
+    flex: 1 1 88px;
+    width: auto;
+  }
+
+  .float-nav {
+    left: 12px;
+    right: 12px;
+    bottom: 10px;
+    flex-direction: row;
+    max-width: none;
+    overflow-x: auto;
+    padding: 7px;
+  }
+
+  .float-nav button {
+    flex: 0 0 auto;
+    width: auto;
+  }
+
+  .toast {
+    right: 12px;
+    bottom: 66px;
+    max-width: calc(100vw - 24px);
   }
 }`
 
@@ -1918,6 +2082,55 @@ async function loadAll() {
     state.snapshots = await api("/api/snapshots?limit=500&category=all") || [];
   }
   render();
+}
+
+async function refreshRules(options = {}) {
+  const button = options.button || null;
+  const originalText = button ? button.textContent : "";
+  if (button) {
+    button.disabled = true;
+    button.textContent = "刷新中";
+  }
+  try {
+    state.rules = await api("/api/rules") || [];
+    setText("#ruleCount", state.rules.length);
+    renderRules();
+    if (!options.silent) toast("监控规则已刷新");
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText || "刷新规则";
+    }
+  }
+}
+
+async function refreshSnapshots(options = {}) {
+  const button = options.button || null;
+  const originalText = button ? button.textContent : "";
+  if (button) {
+    button.disabled = true;
+    button.textContent = "刷新中";
+  }
+  try {
+    if (options.resetPage) state.snapshotPage = 1;
+    state.snapshots = await api("/api/snapshots?limit=500&category=" + encodeURIComponent(state.categoryFilter)) || [];
+    setText("#snapshotCount", state.snapshots.length);
+    renderSnapshots();
+    renderSortHeaders();
+    if (!options.silent) toast("价格快照已刷新");
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText || "刷新快照";
+    }
+  }
+}
+
+async function refreshMonitorLists(options = {}) {
+  await Promise.all([
+    refreshRules({ silent: true }),
+    refreshSnapshots({ silent: true, resetPage: !!options.resetSnapshotPage }),
+  ]);
 }
 
 function render() {
@@ -2279,7 +2492,7 @@ function renderRules() {
   if (state.rulePage < 1) state.rulePage = 1;
   const start = (state.rulePage - 1) * state.rulePageSize;
   const pageRows = rows.slice(start, start + state.rulePageSize);
-  if (controls) controls.hidden = rows.length === 0;
+  if (controls) controls.hidden = false;
   if (pageSizeSelect && String(pageSizeSelect.value) !== String(state.rulePageSize)) pageSizeSelect.value = String(state.rulePageSize);
   if (summary) {
     summary.textContent = rows.length
@@ -2296,24 +2509,25 @@ function renderRules() {
       ? ("<span class=\"status\">" + escapeHTML(rule.sync_status || "待同步") + "</span>" + (rule.sync_error ? "<div class=\"error\">" + escapeHTML(rule.sync_error) + "</div>" : ""))
       : "<span class=\"status disabled\">关闭</span>";
     return "<tr>"
-      + "<td>" + id + "</td>"
-      + "<td><span class=\"source-site\">" + sourceBadge(rule.source_type) + "<span class=\"source-site-name\">" + escapeHTML(rule.source_name || rule.site_name || "") + "</span></span>"
+      + "<td data-label=\"ID\">" + id + "</td>"
+      + "<td data-label=\"站点\"><span class=\"source-site\">" + sourceBadge(rule.source_type) + "<span class=\"source-site-name\">" + escapeHTML(rule.source_name || rule.site_name || "") + "</span></span>"
       + (rule.source_account ? "<div class=\"muted\">账号：" + escapeHTML(rule.source_account) + "</div>" : "")
       + "</td>"
-      + "<td>" + categoryTag(rule.category, rule.category_name) + "</td>"
-      + "<td>" + escapeHTML(rule.model_keyword || rule.model_name || "") + "<div class=\"muted\">基准：" + escapeHTML(rule.sync_base_group || rule.group_name || "未设置") + "</div></td>"
-      + "<td>" + escapeHTML(schedule)
+      + "<td data-label=\"账户余额\">" + fmtBalance(rule.upstream_balance, rule.balance_unit) + "</td>"
+      + "<td data-label=\"分类\">" + categoryTag(rule.category, rule.category_name) + "</td>"
+      + "<td data-label=\"关键词\">" + escapeHTML(rule.model_keyword || rule.model_name || "") + "<div class=\"muted\">基准：" + escapeHTML(rule.sync_base_group || rule.group_name || "未设置") + "</div></td>"
+      + "<td data-label=\"定时\">" + escapeHTML(schedule)
       + "<div class=\"muted\">上次：" + (fmtTime(rule.last_scheduled_run_at) || "尚未定时运行") + "</div>"
       + "<div class=\"muted\">下次：" + (fmtTime(rule.next_run_at) || "未排期") + "</div></td>"
-      + "<td>" + sync + "<div class=\"muted\">主站分组按分类绑定</div></td>"
-      + "<td><span class=\"" + statusClass + "\">" + enabled + "</span></td>"
-      + "<td><div class=\"table-actions\">"
+      + "<td data-label=\"同步\">" + sync + "<div class=\"muted\">主站分组按分类绑定</div></td>"
+      + "<td data-label=\"状态\"><span class=\"" + statusClass + "\">" + enabled + "</span></td>"
+      + "<td data-label=\"操作\"><div class=\"table-actions\">"
       + "<button class=\"secondary\" data-edit-rule=\"" + id + "\" type=\"button\">编辑</button>"
       + "<button class=\"danger\" data-delete-rule=\"" + id + "\" type=\"button\">删除</button>"
       + "<button class=\"secondary\" data-run=\"" + id + "\" type=\"button\">运行一次</button>"
       + "</div></td>"
       + "</tr>";
-  }).join("") : "<tr><td class=\"empty-state\" colspan=\"8\">暂无监控规则，添加站点后创建第一条关键词监控。</td></tr>";
+  }).join("") : "<tr><td class=\"empty-state\" colspan=\"9\">暂无监控规则，添加站点后创建第一条关键词监控。</td></tr>";
   renderRulePager(rows.length, totalPages);
 }
 
@@ -2343,7 +2557,7 @@ function renderSnapshots() {
   if (state.snapshotPage < 1) state.snapshotPage = 1;
   const start = (state.snapshotPage - 1) * state.snapshotPageSize;
   const pageRows = rows.slice(start, start + state.snapshotPageSize);
-  if (controls) controls.hidden = rows.length === 0;
+  if (controls) controls.hidden = false;
   if (pageSizeSelect && String(pageSizeSelect.value) !== String(state.snapshotPageSize)) pageSizeSelect.value = String(state.snapshotPageSize);
   if (summary) {
     const range = rows.length ? "显示 " + (start + 1) + "-" + Math.min(start + pageRows.length, rows.length) + " / " + rows.length + " 条价格快照" : "暂无价格快照";
@@ -2353,22 +2567,22 @@ function renderSnapshots() {
     const invalidBadge = row.invalid ? "<span class=\"source-badge invalid\">失效</span>" : "";
     const invalidReason = row.invalid ? "<div class=\"muted\">失效：" + escapeHTML(row.invalid_reason || "上游分组已不存在") + "</div>" : "";
     return "<tr>"
-      + "<td>" + fmtTime(row.created_at) + "</td>"
-      + "<td><span class=\"source-site\">" + sourceBadge(row.source_type) + "<a class=\"site-link\" href=\"" + escapeAttr(loginURL(row.site_base_url)) + "\" target=\"_blank\" rel=\"noopener noreferrer\">" + escapeHTML(row.site_name || "") + "</a></span>"
+      + "<td data-label=\"时间\">" + fmtTime(row.created_at) + "</td>"
+      + "<td data-label=\"站点\"><span class=\"source-site\">" + sourceBadge(row.source_type) + "<a class=\"site-link\" href=\"" + escapeAttr(loginURL(row.site_base_url)) + "\" target=\"_blank\" rel=\"noopener noreferrer\">" + escapeHTML(row.site_name || "") + "</a></span>"
       + (row.source_account ? "<div class=\"muted\">账号：" + escapeHTML(row.source_account) + "</div>" : "")
       + "</td>"
-      + "<td>" + categoryTag(row.category, row.category_name) + "</td>"
-      + "<td>" + escapeHTML(row.model_keyword || "") + "</td>"
-      + "<td>" + escapeHTML(row.model_name || "") + "</td>"
-      + "<td><span class=\"group-badge\">" + escapeHTML(row.group_name || "") + "</span>" + invalidBadge + invalidReason + "</td>"
-      + "<td>" + fmt(row.group_ratio) + "</td>"
-      + "<td>" + fmtBalance(row.upstream_balance, row.balance_unit) + "</td>"
-      + "<td>" + fmt(effectivePrice(row)) + "</td>"
-      + "<td>" + fmt(row.input_price) + "</td>"
-      + "<td>" + fmt(row.output_price) + "</td>"
-      + "<td>" + fmt(row.cache_read_price) + "</td>"
-      + "<td>" + fmt(row.cache_write_price) + "</td>"
-      + "<td>" + fmt(row.request_price) + "</td>"
+      + "<td data-label=\"分类\">" + categoryTag(row.category, row.category_name) + "</td>"
+      + "<td data-label=\"模型名\">" + escapeHTML(row.model_keyword || "") + "</td>"
+      + "<td data-label=\"匹配模型\">" + escapeHTML(row.model_name || "") + "</td>"
+      + "<td data-label=\"最低价分组\"><span class=\"group-badge\">" + escapeHTML(row.group_name || "") + "</span>" + invalidBadge + invalidReason + "</td>"
+      + "<td data-label=\"分组倍率\">" + fmt(row.group_ratio) + "</td>"
+      + "<td data-label=\"余额\">" + fmtBalance(row.upstream_balance, row.balance_unit) + "</td>"
+      + "<td data-label=\"最低有效价\">" + fmt(effectivePrice(row)) + "</td>"
+      + "<td data-label=\"输入\">" + fmt(row.input_price) + "</td>"
+      + "<td data-label=\"输出\">" + fmt(row.output_price) + "</td>"
+      + "<td data-label=\"缓存读\">" + fmt(row.cache_read_price) + "</td>"
+      + "<td data-label=\"缓存写\">" + fmt(row.cache_write_price) + "</td>"
+      + "<td data-label=\"请求\">" + fmt(row.request_price) + "</td>"
       + "</tr>";
   }).join("") : "<tr><td class=\"empty-state\" colspan=\"14\">暂无价格快照，运行一次监控规则后会在这里展示最新结果。</td></tr>";
   renderSnapshotPager(rows.length, totalPages);
@@ -3418,7 +3632,7 @@ if (ruleForm) {
         toast("规则已保存");
       }
       resetRuleForm();
-      await loadAll();
+      await refreshRules({ silent: true });
     } catch (error) {
       toast(error.message);
     }
@@ -3437,6 +3651,16 @@ if (ruleCancelBtn) ruleCancelBtn.addEventListener("click", resetRuleForm);
 const refreshBtn = $("#refreshBtn");
 if (refreshBtn) refreshBtn.addEventListener("click", () => loadAll().catch((error) => toast(error.message)));
 
+const refreshRulesBtn = $("#refreshRulesBtn");
+if (refreshRulesBtn) refreshRulesBtn.addEventListener("click", () => {
+  refreshRules({ button: refreshRulesBtn }).catch((error) => toast(error.message));
+});
+
+const refreshSnapshotsBtn = $("#refreshSnapshotsBtn");
+if (refreshSnapshotsBtn) refreshSnapshotsBtn.addEventListener("click", () => {
+  refreshSnapshots({ button: refreshSnapshotsBtn }).catch((error) => toast(error.message));
+});
+
 const logoutBtn = $("#logoutBtn");
 if (logoutBtn) {
   logoutBtn.addEventListener("click", async () => {
@@ -3446,6 +3670,18 @@ if (logoutBtn) {
 }
 
 document.addEventListener("click", async (event) => {
+  const jumpButton = event.target.closest("[data-jump-section]");
+  if (jumpButton) {
+    const requestedView = jumpButton.getAttribute("data-jump-view") || "monitor";
+    setActiveView(requestedView);
+    const section = jumpButton.getAttribute("data-jump-section") || "";
+    window.requestAnimationFrame(() => {
+      const target = Array.from(document.querySelectorAll("[data-section-nav]")).find((node) => node.getAttribute("data-section-nav") === section) || $("#" + section);
+      if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    return;
+  }
+
   const viewButton = event.target.closest("[data-app-view]");
   if (viewButton) {
     setActiveView(viewButton.getAttribute("data-app-view"));
@@ -3480,7 +3716,8 @@ document.addEventListener("click", async (event) => {
     state.categoryFilter = filter.getAttribute("data-category-filter") || "all";
     state.snapshotPage = 1;
     try {
-      await loadAll();
+      renderCategoryControls();
+      await refreshSnapshots({ silent: true, resetPage: true });
     } catch (error) {
       toast(error.message);
     }
@@ -3554,7 +3791,7 @@ document.addEventListener("click", async (event) => {
     try {
       const result = await api("/api/rules/" + id + "/run", { method: "POST" });
       toast("已写入 " + (result?.count || 0) + " 条价格快照");
-      await loadAll();
+      await refreshMonitorLists({ resetSnapshotPage: true });
     } catch (error) {
       toast(error.message);
     } finally {
@@ -3664,7 +3901,7 @@ document.addEventListener("click", async (event) => {
       await api("/api/rules/" + id + "/delete", { method: "POST" });
       if (state.editingRuleId === id) resetRuleForm();
       toast("规则已删除");
-      await loadAll();
+      await refreshMonitorLists({ resetSnapshotPage: true });
     } catch (error) {
       toast(error.message);
     } finally {

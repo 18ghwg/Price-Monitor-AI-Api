@@ -76,6 +76,8 @@ type Rule struct {
 	LastSyncAt          *time.Time `json:"last_sync_at"`
 	SyncStatus          string     `json:"sync_status"`
 	SyncError           string     `json:"sync_error"`
+	UpstreamBalance     *float64   `json:"upstream_balance"`
+	BalanceUnit         string     `json:"balance_unit"`
 	CreatedAt           time.Time  `json:"created_at"`
 	UpdatedAt           time.Time  `json:"updated_at"`
 }
