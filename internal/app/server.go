@@ -1424,14 +1424,17 @@ func (s *Server) syncBestAvailableCandidate(ctx context.Context, rule Rule, mode
 	}
 	if len(candidates) == 0 {
 		if len(skippedLowBalance) > 0 {
-			s.notifyLowBalanceSkip(ctx, rule, skippedLowBalance, PriceSnapshot{})
-			_ = s.store.UpdateRuleSyncStatus(ctx, rule.ID, "skip low balance: no available candidate", "")
+			if notifySkipped := s.recordLowBalanceSkips(ctx, skippedLowBalance); len(notifySkipped) > 0 {
+				s.notifyLowBalanceSkip(ctx, rule, notifySkipped, PriceSnapshot{})
+			}
 			return false, true, nil
 		}
 		return false, false, nil
 	}
 	if len(skippedLowBalance) > 0 {
-		s.notifyLowBalanceSkip(ctx, rule, skippedLowBalance, candidates[0])
+		if notifySkipped := s.recordLowBalanceSkips(ctx, skippedLowBalance); len(notifySkipped) > 0 {
+			s.notifyLowBalanceSkip(ctx, rule, notifySkipped, candidates[0])
+		}
 	}
 
 	var fallbackErrors []string
@@ -1473,6 +1476,46 @@ func (s *Server) syncBestAvailableCandidate(ctx context.Context, rule Rule, mode
 		_ = s.store.UpdateRuleSyncStatus(ctx, rule.ID, fmt.Sprintf("not current available cheapest: %s %s", candidates[0].SiteName, candidates[0].GroupName), "")
 	}
 	return false, true, nil
+}
+
+func (s *Server) recordLowBalanceSkips(ctx context.Context, skipped []PriceSnapshot) []PriceSnapshot {
+	if len(skipped) == 0 {
+		return nil
+	}
+	for _, snapshot := range skipped {
+		if snapshot.RuleID <= 0 {
+			continue
+		}
+		_ = s.store.UpdateRuleSyncStatus(ctx, snapshot.RuleID, lowBalanceStatus(snapshot), "")
+	}
+	var notifySkipped []PriceSnapshot
+	for _, snapshot := range lowBalanceNotifyWindow(skipped) {
+		signature := lowBalanceNotificationSignature(snapshot)
+		if signature == "" {
+			continue
+		}
+		inserted, err := s.store.RecordLowBalanceNotification(ctx, signature)
+		if err != nil {
+			log.Printf("record low balance notification for %s: %v", signature, err)
+			continue
+		}
+		if inserted {
+			notifySkipped = append(notifySkipped, snapshot)
+		}
+	}
+	return notifySkipped
+}
+
+func lowBalanceNotifyWindow(skipped []PriceSnapshot) []PriceSnapshot {
+	const notifyLimit = 5
+	if len(skipped) <= notifyLimit {
+		return skipped
+	}
+	return skipped[:notifyLimit]
+}
+
+func lowBalanceStatus(snapshot PriceSnapshot) string {
+	return fmt.Sprintf("skip low balance: %s %s %s", snapshot.SiteName, snapshot.GroupName, formatBalance(snapshot.UpstreamBalance, snapshot.BalanceUnit))
 }
 
 func (s *Server) recordSyncFailure(ctx context.Context, rule Rule, candidate PriceSnapshot, err error) {
@@ -1623,6 +1666,28 @@ func syncFailureSignature(snapshot PriceSnapshot, err error) string {
 		parts = append(parts, strings.ToLower(strings.TrimSpace(err.Error())))
 	}
 	return strings.Join(parts, "|")
+}
+
+func lowBalanceNotificationSignature(snapshot PriceSnapshot) string {
+	sourceType := strings.ToLower(strings.TrimSpace(snapshot.SourceType))
+	if sourceType == "" {
+		sourceType = RuleSourceNewAPI
+	}
+	switch sourceType {
+	case RuleSourceSub2API:
+		if snapshot.Sub2APIUpstreamID > 0 {
+			return fmt.Sprintf("%s|%d", sourceType, snapshot.Sub2APIUpstreamID)
+		}
+	default:
+		if snapshot.SiteID > 0 {
+			return fmt.Sprintf("%s|%d", sourceType, snapshot.SiteID)
+		}
+	}
+	baseURL := strings.ToLower(strings.TrimSpace(snapshot.SiteBaseURL))
+	if baseURL == "" {
+		return ""
+	}
+	return sourceType + "|" + baseURL
 }
 
 func isFallbackSyncError(err error) bool {

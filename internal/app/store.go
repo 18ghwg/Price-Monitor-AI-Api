@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -1079,6 +1080,27 @@ func (s Store) RuleSyncSignature(ctx context.Context, ruleID int64) (string, err
 		WHERE id = $1
 	`, ruleID).Scan(&signature)
 	return signature, err
+}
+
+func (s Store) RecordLowBalanceNotification(ctx context.Context, signature string) (bool, error) {
+	signature = strings.TrimSpace(signature)
+	if signature == "" {
+		return false, nil
+	}
+	var inserted bool
+	err := s.db.QueryRow(ctx, `
+		INSERT INTO low_balance_notifications (signature)
+		VALUES ($1)
+		ON CONFLICT (signature) DO NOTHING
+		RETURNING true
+	`, signature).Scan(&inserted)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	return inserted, nil
 }
 
 func (s Store) InsertSnapshot(ctx context.Context, snapshot PriceSnapshot) (PriceSnapshot, error) {

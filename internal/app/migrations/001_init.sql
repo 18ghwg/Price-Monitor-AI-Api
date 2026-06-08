@@ -98,6 +98,11 @@ CREATE TABLE IF NOT EXISTS sub2api_upstreams (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS low_balance_notifications (
+  signature TEXT PRIMARY KEY,
+  notified_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 ALTER TABLE IF EXISTS integration_settings
   ADD COLUMN IF NOT EXISTS sub2api_main_base_url TEXT NOT NULL DEFAULT '';
 ALTER TABLE IF EXISTS integration_settings

@@ -27,3 +27,76 @@ func TestIsFallbackSyncErrorMatchesUnsupportedGroup(t *testing.T) {
 		t.Fatal("isFallbackSyncError() = false, want true for unsupported group errors")
 	}
 }
+
+func TestLowBalanceNotificationSignatureUsesUpstreamAccount(t *testing.T) {
+	tests := []struct {
+		name     string
+		snapshot PriceSnapshot
+		want     string
+	}{
+		{
+			name: "newapi site id",
+			snapshot: PriceSnapshot{
+				SourceType:  RuleSourceNewAPI,
+				SiteID:      42,
+				SiteBaseURL: "https://example.com",
+			},
+			want: "newapi|42",
+		},
+		{
+			name: "sub2api upstream id",
+			snapshot: PriceSnapshot{
+				SourceType:        RuleSourceSub2API,
+				Sub2APIUpstreamID: 88,
+				SiteBaseURL:       "https://example.com",
+			},
+			want: "sub2api|88",
+		},
+		{
+			name: "fallback base url",
+			snapshot: PriceSnapshot{
+				SourceType:  RuleSourceNewAPI,
+				SiteBaseURL: " HTTPS://Example.COM ",
+			},
+			want: "newapi|https://example.com",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := lowBalanceNotificationSignature(tt.snapshot); got != tt.want {
+				t.Fatalf("lowBalanceNotificationSignature() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLowBalanceStatusIncludesSourceGroupAndBalance(t *testing.T) {
+	balance := 0.0
+	status := lowBalanceStatus(PriceSnapshot{
+		SiteName:        "huanapi",
+		GroupName:       "Free",
+		UpstreamBalance: &balance,
+		BalanceUnit:     "usd",
+	})
+
+	for _, want := range []string{"skip low balance", "huanapi", "Free", "$0.000000"} {
+		if !strings.Contains(status, want) {
+			t.Fatalf("lowBalanceStatus() = %q, want to include %q", status, want)
+		}
+	}
+}
+
+func TestLowBalanceNotifyWindowKeepsOnlyFirstFive(t *testing.T) {
+	var skipped []PriceSnapshot
+	for id := int64(1); id <= 7; id++ {
+		skipped = append(skipped, PriceSnapshot{ID: id})
+	}
+
+	window := lowBalanceNotifyWindow(skipped)
+	if len(window) != 5 {
+		t.Fatalf("lowBalanceNotifyWindow() length = %d, want 5", len(window))
+	}
+	if window[0].ID != 1 || window[4].ID != 5 {
+		t.Fatalf("lowBalanceNotifyWindow() IDs = %d..%d, want 1..5", window[0].ID, window[4].ID)
+	}
+}
