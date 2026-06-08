@@ -1020,10 +1020,55 @@ func (s Store) UpdateRuleSyncSuccess(ctx context.Context, ruleID int64, status s
 		    sync_status = $2,
 		    sync_error = '',
 		    sync_signature = $3,
+		    sync_failure_count = 0,
+		    sync_failure_signature = '',
 		    updated_at = now()
 		WHERE id = $1
 	`, ruleID, status, signature)
 	return err
+}
+
+func (s Store) RecordRuleSyncFailure(ctx context.Context, ruleID int64, status string, errText string, failureSignature string, pauseAfter int) (int, bool, bool, error) {
+	if pauseAfter <= 0 {
+		pauseAfter = 3
+	}
+	var failureCount int
+	var previousSignature string
+	if err := s.db.QueryRow(ctx, `
+		SELECT sync_failure_count, COALESCE(sync_failure_signature, '')
+		FROM monitor_rules
+		WHERE id = $1
+	`, ruleID).Scan(&failureCount, &previousSignature); err != nil {
+		return 0, false, false, err
+	}
+	failureSignature = strings.TrimSpace(failureSignature)
+	if failureSignature == "" {
+		failureSignature = strings.TrimSpace(errText)
+	}
+	failureCount++
+	paused := failureCount >= pauseAfter
+	shouldNotify := failureSignature == "" || failureSignature != previousSignature || failureCount == 1
+	if paused {
+		status = fmt.Sprintf("paused after %d sync failures", failureCount)
+	}
+
+	_, err := s.db.Exec(ctx, `
+		UPDATE monitor_rules
+		SET enabled = CASE WHEN $6 THEN false ELSE enabled END,
+		    schedule_enabled = CASE WHEN $6 THEN false ELSE schedule_enabled END,
+		    next_run_at = CASE WHEN $6 THEN NULL ELSE next_run_at END,
+		    last_sync_at = now(),
+		    sync_status = $2,
+		    sync_error = $3,
+		    sync_failure_count = $4,
+		    sync_failure_signature = $5,
+		    updated_at = now()
+		WHERE id = $1
+	`, ruleID, status, errText, failureCount, failureSignature, paused)
+	if err != nil {
+		return failureCount, paused, false, err
+	}
+	return failureCount, paused, shouldNotify, nil
 }
 
 func (s Store) RuleSyncSignature(ctx context.Context, ruleID int64) (string, error) {

@@ -29,6 +29,8 @@ type Server struct {
 	secret []byte
 }
 
+const syncFailurePauseThreshold = 3
+
 func NewServer(ctx context.Context, cfg Config) (*Server, error) {
 	db, err := openDB(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -1456,19 +1458,36 @@ func (s *Server) syncBestAvailableCandidate(ctx context.Context, rule Rule, mode
 			_ = s.store.UpdateRuleSyncStatus(ctx, rule.ID, fmt.Sprintf("fallback from %s %s", candidate.SiteName, candidate.GroupName), err.Error())
 			continue
 		}
-		_ = s.store.UpdateRuleSyncStatus(ctx, rule.ID, "error", err.Error())
-		s.notifySyncFailure(ctx, rule, Site{Name: candidate.SiteName, BaseURL: candidate.SiteBaseURL}, pricingRowFromSnapshot(candidate), err)
+		s.recordSyncFailure(ctx, rule, candidate, err)
 		return attempted, true, err
 	}
 	if len(fallbackErrors) > 0 {
 		err := fmt.Errorf("all sync candidates failed: %s", strings.Join(fallbackErrors, "；"))
-		_ = s.store.UpdateRuleSyncStatus(ctx, rule.ID, "error", err.Error())
+		s.recordSyncFailure(ctx, rule, candidates[0], err)
 		return true, true, err
 	}
 	if len(candidates) > 0 {
 		_ = s.store.UpdateRuleSyncStatus(ctx, rule.ID, fmt.Sprintf("not current available cheapest: %s %s", candidates[0].SiteName, candidates[0].GroupName), "")
 	}
 	return false, true, nil
+}
+
+func (s *Server) recordSyncFailure(ctx context.Context, rule Rule, candidate PriceSnapshot, err error) {
+	if err == nil {
+		return
+	}
+	failureSignature := syncFailureSignature(candidate, err)
+	count, paused, shouldNotify, recordErr := s.store.RecordRuleSyncFailure(ctx, rule.ID, "error", err.Error(), failureSignature, syncFailurePauseThreshold)
+	if recordErr != nil {
+		log.Printf("record sync failure for rule %d: %v", rule.ID, recordErr)
+		return
+	}
+	if paused {
+		log.Printf("paused rule %d after %d sync failures: %v", rule.ID, count, err)
+	}
+	if shouldNotify {
+		s.notifySyncFailure(ctx, rule, Site{Name: candidate.SiteName, BaseURL: candidate.SiteBaseURL}, pricingRowFromSnapshot(candidate), err)
+	}
 }
 
 func (s *Server) syncCandidateSnapshotToMain(ctx context.Context, rule Rule, candidate PriceSnapshot, signature string) (bool, error) {
@@ -1569,6 +1588,16 @@ func syncCandidateSignature(snapshot PriceSnapshot) string {
 		formatFloatPtr(snapshot.CacheReadPrice),
 		formatFloatPtr(snapshot.CacheWritePrice),
 		formatFloatPtr(snapshot.RequestPrice),
+	}
+	return strings.Join(parts, "|")
+}
+
+func syncFailureSignature(snapshot PriceSnapshot, err error) string {
+	parts := []string{
+		syncCandidateSignature(snapshot),
+	}
+	if err != nil {
+		parts = append(parts, strings.ToLower(strings.TrimSpace(err.Error())))
 	}
 	return strings.Join(parts, "|")
 }

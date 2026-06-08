@@ -46,6 +46,8 @@ CREATE TABLE IF NOT EXISTS monitor_rules (
   sync_status TEXT NOT NULL DEFAULT '',
   sync_error TEXT NOT NULL DEFAULT '',
   sync_signature TEXT NOT NULL DEFAULT '',
+  sync_failure_count INTEGER NOT NULL DEFAULT 0,
+  sync_failure_signature TEXT NOT NULL DEFAULT '',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -253,6 +255,12 @@ ALTER TABLE IF EXISTS monitor_rules
 
 ALTER TABLE IF EXISTS monitor_rules
   ADD COLUMN IF NOT EXISTS sync_signature TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE IF EXISTS monitor_rules
+  ADD COLUMN IF NOT EXISTS sync_failure_count INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE IF EXISTS monitor_rules
+  ADD COLUMN IF NOT EXISTS sync_failure_signature TEXT NOT NULL DEFAULT '';
 
 UPDATE monitor_rules
 SET sync_base_group = COALESCE(group_name, '')
