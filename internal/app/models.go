@@ -55,6 +55,7 @@ type Rule struct {
 	SiteName            string     `json:"site_name"`
 	SourceName          string     `json:"source_name"`
 	SourceBaseURL       string     `json:"source_base_url"`
+	SourceAccount       string     `json:"source_account"`
 	Sub2APIUpstreamID   int64      `json:"sub2api_upstream_id"`
 	Sub2APIUpstreamName string     `json:"sub2api_upstream_name"`
 	Category            string     `json:"category"`
@@ -101,6 +102,7 @@ type PriceSnapshot struct {
 	Sub2APIUpstreamID int64      `json:"sub2api_upstream_id"`
 	SiteName          string     `json:"site_name"`
 	SiteBaseURL       string     `json:"site_base_url"`
+	SourceAccount     string     `json:"source_account"`
 	Category          string     `json:"category"`
 	CategoryName      string     `json:"category_name"`
 	ModelKeyword      string     `json:"model_keyword"`

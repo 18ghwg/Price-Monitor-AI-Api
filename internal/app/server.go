@@ -1167,6 +1167,7 @@ func (s *Server) runNewAPIRule(ctx context.Context, rule Rule, site Site) ([]Pri
 			SiteID:          site.ID,
 			SiteName:        site.Name,
 			SiteBaseURL:     site.BaseURL,
+			SourceAccount:   sourceAccountForSite(site),
 			Category:        rule.Category,
 			CategoryName:    rule.CategoryName,
 			ModelKeyword:    rule.ModelKeyword,
@@ -1271,6 +1272,7 @@ func (s *Server) runSub2APIRule(ctx context.Context, rule Rule, upstream Sub2API
 			Sub2APIUpstreamID: upstream.ID,
 			SiteName:          upstream.Name,
 			SiteBaseURL:       upstream.BaseURL,
+			SourceAccount:     sourceAccountForSub2APIUpstream(upstream),
 			Category:          rule.Category,
 			CategoryName:      rule.CategoryName,
 			ModelKeyword:      rule.ModelKeyword,
@@ -1607,6 +1609,9 @@ func candidateLabel(snapshot PriceSnapshot) string {
 	if siteName := strings.TrimSpace(snapshot.SiteName); siteName != "" {
 		parts = append(parts, siteName)
 	}
+	if account := strings.TrimSpace(snapshot.SourceAccount); account != "" {
+		parts = append(parts, "账号 "+account)
+	}
 	if groupName := strings.TrimSpace(snapshot.GroupName); groupName != "" {
 		parts = append(parts, groupName)
 	}
@@ -1617,6 +1622,22 @@ func candidateLabel(snapshot PriceSnapshot) string {
 		return "unknown candidate"
 	}
 	return strings.Join(parts, " / ")
+}
+
+func sourceAccountForSite(site Site) string {
+	return strings.TrimSpace(site.Username)
+}
+
+func sourceAccountForSub2APIUpstream(upstream Sub2APIUpstream) string {
+	if email := strings.TrimSpace(upstream.Email); email != "" {
+		return email
+	}
+	token := strings.TrimSpace(upstream.AuthToken)
+	if token == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(token))
+	return fmt.Sprintf("token:%x", sum[:6])
 }
 
 func sub2GroupFromSnapshot(snapshot PriceSnapshot) (sub2Group, error) {
@@ -1646,6 +1667,7 @@ func syncCandidateSignature(snapshot PriceSnapshot) string {
 		strconv.FormatInt(snapshot.SiteID, 10),
 		strconv.FormatInt(snapshot.Sub2APIUpstreamID, 10),
 		strings.ToLower(strings.TrimSpace(snapshot.SiteBaseURL)),
+		strings.ToLower(strings.TrimSpace(snapshot.SourceAccount)),
 		strings.ToLower(strings.TrimSpace(snapshot.ModelName)),
 		strings.ToLower(strings.TrimSpace(snapshot.GroupName)),
 		formatFloatPtr(snapshot.GroupRatio),
@@ -1675,6 +1697,11 @@ func lowBalanceNotificationSignature(snapshot PriceSnapshot) string {
 	}
 	switch sourceType {
 	case RuleSourceSub2API:
+		baseURL := strings.ToLower(strings.TrimSpace(snapshot.SiteBaseURL))
+		account := strings.ToLower(strings.TrimSpace(snapshot.SourceAccount))
+		if baseURL != "" && account != "" {
+			return fmt.Sprintf("%s|%s|%s", sourceType, baseURL, account)
+		}
 		if snapshot.Sub2APIUpstreamID > 0 {
 			return fmt.Sprintf("%s|%d", sourceType, snapshot.Sub2APIUpstreamID)
 		}

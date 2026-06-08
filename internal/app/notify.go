@@ -233,6 +233,9 @@ func sameLowestSnapshotSource(previous PriceSnapshot, current PriceSnapshot) boo
 	if !strings.EqualFold(strings.TrimSpace(previous.SiteBaseURL), strings.TrimSpace(current.SiteBaseURL)) {
 		return false
 	}
+	if !strings.EqualFold(strings.TrimSpace(previous.SourceAccount), strings.TrimSpace(current.SourceAccount)) {
+		return false
+	}
 	if !strings.EqualFold(strings.TrimSpace(previous.ModelName), strings.TrimSpace(current.ModelName)) {
 		return false
 	}
@@ -246,6 +249,9 @@ func lowestSnapshotLabel(snapshot PriceSnapshot) string {
 	}
 	if siteName := strings.TrimSpace(snapshot.SiteName); siteName != "" {
 		parts = append(parts, siteName)
+	}
+	if account := strings.TrimSpace(snapshot.SourceAccount); account != "" {
+		parts = append(parts, "账号 "+account)
 	}
 	if groupName := strings.TrimSpace(snapshot.GroupName); groupName != "" {
 		parts = append(parts, groupName)

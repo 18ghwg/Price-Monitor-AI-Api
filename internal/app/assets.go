@@ -2297,7 +2297,9 @@ function renderRules() {
       : "<span class=\"status disabled\">关闭</span>";
     return "<tr>"
       + "<td>" + id + "</td>"
-      + "<td><span class=\"source-site\">" + sourceBadge(rule.source_type) + "<span class=\"source-site-name\">" + escapeHTML(rule.source_name || rule.site_name || "") + "</span></span></td>"
+      + "<td><span class=\"source-site\">" + sourceBadge(rule.source_type) + "<span class=\"source-site-name\">" + escapeHTML(rule.source_name || rule.site_name || "") + "</span></span>"
+      + (rule.source_account ? "<div class=\"muted\">账号：" + escapeHTML(rule.source_account) + "</div>" : "")
+      + "</td>"
       + "<td>" + categoryTag(rule.category, rule.category_name) + "</td>"
       + "<td>" + escapeHTML(rule.model_keyword || rule.model_name || "") + "<div class=\"muted\">基准：" + escapeHTML(rule.sync_base_group || rule.group_name || "未设置") + "</div></td>"
       + "<td>" + escapeHTML(schedule)
@@ -2352,7 +2354,9 @@ function renderSnapshots() {
     const invalidReason = row.invalid ? "<div class=\"muted\">失效：" + escapeHTML(row.invalid_reason || "上游分组已不存在") + "</div>" : "";
     return "<tr>"
       + "<td>" + fmtTime(row.created_at) + "</td>"
-      + "<td><span class=\"source-site\">" + sourceBadge(row.source_type) + "<a class=\"site-link\" href=\"" + escapeAttr(loginURL(row.site_base_url)) + "\" target=\"_blank\" rel=\"noopener noreferrer\">" + escapeHTML(row.site_name || "") + "</a></span></td>"
+      + "<td><span class=\"source-site\">" + sourceBadge(row.source_type) + "<a class=\"site-link\" href=\"" + escapeAttr(loginURL(row.site_base_url)) + "\" target=\"_blank\" rel=\"noopener noreferrer\">" + escapeHTML(row.site_name || "") + "</a></span>"
+      + (row.source_account ? "<div class=\"muted\">账号：" + escapeHTML(row.source_account) + "</div>" : "")
+      + "</td>"
       + "<td>" + categoryTag(row.category, row.category_name) + "</td>"
       + "<td>" + escapeHTML(row.model_keyword || "") + "</td>"
       + "<td>" + escapeHTML(row.model_name || "") + "</td>"
@@ -2876,16 +2880,22 @@ function duplicateRuleMessage(payload, id) {
   const modelKeyword = normalizeCompareText(payload.model_keyword || payload.model_name);
   const sourceID = sourceType === "sub2api" ? Number(payload.sub2api_upstream_id || 0) : Number(payload.site_id || 0);
   if (!sourceID || !modelKeyword) return "";
+  const selectedUpstream = sourceType === "sub2api" ? state.sub2Upstreams.find((upstream) => Number(upstream.id) === sourceID) : null;
+  const sourceBaseURL = sourceType === "sub2api" ? normalizeCompareBaseURL(selectedUpstream?.base_url) : "";
+  const sourceAccount = sourceType === "sub2api" ? normalizeCompareText(selectedUpstream?.email || "") : "";
   const duplicate = state.rules.some((rule) => {
     const ruleSourceType = String(rule.source_type || "newapi").toLowerCase() === "sub2api" ? "sub2api" : "newapi";
     const ruleSourceID = ruleSourceType === "sub2api" ? Number(rule.sub2api_upstream_id || 0) : Number(rule.site_id || 0);
-    return Number(rule.id) !== Number(id)
+    if (Number(rule.id) === Number(id) || ruleSourceType !== sourceType) return false;
+    const sameSource = sourceType === "sub2api"
+      ? normalizeCompareBaseURL(rule.source_base_url) === sourceBaseURL && normalizeCompareText(rule.source_account || "") === sourceAccount
+      : ruleSourceID === sourceID;
+    return sameSource
       && ruleSourceType === sourceType
-      && ruleSourceID === sourceID
       && normalizeCompareText(rule.category || "other") === category
       && normalizeCompareText(rule.model_keyword || rule.model_name) === modelKeyword;
   });
-  return duplicate ? "相同站点、分类和模型的监控规则已存在，请勿重复添加" : "";
+  return duplicate ? "相同站点、登录账号、分类和模型的监控规则已存在，请勿重复添加" : "";
 }
 
 function currentSiteSourceType() {

@@ -622,6 +622,7 @@ func (s Store) CreateRule(ctx context.Context, input RuleInput) (Rule, error) {
 		SELECT r.id, r.source_type, r.site_id, COALESCE(s.name, ''), r.sub2api_upstream_id, COALESCE(u.name, ''),
 		       CASE WHEN r.source_type = 'sub2api' THEN COALESCE(u.name, '') ELSE COALESCE(s.name, '') END AS source_name,
 		       CASE WHEN r.source_type = 'sub2api' THEN COALESCE(u.base_url, '') ELSE COALESCE(s.base_url, '') END AS source_base_url,
+		       CASE WHEN r.source_type = 'sub2api' THEN CASE WHEN trim(COALESCE(u.email, '')) <> '' THEN trim(u.email) WHEN trim(COALESCE(u.auth_token, '')) <> '' THEN 'token:' || left(md5(u.auth_token), 12) ELSE '' END ELSE COALESCE(s.username, '') END AS source_account,
 		       r.category, COALESCE(c.name, r.category),
 		       r.model_keyword, r.model_name, COALESCE(r.group_name, ''), r.enabled,
 		       r.schedule_enabled, r.interval_minutes, r.next_run_at, r.last_scheduled_run_at,
@@ -635,7 +636,7 @@ func (s Store) CreateRule(ctx context.Context, input RuleInput) (Rule, error) {
 		input.ScheduleEnabled, input.IntervalMinutes, input.SyncEnabled, input.SyncBaseGroup,
 		input.SyncThresholdRatio, input.Sub2APIGroupName, input.Sub2APIGroupID).Scan(
 		&rule.ID, &rule.SourceType, &rule.SiteID, &rule.SiteName, &rule.Sub2APIUpstreamID, &rule.Sub2APIUpstreamName,
-		&rule.SourceName, &rule.SourceBaseURL, &rule.Category, &rule.CategoryName,
+		&rule.SourceName, &rule.SourceBaseURL, &rule.SourceAccount, &rule.Category, &rule.CategoryName,
 		&rule.ModelKeyword, &rule.ModelName, &rule.GroupName, &rule.Enabled,
 		&rule.ScheduleEnabled, &rule.IntervalMinutes, &rule.NextRunAt, &rule.LastScheduledRunAt,
 		&rule.SyncEnabled, &rule.SyncBaseGroup, &rule.SyncThresholdRatio, &rule.Sub2APIGroupName, &rule.Sub2APIGroupID,
@@ -696,6 +697,7 @@ func (s Store) UpdateRule(ctx context.Context, ruleID int64, input RuleInput) (R
 		SELECT r.id, r.source_type, COALESCE(r.site_id, 0), COALESCE(s.name, ''), r.sub2api_upstream_id, COALESCE(u.name, ''),
 		       CASE WHEN r.source_type = 'sub2api' THEN COALESCE(u.name, '') ELSE COALESCE(s.name, '') END AS source_name,
 		       CASE WHEN r.source_type = 'sub2api' THEN COALESCE(u.base_url, '') ELSE COALESCE(s.base_url, '') END AS source_base_url,
+		       CASE WHEN r.source_type = 'sub2api' THEN CASE WHEN trim(COALESCE(u.email, '')) <> '' THEN trim(u.email) WHEN trim(COALESCE(u.auth_token, '')) <> '' THEN 'token:' || left(md5(u.auth_token), 12) ELSE '' END ELSE COALESCE(s.username, '') END AS source_account,
 		       r.category, COALESCE(c.name, r.category),
 		       r.model_keyword, r.model_name, COALESCE(r.group_name, ''), r.enabled,
 		       r.schedule_enabled, r.interval_minutes, r.next_run_at, r.last_scheduled_run_at,
@@ -709,7 +711,7 @@ func (s Store) UpdateRule(ctx context.Context, ruleID int64, input RuleInput) (R
 		input.ScheduleEnabled, input.IntervalMinutes, input.SyncEnabled, input.SyncBaseGroup,
 		input.SyncThresholdRatio, input.Sub2APIGroupName, input.Sub2APIGroupID).Scan(
 		&rule.ID, &rule.SourceType, &rule.SiteID, &rule.SiteName, &rule.Sub2APIUpstreamID, &rule.Sub2APIUpstreamName,
-		&rule.SourceName, &rule.SourceBaseURL, &rule.Category, &rule.CategoryName,
+		&rule.SourceName, &rule.SourceBaseURL, &rule.SourceAccount, &rule.Category, &rule.CategoryName,
 		&rule.ModelKeyword, &rule.ModelName, &rule.GroupName, &rule.Enabled,
 		&rule.ScheduleEnabled, &rule.IntervalMinutes, &rule.NextRunAt, &rule.LastScheduledRunAt,
 		&rule.SyncEnabled, &rule.SyncBaseGroup, &rule.SyncThresholdRatio, &rule.Sub2APIGroupName, &rule.Sub2APIGroupID,
@@ -726,20 +728,44 @@ func (s Store) UpdateRule(ctx context.Context, ruleID int64, input RuleInput) (R
 
 func (s Store) ensureUniqueRule(ctx context.Context, input RuleInput, excludeID int64) error {
 	var existingID int64
-	err := s.db.QueryRow(ctx, `
-		SELECT id
-		FROM monitor_rules
-		WHERE source_type = $1
-		  AND COALESCE(site_id, 0) = $2
-		  AND COALESCE(sub2api_upstream_id, 0) = $3
-		  AND category = $4
-		  AND lower(trim(model_keyword)) = lower(trim($5::text))
-		  AND ($6::bigint = 0 OR id <> $6)
-		ORDER BY id
-		LIMIT 1
-	`, input.SourceType, input.SiteID, input.Sub2APIUpstreamID, input.Category, input.ModelKeyword, excludeID).Scan(&existingID)
+	var err error
+	if input.SourceType == RuleSourceSub2API {
+		err = s.db.QueryRow(ctx, `
+			WITH target AS (
+				SELECT lower(regexp_replace(trim(COALESCE(base_url, '')), '/+$', '')) AS base_key,
+				       lower(trim(CASE WHEN trim(COALESCE(email, '')) <> '' THEN trim(email) WHEN trim(COALESCE(auth_token, '')) <> '' THEN 'token:' || left(md5(auth_token), 12) ELSE '' END)) AS account_key
+				FROM sub2api_upstreams
+				WHERE id = $1
+			)
+			SELECT r.id
+			FROM monitor_rules r
+			JOIN sub2api_upstreams u ON u.id = r.sub2api_upstream_id
+			CROSS JOIN target t
+			WHERE r.source_type = 'sub2api'
+			  AND lower(regexp_replace(trim(COALESCE(u.base_url, '')), '/+$', '')) = t.base_key
+			  AND lower(trim(CASE WHEN trim(COALESCE(u.email, '')) <> '' THEN trim(u.email) WHEN trim(COALESCE(u.auth_token, '')) <> '' THEN 'token:' || left(md5(u.auth_token), 12) ELSE '' END)) = t.account_key
+			  AND r.category = $2
+			  AND lower(trim(r.model_keyword)) = lower(trim($3::text))
+			  AND ($4::bigint = 0 OR r.id <> $4)
+			ORDER BY r.id
+			LIMIT 1
+		`, input.Sub2APIUpstreamID, input.Category, input.ModelKeyword, excludeID).Scan(&existingID)
+	} else {
+		err = s.db.QueryRow(ctx, `
+			SELECT id
+			FROM monitor_rules
+			WHERE source_type = $1
+			  AND COALESCE(site_id, 0) = $2
+			  AND COALESCE(sub2api_upstream_id, 0) = $3
+			  AND category = $4
+			  AND lower(trim(model_keyword)) = lower(trim($5::text))
+			  AND ($6::bigint = 0 OR id <> $6)
+			ORDER BY id
+			LIMIT 1
+		`, input.SourceType, input.SiteID, input.Sub2APIUpstreamID, input.Category, input.ModelKeyword, excludeID).Scan(&existingID)
+	}
 	if err == nil {
-		return fmt.Errorf("相同站点、分类和模型的监控规则已存在，请勿重复添加")
+		return fmt.Errorf("相同站点、登录账号、分类和模型的监控规则已存在，请勿重复添加")
 	}
 	if err == pgx.ErrNoRows {
 		return nil
@@ -757,7 +783,7 @@ func (s Store) syncRuleSnapshotsCategory(ctx context.Context, ruleID int64, cate
 		USING (
 		  SELECT id,
 		         row_number() OVER (
-		           PARTITION BY COALESCE(source_type, 'newapi'), COALESCE(site_id, 0), sub2api_upstream_id,
+		           PARTITION BY COALESCE(source_type, 'newapi'), lower(regexp_replace(trim(source_base_url), '/+$', '')), lower(trim(source_account)),
 		                        $2::text, model_name, lower(trim(group_name))
 		           ORDER BY CASE WHEN category = $2 THEN 0 ELSE 1 END, created_at DESC, id DESC
 		         ) AS duplicate_rank
@@ -859,6 +885,7 @@ func (s Store) ListRules(ctx context.Context) ([]Rule, error) {
 		SELECT r.id, COALESCE(r.source_type, 'newapi'), COALESCE(r.site_id, 0), COALESCE(s.name, ''), r.sub2api_upstream_id, COALESCE(u.name, ''),
 		       CASE WHEN COALESCE(r.source_type, 'newapi') = 'sub2api' THEN COALESCE(u.name, '') ELSE COALESCE(s.name, '') END AS source_name,
 		       CASE WHEN COALESCE(r.source_type, 'newapi') = 'sub2api' THEN COALESCE(u.base_url, '') ELSE COALESCE(s.base_url, '') END AS source_base_url,
+		       CASE WHEN COALESCE(r.source_type, 'newapi') = 'sub2api' THEN CASE WHEN trim(COALESCE(u.email, '')) <> '' THEN trim(u.email) WHEN trim(COALESCE(u.auth_token, '')) <> '' THEN 'token:' || left(md5(u.auth_token), 12) ELSE '' END ELSE COALESCE(s.username, '') END AS source_account,
 		       r.category, COALESCE(c.name, r.category),
 		       r.model_keyword, r.model_name, COALESCE(r.group_name, ''), r.enabled,
 		       r.schedule_enabled, r.interval_minutes, r.next_run_at, r.last_scheduled_run_at,
@@ -891,7 +918,7 @@ func (s Store) ListRules(ctx context.Context) ([]Rule, error) {
 		var rule Rule
 		if err := rows.Scan(
 			&rule.ID, &rule.SourceType, &rule.SiteID, &rule.SiteName, &rule.Sub2APIUpstreamID, &rule.Sub2APIUpstreamName,
-			&rule.SourceName, &rule.SourceBaseURL, &rule.Category, &rule.CategoryName,
+			&rule.SourceName, &rule.SourceBaseURL, &rule.SourceAccount, &rule.Category, &rule.CategoryName,
 			&rule.ModelKeyword, &rule.ModelName, &rule.GroupName,
 			&rule.Enabled, &rule.ScheduleEnabled, &rule.IntervalMinutes, &rule.NextRunAt, &rule.LastScheduledRunAt,
 			&rule.SyncEnabled, &rule.SyncBaseGroup, &rule.SyncThresholdRatio, &rule.Sub2APIGroupName, &rule.Sub2APIGroupID,
@@ -913,6 +940,7 @@ func (s Store) GetRuleWithSource(ctx context.Context, ruleID int64) (Rule, Site,
 			r.id, COALESCE(r.source_type, 'newapi'), COALESCE(r.site_id, 0), COALESCE(s.name, ''), r.sub2api_upstream_id, COALESCE(u.name, ''),
 			CASE WHEN COALESCE(r.source_type, 'newapi') = 'sub2api' THEN COALESCE(u.name, '') ELSE COALESCE(s.name, '') END AS source_name,
 			CASE WHEN COALESCE(r.source_type, 'newapi') = 'sub2api' THEN COALESCE(u.base_url, '') ELSE COALESCE(s.base_url, '') END AS source_base_url,
+			CASE WHEN COALESCE(r.source_type, 'newapi') = 'sub2api' THEN CASE WHEN trim(COALESCE(u.email, '')) <> '' THEN trim(u.email) WHEN trim(COALESCE(u.auth_token, '')) <> '' THEN 'token:' || left(md5(u.auth_token), 12) ELSE '' END ELSE COALESCE(s.username, '') END AS source_account,
 			r.category, COALESCE(c.name, r.category),
 			r.model_keyword, r.model_name, COALESCE(r.group_name, ''), r.enabled,
 			r.schedule_enabled, r.interval_minutes, r.next_run_at, r.last_scheduled_run_at,
@@ -927,7 +955,7 @@ func (s Store) GetRuleWithSource(ctx context.Context, ruleID int64) (Rule, Site,
 		WHERE r.id = $1
 	`, ruleID).Scan(
 		&rule.ID, &rule.SourceType, &rule.SiteID, &rule.SiteName, &rule.Sub2APIUpstreamID, &rule.Sub2APIUpstreamName,
-		&rule.SourceName, &rule.SourceBaseURL, &rule.Category, &rule.CategoryName,
+		&rule.SourceName, &rule.SourceBaseURL, &rule.SourceAccount, &rule.Category, &rule.CategoryName,
 		&rule.ModelKeyword, &rule.ModelName, &rule.GroupName, &rule.Enabled,
 		&rule.ScheduleEnabled, &rule.IntervalMinutes, &rule.NextRunAt, &rule.LastScheduledRunAt,
 		&rule.SyncEnabled, &rule.SyncBaseGroup, &rule.SyncThresholdRatio, &rule.Sub2APIGroupName, &rule.Sub2APIGroupID,
@@ -1139,20 +1167,24 @@ func (s Store) InsertSnapshot(ctx context.Context, snapshot PriceSnapshot) (Pric
 	}
 	err := s.db.QueryRow(ctx, `
 		INSERT INTO price_snapshots (
-			rule_id, source_type, site_id, sub2api_upstream_id, category, model_keyword, model_name, group_name, group_desc, quota_type, group_ratio,
+			rule_id, source_type, site_id, sub2api_upstream_id, source_base_url, source_account, category, model_keyword, model_name, group_name, group_desc, quota_type, group_ratio,
 			input_price, output_price, cache_read_price, cache_write_price, request_price, upstream_balance, balance_unit, raw
 		)
-		VALUES ($1, $2, NULLIF($3, 0), $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+		VALUES ($1, $2, NULLIF($3, 0), $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
 		ON CONFLICT (
 			COALESCE(source_type, 'newapi'),
-			COALESCE(site_id, 0),
-			sub2api_upstream_id,
+			lower(regexp_replace(trim(source_base_url), '/+$', '')),
+			lower(trim(source_account)),
 			category,
 			model_name,
 			lower(trim(group_name))
 		)
 		DO UPDATE SET
 			rule_id = EXCLUDED.rule_id,
+			site_id = EXCLUDED.site_id,
+			sub2api_upstream_id = EXCLUDED.sub2api_upstream_id,
+			source_base_url = EXCLUDED.source_base_url,
+			source_account = EXCLUDED.source_account,
 			model_keyword = EXCLUDED.model_keyword,
 			group_name = EXCLUDED.group_name,
 			group_desc = EXCLUDED.group_desc,
@@ -1172,7 +1204,7 @@ func (s Store) InsertSnapshot(ctx context.Context, snapshot PriceSnapshot) (Pric
 			created_at = now()
 		RETURNING id, created_at
 	`,
-		snapshot.RuleID, snapshot.SourceType, snapshot.SiteID, snapshot.Sub2APIUpstreamID, normalizeCategorySlug(snapshot.Category), snapshot.ModelKeyword,
+		snapshot.RuleID, snapshot.SourceType, snapshot.SiteID, snapshot.Sub2APIUpstreamID, normalizeBaseURL(snapshot.SiteBaseURL), strings.TrimSpace(snapshot.SourceAccount), normalizeCategorySlug(snapshot.Category), snapshot.ModelKeyword,
 		snapshot.ModelName, snapshot.GroupName, snapshot.GroupDesc,
 		snapshot.QuotaType, snapshot.GroupRatio, snapshot.InputPrice, snapshot.OutputPrice,
 		snapshot.CacheReadPrice, snapshot.CacheWritePrice, snapshot.RequestPrice, snapshot.UpstreamBalance, snapshot.BalanceUnit, string(snapshot.Raw),
@@ -1238,7 +1270,8 @@ func (s Store) PreviousSnapshot(ctx context.Context, ruleID int64, modelName str
 	err := s.db.QueryRow(ctx, `
 		SELECT p.id, p.rule_id, COALESCE(p.source_type, 'newapi'), COALESCE(p.site_id, 0), p.sub2api_upstream_id,
 		       CASE WHEN COALESCE(p.source_type, 'newapi') = 'sub2api' THEN COALESCE(u.name, '') ELSE COALESCE(s.name, '') END AS site_name,
-		       CASE WHEN COALESCE(p.source_type, 'newapi') = 'sub2api' THEN COALESCE(u.base_url, '') ELSE COALESCE(s.base_url, '') END AS site_base_url,
+		       COALESCE(NULLIF(p.source_base_url, ''), CASE WHEN COALESCE(p.source_type, 'newapi') = 'sub2api' THEN COALESCE(u.base_url, '') ELSE COALESCE(s.base_url, '') END) AS site_base_url,
+		       COALESCE(p.source_account, '') AS source_account,
 		       p.category, COALESCE(c.name, p.category) AS category_name, p.model_keyword, p.model_name,
 		       p.group_name, p.group_desc, p.quota_type, p.group_ratio, p.input_price, p.output_price,
 		       p.cache_read_price, p.cache_write_price, p.request_price, p.upstream_balance, p.balance_unit,
@@ -1251,7 +1284,7 @@ func (s Store) PreviousSnapshot(ctx context.Context, ruleID int64, modelName str
 		ORDER BY p.created_at DESC, p.id DESC
 		LIMIT 1
 	`, ruleID, strings.TrimSpace(modelName)).Scan(
-		&snapshot.ID, &snapshot.RuleID, &snapshot.SourceType, &snapshot.SiteID, &snapshot.Sub2APIUpstreamID, &snapshot.SiteName, &snapshot.SiteBaseURL,
+		&snapshot.ID, &snapshot.RuleID, &snapshot.SourceType, &snapshot.SiteID, &snapshot.Sub2APIUpstreamID, &snapshot.SiteName, &snapshot.SiteBaseURL, &snapshot.SourceAccount,
 		&snapshot.Category, &snapshot.CategoryName, &snapshot.ModelKeyword, &snapshot.ModelName,
 		&snapshot.GroupName, &snapshot.GroupDesc, &snapshot.QuotaType, &groupRatio, &inputPrice,
 		&outputPrice, &cacheReadPrice, &cacheWritePrice, &requestPrice, &upstreamBalance, &snapshot.BalanceUnit,
@@ -1280,7 +1313,8 @@ func (s Store) CheapestLatestSnapshot(ctx context.Context, category string, mode
 			SELECT DISTINCT ON (p.rule_id)
 			       p.id, p.rule_id, COALESCE(p.source_type, 'newapi') AS source_type, COALESCE(p.site_id, 0) AS site_id, p.sub2api_upstream_id,
 			       CASE WHEN COALESCE(p.source_type, 'newapi') = 'sub2api' THEN COALESCE(u.name, '') ELSE COALESCE(st.name, '') END AS site_name,
-			       CASE WHEN COALESCE(p.source_type, 'newapi') = 'sub2api' THEN COALESCE(u.base_url, '') ELSE COALESCE(st.base_url, '') END AS site_base_url,
+			       COALESCE(NULLIF(p.source_base_url, ''), CASE WHEN COALESCE(p.source_type, 'newapi') = 'sub2api' THEN COALESCE(u.base_url, '') ELSE COALESCE(st.base_url, '') END) AS site_base_url,
+			       COALESCE(p.source_account, '') AS source_account,
 		       r.category, COALESCE(c.name, r.category) AS category_name, p.model_keyword, p.model_name,
 		       p.group_name, p.group_desc, p.quota_type, p.group_ratio, p.input_price, p.output_price,
 		       p.cache_read_price, p.cache_write_price, p.request_price, p.upstream_balance, p.balance_unit,
@@ -1297,7 +1331,7 @@ func (s Store) CheapestLatestSnapshot(ctx context.Context, category string, mode
 			  AND p.invalid = false
 			ORDER BY p.rule_id, p.created_at DESC, p.id DESC
 		)
-		SELECT id, rule_id, source_type, site_id, sub2api_upstream_id, site_name, site_base_url, category, category_name, model_keyword,
+		SELECT id, rule_id, source_type, site_id, sub2api_upstream_id, site_name, site_base_url, source_account, category, category_name, model_keyword,
 		       model_name, group_name, group_desc, quota_type,
 		       group_ratio, input_price, output_price, cache_read_price, cache_write_price,
 		       request_price, upstream_balance, balance_unit, invalid, invalid_reason, invalid_at, raw, created_at
@@ -1308,7 +1342,7 @@ func (s Store) CheapestLatestSnapshot(ctx context.Context, category string, mode
 		         id DESC
 		LIMIT 1
 	`, normalizeCategorySlug(category), strings.TrimSpace(modelName)).Scan(
-		&snapshot.ID, &snapshot.RuleID, &snapshot.SourceType, &snapshot.SiteID, &snapshot.Sub2APIUpstreamID, &snapshot.SiteName, &snapshot.SiteBaseURL,
+		&snapshot.ID, &snapshot.RuleID, &snapshot.SourceType, &snapshot.SiteID, &snapshot.Sub2APIUpstreamID, &snapshot.SiteName, &snapshot.SiteBaseURL, &snapshot.SourceAccount,
 		&snapshot.Category, &snapshot.CategoryName, &snapshot.ModelKeyword, &snapshot.ModelName,
 		&snapshot.GroupName, &snapshot.GroupDesc, &snapshot.QuotaType, &groupRatio, &inputPrice,
 		&outputPrice, &cacheReadPrice, &cacheWritePrice, &requestPrice, &upstreamBalance, &snapshot.BalanceUnit,
@@ -1350,10 +1384,11 @@ func (s Store) LatestSnapshots(ctx context.Context, limit int, category string) 
 			`+categoryFilter+`
 		),
 		latest AS (
-			SELECT DISTINCT ON (COALESCE(p.source_type, 'newapi'), COALESCE(p.site_id, 0), p.sub2api_upstream_id, p.rule_category, p.model_name, lower(trim(p.group_name)))
+			SELECT DISTINCT ON (COALESCE(p.source_type, 'newapi'), lower(regexp_replace(trim(p.source_base_url), '/+$', '')), lower(trim(p.source_account)), p.rule_category, p.model_name, lower(trim(p.group_name)))
 			       p.id, p.rule_id, COALESCE(p.source_type, 'newapi') AS source_type, COALESCE(p.site_id, 0) AS site_id, p.sub2api_upstream_id,
 			       CASE WHEN COALESCE(p.source_type, 'newapi') = 'sub2api' THEN COALESCE(u.name, '') ELSE COALESCE(s.name, '') END AS site_name,
-			       CASE WHEN COALESCE(p.source_type, 'newapi') = 'sub2api' THEN COALESCE(u.base_url, '') ELSE COALESCE(s.base_url, '') END AS site_base_url,
+			       COALESCE(NULLIF(p.source_base_url, ''), CASE WHEN COALESCE(p.source_type, 'newapi') = 'sub2api' THEN COALESCE(u.base_url, '') ELSE COALESCE(s.base_url, '') END) AS site_base_url,
+			       COALESCE(p.source_account, '') AS source_account,
 			       p.rule_category AS category, COALESCE(c.name, p.rule_category) AS category_name, p.model_keyword, p.model_name, p.group_name,
 			       p.group_desc, p.quota_type, p.group_ratio, p.input_price, p.output_price,
 			       p.cache_read_price, p.cache_write_price, p.request_price, p.upstream_balance, p.balance_unit,
@@ -1362,9 +1397,9 @@ func (s Store) LatestSnapshots(ctx context.Context, limit int, category string) 
 			LEFT JOIN sites s ON s.id = p.site_id
 			LEFT JOIN sub2api_upstreams u ON u.id = p.sub2api_upstream_id
 			LEFT JOIN categories c ON c.slug = p.rule_category
-			ORDER BY COALESCE(p.source_type, 'newapi'), COALESCE(p.site_id, 0), p.sub2api_upstream_id, p.rule_category, p.model_name, lower(trim(p.group_name)), p.created_at DESC, p.id DESC
+			ORDER BY COALESCE(p.source_type, 'newapi'), lower(regexp_replace(trim(p.source_base_url), '/+$', '')), lower(trim(p.source_account)), p.rule_category, p.model_name, lower(trim(p.group_name)), p.created_at DESC, p.id DESC
 		)
-		SELECT id, rule_id, source_type, site_id, sub2api_upstream_id, site_name, site_base_url, category, category_name, model_keyword,
+		SELECT id, rule_id, source_type, site_id, sub2api_upstream_id, site_name, site_base_url, source_account, category, category_name, model_keyword,
 		       model_name, group_name, group_desc, quota_type,
 		       group_ratio, input_price, output_price, cache_read_price, cache_write_price,
 		       request_price, upstream_balance, balance_unit, invalid, invalid_reason, invalid_at, raw, created_at
@@ -1389,7 +1424,7 @@ func (s Store) LatestSnapshots(ctx context.Context, limit int, category string) 
 		var groupRatio, inputPrice, outputPrice, cacheReadPrice, cacheWritePrice, requestPrice, upstreamBalance sql.NullFloat64
 		var invalidAt sql.NullTime
 		if err := rows.Scan(
-			&snapshot.ID, &snapshot.RuleID, &snapshot.SourceType, &snapshot.SiteID, &snapshot.Sub2APIUpstreamID, &snapshot.SiteName, &snapshot.SiteBaseURL,
+			&snapshot.ID, &snapshot.RuleID, &snapshot.SourceType, &snapshot.SiteID, &snapshot.Sub2APIUpstreamID, &snapshot.SiteName, &snapshot.SiteBaseURL, &snapshot.SourceAccount,
 			&snapshot.Category, &snapshot.CategoryName, &snapshot.ModelKeyword, &snapshot.ModelName,
 			&snapshot.GroupName, &snapshot.GroupDesc, &snapshot.QuotaType, &groupRatio, &inputPrice,
 			&outputPrice, &cacheReadPrice, &cacheWritePrice, &requestPrice, &upstreamBalance, &snapshot.BalanceUnit,
@@ -1444,7 +1479,8 @@ func (s Store) latestSnapshotsForModel(ctx context.Context, category string, mod
 			SELECT DISTINCT ON (p.rule_id)
 			       p.id, p.rule_id, COALESCE(p.source_type, 'newapi') AS source_type, COALESCE(p.site_id, 0) AS site_id, p.sub2api_upstream_id,
 			       CASE WHEN COALESCE(p.source_type, 'newapi') = 'sub2api' THEN COALESCE(u.name, '') ELSE COALESCE(st.name, '') END AS site_name,
-			       CASE WHEN COALESCE(p.source_type, 'newapi') = 'sub2api' THEN COALESCE(u.base_url, '') ELSE COALESCE(st.base_url, '') END AS site_base_url,
+			       COALESCE(NULLIF(p.source_base_url, ''), CASE WHEN COALESCE(p.source_type, 'newapi') = 'sub2api' THEN COALESCE(u.base_url, '') ELSE COALESCE(st.base_url, '') END) AS site_base_url,
+			       COALESCE(p.source_account, '') AS source_account,
 			       r.category, COALESCE(c.name, r.category) AS category_name, p.model_keyword, p.model_name,
 			       p.group_name, p.group_desc, p.quota_type, p.group_ratio, p.input_price, p.output_price,
 			       p.cache_read_price, p.cache_write_price, p.request_price, p.upstream_balance, p.balance_unit,
@@ -1461,7 +1497,7 @@ func (s Store) latestSnapshotsForModel(ctx context.Context, category string, mod
 			  AND p.invalid = false
 			ORDER BY p.rule_id, p.created_at DESC, p.id DESC
 		)
-		SELECT id, rule_id, source_type, site_id, sub2api_upstream_id, site_name, site_base_url, category, category_name, model_keyword,
+		SELECT id, rule_id, source_type, site_id, sub2api_upstream_id, site_name, site_base_url, source_account, category, category_name, model_keyword,
 		       model_name, group_name, group_desc, quota_type,
 		       group_ratio, input_price, output_price, cache_read_price, cache_write_price,
 		       request_price, upstream_balance, balance_unit, invalid, invalid_reason, invalid_at, raw, created_at
@@ -1482,7 +1518,7 @@ func (s Store) latestSnapshotsForModel(ctx context.Context, category string, mod
 		var groupRatio, inputPrice, outputPrice, cacheReadPrice, cacheWritePrice, requestPrice, upstreamBalance sql.NullFloat64
 		var invalidAt sql.NullTime
 		if err := rows.Scan(
-			&snapshot.ID, &snapshot.RuleID, &snapshot.SourceType, &snapshot.SiteID, &snapshot.Sub2APIUpstreamID, &snapshot.SiteName, &snapshot.SiteBaseURL,
+			&snapshot.ID, &snapshot.RuleID, &snapshot.SourceType, &snapshot.SiteID, &snapshot.Sub2APIUpstreamID, &snapshot.SiteName, &snapshot.SiteBaseURL, &snapshot.SourceAccount,
 			&snapshot.Category, &snapshot.CategoryName, &snapshot.ModelKeyword, &snapshot.ModelName,
 			&snapshot.GroupName, &snapshot.GroupDesc, &snapshot.QuotaType, &groupRatio, &inputPrice,
 			&outputPrice, &cacheReadPrice, &cacheWritePrice, &requestPrice, &upstreamBalance, &snapshot.BalanceUnit,

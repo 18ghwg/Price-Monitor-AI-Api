@@ -154,6 +154,8 @@ CREATE TABLE IF NOT EXISTS price_snapshots (
   source_type TEXT NOT NULL DEFAULT 'newapi',
   site_id BIGINT REFERENCES sites(id) ON DELETE SET NULL,
   sub2api_upstream_id BIGINT NOT NULL DEFAULT 0,
+  source_base_url TEXT NOT NULL DEFAULT '',
+  source_account TEXT NOT NULL DEFAULT '',
   category TEXT NOT NULL DEFAULT 'other',
   model_keyword TEXT NOT NULL DEFAULT '',
   model_name TEXT NOT NULL,
@@ -279,6 +281,12 @@ ALTER TABLE IF EXISTS price_snapshots
   ADD COLUMN IF NOT EXISTS sub2api_upstream_id BIGINT NOT NULL DEFAULT 0;
 
 ALTER TABLE IF EXISTS price_snapshots
+  ADD COLUMN IF NOT EXISTS source_base_url TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE IF EXISTS price_snapshots
+  ADD COLUMN IF NOT EXISTS source_account TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE IF EXISTS price_snapshots
   ALTER COLUMN site_id DROP NOT NULL;
 
 ALTER TABLE IF EXISTS price_snapshots
@@ -289,6 +297,25 @@ SET source_type = CASE WHEN COALESCE(sub2api_upstream_id, 0) > 0 AND COALESCE(si
 
 UPDATE price_snapshots
 SET source_type = COALESCE(NULLIF(source_type, ''), 'newapi');
+
+UPDATE price_snapshots p
+SET source_base_url = COALESCE(s.base_url, ''),
+    source_account = COALESCE(s.username, '')
+FROM sites s
+WHERE p.site_id = s.id
+  AND (p.source_base_url = '' OR p.source_account = '');
+
+UPDATE price_snapshots p
+SET source_base_url = COALESCE(u.base_url, ''),
+    source_account = CASE
+      WHEN trim(COALESCE(u.email, '')) <> '' THEN trim(u.email)
+      WHEN trim(COALESCE(u.auth_token, '')) <> '' THEN 'token:' || left(md5(u.auth_token), 12)
+      ELSE ''
+    END
+FROM sub2api_upstreams u
+WHERE p.sub2api_upstream_id = u.id
+  AND COALESCE(p.source_type, 'newapi') = 'sub2api'
+  AND (p.source_base_url = '' OR p.source_account = '');
 
 ALTER TABLE IF EXISTS price_snapshots
   ADD COLUMN IF NOT EXISTS model_keyword TEXT NOT NULL DEFAULT '';
@@ -350,7 +377,7 @@ DELETE FROM price_snapshots p
 USING (
   SELECT p.id,
          row_number() OVER (
-           PARTITION BY COALESCE(p.source_type, 'newapi'), COALESCE(p.site_id, 0), p.sub2api_upstream_id,
+           PARTITION BY COALESCE(p.source_type, 'newapi'), lower(regexp_replace(trim(p.source_base_url), '/+$', '')), lower(trim(p.source_account)),
                         r.category, p.model_name, lower(trim(p.group_name))
            ORDER BY p.created_at DESC, p.id DESC
          ) AS duplicate_rank
@@ -395,12 +422,13 @@ CREATE INDEX IF NOT EXISTS idx_price_snapshots_invalid_at
   ON price_snapshots (invalid, invalid_at);
 
 DROP INDEX IF EXISTS idx_price_snapshots_unique_source_group_model;
+DROP INDEX IF EXISTS idx_price_snapshots_unique_source_account_group_model;
 
 DELETE FROM price_snapshots p
 USING (
   SELECT id,
          row_number() OVER (
-           PARTITION BY COALESCE(source_type, 'newapi'), COALESCE(site_id, 0), sub2api_upstream_id,
+           PARTITION BY COALESCE(source_type, 'newapi'), lower(regexp_replace(trim(source_base_url), '/+$', '')), lower(trim(source_account)),
                         category, model_name, lower(trim(group_name))
            ORDER BY created_at DESC, id DESC
          ) AS duplicate_rank
@@ -409,11 +437,11 @@ USING (
 WHERE p.id = ranked.id
   AND ranked.duplicate_rank > 1;
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_price_snapshots_unique_source_group_model
+CREATE UNIQUE INDEX IF NOT EXISTS idx_price_snapshots_unique_source_account_group_model
   ON price_snapshots (
     COALESCE(source_type, 'newapi'),
-    COALESCE(site_id, 0),
-    sub2api_upstream_id,
+    lower(regexp_replace(trim(source_base_url), '/+$', '')),
+    lower(trim(source_account)),
     category,
     model_name,
     lower(trim(group_name))
