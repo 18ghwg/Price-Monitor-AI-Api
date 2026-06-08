@@ -1501,32 +1501,32 @@ func (s *Server) syncCandidateSnapshotToMain(ctx context.Context, rule Rule, can
 	case "", RuleSourceNewAPI:
 		client, err := NewNewAPIClient(site.BaseURL)
 		if err != nil {
-			return false, err
+			return false, fmt.Errorf("candidate %s create NewAPI client: %w", candidateLabel(candidate), err)
 		}
 		userID, err := client.Login(ctx, site.Username, site.Password, site.TOTPCode)
 		if err != nil {
-			return false, err
+			return false, fmt.Errorf("candidate %s login NewAPI upstream: %w", candidateLabel(candidate), err)
 		}
 		token := site.AccessToken
 		if token == "" || userID != site.UserID {
 			token, err = client.GenerateSystemAccessToken(ctx, userID)
 			if err != nil {
-				return false, err
+				return false, fmt.Errorf("candidate %s generate NewAPI system token: %w", candidateLabel(candidate), err)
 			}
 		}
 		apiKey, keyAction, err := createNewAPIUpstreamKey(ctx, client, userID, token, keyName, candidate.GroupName)
 		if err != nil {
-			return true, err
+			return true, fmt.Errorf("candidate %s create NewAPI key for group %s: %w", candidateLabel(candidate), candidate.GroupName, err)
 		}
 		return true, s.syncUpstreamKeyToMainSub2APIWithSignature(ctx, rule, site.Name, site.BaseURL, apiKey, row, keyAction, signature)
 	case RuleSourceSub2API:
 		group, err := sub2GroupFromSnapshot(candidate)
 		if err != nil {
-			return false, err
+			return false, fmt.Errorf("candidate %s load sub2api group from snapshot: %w", candidateLabel(candidate), err)
 		}
 		apiKey, keyAction, err := s.ensureSub2APIUpstreamAPIKey(ctx, upstream, keyName, group)
 		if err != nil {
-			return true, err
+			return true, fmt.Errorf("candidate %s create sub2api key for group %s: %w", candidateLabel(candidate), candidate.GroupName, err)
 		}
 		return true, s.syncUpstreamKeyToMainSub2APIWithSignature(ctx, rule, upstream.Name, upstream.BaseURL, apiKey, row, keyAction, signature)
 	default:
@@ -1551,6 +1551,23 @@ func pricingRowFromSnapshot(snapshot PriceSnapshot) PricingRow {
 		CacheWritePrice: snapshot.CacheWritePrice,
 		RequestPrice:    snapshot.RequestPrice,
 	}
+}
+
+func candidateLabel(snapshot PriceSnapshot) string {
+	parts := []string{}
+	if sourceType := strings.TrimSpace(snapshot.SourceType); sourceType != "" {
+		parts = append(parts, sourceType)
+	}
+	if siteName := strings.TrimSpace(snapshot.SiteName); siteName != "" {
+		parts = append(parts, siteName)
+	}
+	if groupName := strings.TrimSpace(snapshot.GroupName); groupName != "" {
+		parts = append(parts, groupName)
+	}
+	if len(parts) == 0 {
+		return "unknown candidate"
+	}
+	return strings.Join(parts, " / ")
 }
 
 func sub2GroupFromSnapshot(snapshot PriceSnapshot) (sub2Group, error) {
