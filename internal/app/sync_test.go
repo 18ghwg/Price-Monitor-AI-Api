@@ -34,8 +34,50 @@ func TestIsFallbackSyncErrorMatchesNewAPITokenKeyRoute(t *testing.T) {
 		t.Fatal("isFallbackSyncError() = false, want true for unsupported token key route")
 	}
 	status := fallbackSyncStatus(err)
-	if !strings.HasPrefix(status, "skip fallback candidate: ") {
+	if !strings.HasPrefix(status, "跳过该低价候选：") {
 		t.Fatalf("fallbackSyncStatus() = %q, want fallback prefix", status)
+	}
+	if strings.Contains(status, "Invalid URL") {
+		t.Fatalf("fallbackSyncStatus() = %q, want localized error", status)
+	}
+}
+
+func TestIsFallbackSyncErrorMatchesTemporaryRateLimit(t *testing.T) {
+	err := errors.New("candidate newapi / ai.17nas / 账号 ghwg / GPTfree / 倍率 0.01 login NewAPI upstream: upstream https://ai.17nas.com/api/user/login returned HTTP 429:")
+	if !isFallbackSyncError(err) {
+		t.Fatal("isFallbackSyncError() = false, want true for temporary upstream rate limit")
+	}
+	status := fallbackSyncStatus(err)
+	for _, want := range []string{"跳过该低价候选", "HTTP 429（上游临时限流）"} {
+		if !strings.Contains(status, want) {
+			t.Fatalf("fallbackSyncStatus() = %q, want %q", status, want)
+		}
+	}
+}
+
+func TestIsFallbackSyncErrorMatchesTemporaryConnectionEOF(t *testing.T) {
+	err := errors.New(`candidate newapi / ai.17nas login NewAPI upstream: request https://ai.17nas.com/api/user/login: Post "https://ai.17nas.com/api/user/login": EOF`)
+	if !isFallbackSyncError(err) {
+		t.Fatal("isFallbackSyncError() = false, want true for temporary upstream EOF")
+	}
+	status := fallbackSyncStatus(err)
+	for _, want := range []string{"跳过该低价候选", "上游连接中断"} {
+		if !strings.Contains(status, want) {
+			t.Fatalf("fallbackSyncStatus() = %q, want %q", status, want)
+		}
+	}
+}
+
+func TestIsFallbackSyncErrorMatchesTemporaryServiceUnavailable(t *testing.T) {
+	err := errors.New(`主站账号连接测试失败：账号 #53，模型 gpt-5.5，原因：API returned 503: {"error":{"message":"Service temporarily unavailable"}}`)
+	if !isFallbackSyncError(err) {
+		t.Fatal("isFallbackSyncError() = false, want true for temporary service unavailable")
+	}
+	status := fallbackSyncStatus(err)
+	for _, want := range []string{"跳过该低价候选", "接口返回 503", "服务暂时不可用"} {
+		if !strings.Contains(status, want) {
+			t.Fatalf("fallbackSyncStatus() = %q, want %q", status, want)
+		}
 	}
 }
 
@@ -90,7 +132,7 @@ func TestLowBalanceStatusIncludesSourceGroupAndBalance(t *testing.T) {
 		BalanceUnit:     "usd",
 	})
 
-	for _, want := range []string{"skip low balance", "huanapi", "Free", "$0.000000"} {
+	for _, want := range []string{"跳过余额不足", "huanapi", "Free", "$0.000000"} {
 		if !strings.Contains(status, want) {
 			t.Fatalf("lowBalanceStatus() = %q, want to include %q", status, want)
 		}

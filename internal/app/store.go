@@ -1130,7 +1130,7 @@ func (s Store) RestoreRuleAfterManualRun(ctx context.Context, ruleID int64) erro
 		    schedule_enabled = true,
 		    next_run_at = now() + make_interval(mins => CASE WHEN interval_minutes > 0 THEN interval_minutes ELSE 15 END),
 		    sync_status = CASE
-		      WHEN sync_status LIKE 'paused after %' OR sync_status = 'error' OR sync_status LIKE 'skip low balance:%' THEN 'manual run ok'
+		      WHEN sync_status LIKE 'paused after %' OR sync_status LIKE '已暂停：%' OR sync_status = 'error' OR sync_status = '同步失败' OR sync_status LIKE 'skip low balance:%' OR sync_status LIKE '跳过余额不足：%' THEN '手动运行成功'
 		      ELSE sync_status
 		    END,
 		    sync_error = '',
@@ -1217,7 +1217,7 @@ func (s Store) RecordRuleSyncFailure(ctx context.Context, ruleID int64, status s
 	paused := failureCount >= pauseAfter
 	shouldNotify := failureSignature == "" || failureSignature != previousSignature || failureCount == 1
 	if paused {
-		status = fmt.Sprintf("paused after %d sync failures", failureCount)
+		status = fmt.Sprintf("已暂停：连续 %d 次同步失败", failureCount)
 	}
 
 	_, err := s.db.Exec(ctx, `

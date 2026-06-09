@@ -2300,6 +2300,81 @@ function fmtBalance(value, unit) {
   return normalized ? label + " " + normalized : label;
 }
 
+function displaySyncText(value) {
+  let text = String(value || "").trim();
+  if (!text) return "";
+  text = text.replace(/^not current available cheapest:\s*/i, "不是当前可同步最低价：");
+  text = text.replace(/^not current cheapest$/i, "不是当前最低价");
+  text = text.replace(/^skip low balance:\s*/i, "跳过余额不足：");
+  text = text.replace(/^skip fallback candidate:\s*/i, "跳过该低价候选：");
+  text = text.replace(/^skip threshold\s+([^\s]+)\s+([^:]+):\s*input\s+/i, "跳过阈值限制：分类 $1，阈值倍率 $2，输入价格 ");
+  text = text.replace(/^skip threshold\s+([^\s]+)\s+([^:]+):\s*output\s+/i, "跳过阈值限制：分类 $1，阈值倍率 $2，输出价格 ");
+  text = text.replace(/^skip threshold\s+([^\s]+)\s+([^:]+):\s*cache read\s+/i, "跳过阈值限制：分类 $1，阈值倍率 $2，缓存读价格 ");
+  text = text.replace(/^skip threshold\s+([^\s]+)\s+([^:]+):\s*cache write\s+/i, "跳过阈值限制：分类 $1，阈值倍率 $2，缓存写价格 ");
+  text = text.replace(/^manual run ok$/i, "手动运行成功");
+  text = text.replace(/^error$/i, "同步失败");
+  text = text.replace(/^paused after\s+(\d+)\s+sync failures$/i, "已暂停：连续 $1 次同步失败");
+  const success = text.match(/^(created|updated|reused)\s+(created|updated|reused)\s+(.+)\s+rate\s+([^\s]+)\s+->\s+(.+)\s+tested\s+(.+)$/i);
+  if (success) {
+    return "同步成功：主站账号" + syncActionText(success[1]) + "，上游key" + syncActionText(success[2])
+      + "，低价分组 " + success[3] + "，倍率 " + success[4]
+      + "，同步到主站分组 " + success[5] + "，已测试模型 " + success[6];
+  }
+  return localizeSyncText(text);
+}
+
+function syncActionText(action) {
+  switch (String(action || "").trim().toLowerCase()) {
+    case "created": return "已创建";
+    case "updated": return "已更新";
+    case "reused": return "已复用";
+    default: return action || "已处理";
+  }
+}
+
+function localizeSyncText(value) {
+  let text = String(value || "");
+  [
+    ["sub2api sync is disabled", "主站 sub2api 同步开关未开启"],
+    ["sub2api main base url is not configured", "主站 sub2api 地址未配置"],
+    ["sub2api admin key is not configured", "主站 sub2api 管理员 key 未配置"],
+    ["main sub2api admin auth failed", "主站 sub2api 管理员认证失败"],
+    ["HTTP 429", "HTTP 429（上游临时限流）"],
+    ["API returned 503", "接口返回 503"],
+    ["Service temporarily unavailable", "服务暂时不可用"],
+    ["too many requests", "请求过于频繁"],
+    ["rate limit", "限流"],
+    ["TLS handshake timeout", "TLS 握手超时"],
+    ["tls handshake timeout", "TLS 握手超时"],
+    ["timeout", "超时"],
+    ["EOF", "上游连接中断"],
+    ["connection reset", "连接被重置"],
+    ["connection refused", "连接被拒绝"],
+    ["test main sub2api account", "测试主站 sub2api 账号"],
+    ["sub2api account test did not report success", "主站账号测试没有返回成功结果"],
+    ["test failed", "测试失败"],
+    ["candidate", "候选"],
+    ["create NewAPI key", "创建 NewAPI key"],
+    ["create sub2api key", "创建 sub2api key"],
+    ["login NewAPI upstream", "登录 NewAPI 上游"],
+    ["get newapi token key", "获取 NewAPI 令牌 key"],
+    ["returned HTTP", "返回 HTTP"],
+    ["Invalid URL", "接口地址无效"],
+    ["invalid url", "接口地址无效"],
+    ["not found", "未找到"],
+    ["unauthorized", "未授权"],
+    ["forbidden", "无权限"],
+    ["permission", "权限不足"],
+    ["unsupported", "不支持"],
+    ["does not support", "不支持"],
+    ["is required", "不能为空"],
+    ["failed", "失败"],
+  ].forEach(([from, to]) => {
+    text = text.split(from).join(to);
+  });
+  return text;
+}
+
 function checkinBadge(rule) {
   const status = String(rule?.checkin_status || "").trim().toLowerCase();
   const message = String(rule?.checkin_message || "").trim();
@@ -2826,7 +2901,7 @@ function renderRules() {
     const statusClass = isEnabled ? "status" : "status disabled";
     const schedule = rule.schedule_enabled ? ("每 " + (rule.interval_minutes || 15) + " 分钟") : "关闭";
     const sync = rule.sync_enabled
-      ? ("<span class=\"status\">" + escapeHTML(rule.sync_status || "待同步") + "</span>" + (rule.sync_error ? "<div class=\"error\">" + escapeHTML(rule.sync_error) + "</div>" : ""))
+      ? ("<span class=\"status\">" + escapeHTML(displaySyncText(rule.sync_status) || "待同步") + "</span>" + (rule.sync_error ? "<div class=\"error\">" + escapeHTML(displaySyncText(rule.sync_error)) + "</div>" : ""))
       : "<span class=\"status disabled\">关闭</span>";
     return "<tr>"
       + "<td data-label=\"ID\">" + id + "</td>"

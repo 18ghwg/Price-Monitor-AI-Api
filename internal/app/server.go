@@ -1442,7 +1442,7 @@ func (s *Server) runNewAPIRule(ctx context.Context, rule Rule, site Site) ([]Pri
 	}
 	_ = s.store.UpdateSiteRun(ctx, site.ID, userID, token, time.Now(), "")
 	if rule.SyncEnabled && !syncAttempted && syncErr == nil && !syncDecisionRecorded {
-		_ = s.store.UpdateRuleSyncStatus(ctx, rule.ID, "not current cheapest", "")
+		_ = s.store.UpdateRuleSyncStatus(ctx, rule.ID, "不是当前最低价", "")
 	}
 	return snapshots, nil
 }
@@ -1552,7 +1552,7 @@ func (s *Server) runSub2APIRule(ctx context.Context, rule Rule, upstream Sub2API
 		log.Printf("mark missing sub2api snapshot groups invalid for rule %d: %v", rule.ID, err)
 	}
 	if rule.SyncEnabled && !syncAttempted && syncErr == nil && !syncDecisionRecorded {
-		_ = s.store.UpdateRuleSyncStatus(ctx, rule.ID, "not current cheapest", "")
+		_ = s.store.UpdateRuleSyncStatus(ctx, rule.ID, "不是当前最低价", "")
 	}
 	return snapshots, nil
 }
@@ -1806,10 +1806,11 @@ func (s *Server) syncBestAvailableCandidate(ctx context.Context, rule Rule, mode
 		if signatureErr != nil && !notFound(signatureErr) {
 			log.Printf("load sync signature for candidate rule %d: %v", candidateRule.ID, signatureErr)
 		}
+		notifySync := true
 		if signature != "" && signature == lastSignature {
-			return false, true, nil
+			notifySync = false
 		}
-		attempted, err := s.syncCandidateSnapshotToMain(ctx, candidateRule, candidate, signature)
+		attempted, err := s.syncCandidateSnapshotToMain(ctx, candidateRule, candidate, signature, notifySync)
 		if err == nil {
 			return attempted, true, nil
 		}
@@ -1822,12 +1823,12 @@ func (s *Server) syncBestAvailableCandidate(ctx context.Context, rule Rule, mode
 		return attempted, true, err
 	}
 	if len(fallbackErrors) > 0 {
-		err := fmt.Errorf("all sync candidates failed: %s", strings.Join(fallbackErrors, "；"))
+		err := fmt.Errorf("所有可同步低价候选都失败：%s", strings.Join(fallbackErrors, "；"))
 		_ = s.store.UpdateRuleSyncStatus(ctx, rule.ID, err.Error(), "")
 		return true, true, err
 	}
 	if len(candidates) > 0 {
-		_ = s.store.UpdateRuleSyncStatus(ctx, rule.ID, fmt.Sprintf("not current available cheapest: %s %s", candidates[0].SiteName, candidates[0].GroupName), "")
+		_ = s.store.UpdateRuleSyncStatus(ctx, rule.ID, fmt.Sprintf("不是当前可同步最低价：%s %s", candidates[0].SiteName, candidates[0].GroupName), "")
 	}
 	return false, true, nil
 }
@@ -1869,16 +1870,16 @@ func lowBalanceNotifyWindow(skipped []PriceSnapshot) []PriceSnapshot {
 }
 
 func lowBalanceStatus(snapshot PriceSnapshot) string {
-	return fmt.Sprintf("skip low balance: %s %s %s", snapshot.SiteName, snapshot.GroupName, formatBalance(snapshot.UpstreamBalance, snapshot.BalanceUnit))
+	return fmt.Sprintf("跳过余额不足：%s %s %s", snapshot.SiteName, snapshot.GroupName, formatBalance(snapshot.UpstreamBalance, snapshot.BalanceUnit))
 }
 
 func fallbackSyncStatus(err error) string {
-	text := strings.TrimSpace(err.Error())
+	text := localizeSyncError(err)
 	const maxLen = 240
 	if len(text) > maxLen {
 		text = text[:maxLen] + "..."
 	}
-	return "skip fallback candidate: " + text
+	return "跳过该低价候选：" + text
 }
 
 func (s *Server) recordSyncFailure(ctx context.Context, rule Rule, candidate PriceSnapshot, err error) {
@@ -1886,7 +1887,7 @@ func (s *Server) recordSyncFailure(ctx context.Context, rule Rule, candidate Pri
 		return
 	}
 	failureSignature := syncFailureSignature(candidate, err)
-	count, paused, shouldNotify, recordErr := s.store.RecordRuleSyncFailure(ctx, rule.ID, "error", err.Error(), failureSignature, syncFailurePauseThreshold)
+	count, paused, shouldNotify, recordErr := s.store.RecordRuleSyncFailure(ctx, rule.ID, "同步失败", localizeSyncError(err), failureSignature, syncFailurePauseThreshold)
 	if recordErr != nil {
 		log.Printf("record sync failure for rule %d: %v", rule.ID, recordErr)
 		return
@@ -1899,7 +1900,7 @@ func (s *Server) recordSyncFailure(ctx context.Context, rule Rule, candidate Pri
 	}
 }
 
-func (s *Server) syncCandidateSnapshotToMain(ctx context.Context, rule Rule, candidate PriceSnapshot, signature string) (bool, error) {
+func (s *Server) syncCandidateSnapshotToMain(ctx context.Context, rule Rule, candidate PriceSnapshot, signature string, notifySync bool) (bool, error) {
 	candidateRule, site, upstream, err := s.store.GetRuleWithSource(ctx, candidate.RuleID)
 	if err != nil {
 		return false, err
@@ -1927,7 +1928,7 @@ func (s *Server) syncCandidateSnapshotToMain(ctx context.Context, rule Rule, can
 		if err != nil {
 			return true, fmt.Errorf("candidate %s create NewAPI key for group %s: %w", candidateLabel(candidate), candidate.GroupName, err)
 		}
-		return true, s.syncUpstreamKeyToMainSub2APIWithSignature(ctx, rule, site.Name, site.BaseURL, apiKey, row, candidate, keyAction, signature)
+		return true, s.syncUpstreamKeyToMainSub2APIWithSignature(ctx, rule, site.Name, site.BaseURL, apiKey, row, candidate, keyAction, signature, notifySync)
 	case RuleSourceSub2API:
 		group, err := sub2GroupFromSnapshot(candidate)
 		if err != nil {
@@ -1937,7 +1938,7 @@ func (s *Server) syncCandidateSnapshotToMain(ctx context.Context, rule Rule, can
 		if err != nil {
 			return true, fmt.Errorf("candidate %s create sub2api key for group %s: %w", candidateLabel(candidate), candidate.GroupName, err)
 		}
-		return true, s.syncUpstreamKeyToMainSub2APIWithSignature(ctx, rule, upstream.Name, upstream.BaseURL, apiKey, row, candidate, keyAction, signature)
+		return true, s.syncUpstreamKeyToMainSub2APIWithSignature(ctx, rule, upstream.Name, upstream.BaseURL, apiKey, row, candidate, keyAction, signature, notifySync)
 	default:
 		return false, fmt.Errorf("unsupported sync candidate source type %q", candidate.SourceType)
 	}
@@ -2115,9 +2116,24 @@ func isFallbackSyncError(err error) bool {
 		"禁止",
 		"不支持",
 		"不可用",
+		"测试失败",
+		"连接测试失败",
 		"not found",
 		"was not found",
 		"invalid url",
+		"http 429",
+		"api returned 503",
+		"service temporarily unavailable",
+		"too many requests",
+		"rate limit",
+		"tls handshake timeout",
+		"timeout",
+		"eof",
+		"connection reset",
+		"connection refused",
+		"临时限流",
+		"请求过于频繁",
+		"超时",
 		"token key",
 		"/api/token/",
 	}
@@ -2143,17 +2159,17 @@ func (s *Server) shouldSyncGlobalCheapestWithBalance(ctx context.Context, rule R
 		return true, skipped, false
 	}
 	if snapshotBalanceInsufficient(snapshot) {
-		_ = s.store.UpdateRuleSyncStatus(ctx, rule.ID, fmt.Sprintf("skip low balance: %s %s %s", snapshot.SiteName, snapshot.GroupName, formatBalance(snapshot.UpstreamBalance, snapshot.BalanceUnit)), "")
+		_ = s.store.UpdateRuleSyncStatus(ctx, rule.ID, fmt.Sprintf("跳过余额不足：%s %s %s", snapshot.SiteName, snapshot.GroupName, formatBalance(snapshot.UpstreamBalance, snapshot.BalanceUnit)), "")
 		return false, skipped, true
 	}
-	_ = s.store.UpdateRuleSyncStatus(ctx, rule.ID, fmt.Sprintf("not current available cheapest: %s %s", candidate.SiteName, candidate.GroupName), "")
+	_ = s.store.UpdateRuleSyncStatus(ctx, rule.ID, fmt.Sprintf("不是当前可同步最低价：%s %s", candidate.SiteName, candidate.GroupName), "")
 	return false, skipped, true
 }
 
 func (s *Server) syncThresholdSkipReason(ctx context.Context, rule Rule, snapshot PriceSnapshot) (string, bool) {
 	settings, err := s.store.GetIntegrationSettings(ctx)
 	if err != nil {
-		return fmt.Sprintf("skip threshold: load settings: %v", err), false
+		return fmt.Sprintf("跳过阈值限制：读取设置失败：%v", err), false
 	}
 	thresholdRatio := syncThresholdRatioForCategory(settings, rule.Category)
 	if thresholdRatio == nil || *thresholdRatio <= 0 {
@@ -2162,7 +2178,7 @@ func (s *Server) syncThresholdSkipReason(ctx context.Context, rule Rule, snapsho
 	ratio := *thresholdRatio
 	official, err := officialPriceThreshold(ctx, snapshot.ModelName, ratio)
 	if err != nil {
-		return fmt.Sprintf("skip threshold: %v", err), false
+		return fmt.Sprintf("跳过阈值限制：%s", localizeSyncError(err)), false
 	}
 	if overPrice(snapshot.InputPrice, official.InputPrice) {
 		return syncThresholdStatus(rule.Category, "input", snapshot.InputPrice, official.InputPrice, ratio), false
@@ -2214,7 +2230,27 @@ func overPrice(actual *float64, threshold *float64) bool {
 }
 
 func syncThresholdStatus(category string, label string, actual *float64, threshold *float64, ratio float64) string {
-	return fmt.Sprintf("skip threshold %s %.9g: %s %s > %s", normalizeCategorySlug(category), ratio, label, fmtFloatPtr(actual), fmtFloatPtr(threshold))
+	return fmt.Sprintf("跳过阈值限制：分类 %s，阈值倍率 %.9g，%s价格 %s > %s", normalizeCategorySlug(category), ratio, chinesePriceLabel(label), fmtFloatPtr(actual), fmtFloatPtr(threshold))
+}
+
+func chinesePriceLabel(label string) string {
+	switch strings.ToLower(strings.TrimSpace(label)) {
+	case "input":
+		return "输入"
+	case "output":
+		return "输出"
+	case "cache read":
+		return "缓存读"
+	case "cache write":
+		return "缓存写"
+	case "request":
+		return "请求"
+	default:
+		if strings.TrimSpace(label) == "" {
+			return "模型"
+		}
+		return label
+	}
 }
 
 func firstFloatPtr(values ...*float64) *float64 {
@@ -2259,10 +2295,10 @@ func upstreamKeyName(rule Rule, modelName string) string {
 }
 
 func (s *Server) syncUpstreamKeyToMainSub2API(ctx context.Context, rule Rule, sourceName string, sourceBaseURL string, apiKey string, row PricingRow, keyAction string) error {
-	return s.syncUpstreamKeyToMainSub2APIWithSignature(ctx, rule, sourceName, sourceBaseURL, apiKey, row, PriceSnapshot{}, keyAction, "")
+	return s.syncUpstreamKeyToMainSub2APIWithSignature(ctx, rule, sourceName, sourceBaseURL, apiKey, row, PriceSnapshot{}, keyAction, "", true)
 }
 
-func (s *Server) syncUpstreamKeyToMainSub2APIWithSignature(ctx context.Context, rule Rule, sourceName string, sourceBaseURL string, apiKey string, row PricingRow, snapshot PriceSnapshot, keyAction string, signature string) error {
+func (s *Server) syncUpstreamKeyToMainSub2APIWithSignature(ctx context.Context, rule Rule, sourceName string, sourceBaseURL string, apiKey string, row PricingRow, snapshot PriceSnapshot, keyAction string, signature string, notifySync bool) error {
 	settings, err := s.store.GetIntegrationSettings(ctx)
 	if err != nil {
 		return fmt.Errorf("load integration settings: %w", err)
@@ -2303,20 +2339,96 @@ func (s *Server) syncUpstreamKeyToMainSub2APIWithSignature(ctx context.Context, 
 		return err
 	}
 	if err := sub2.TestAccountConnection(ctx, account.ID, row.ModelName); err != nil {
-		return fmt.Errorf("test main sub2api account %d model %s failed: %w", account.ID, row.ModelName, err)
+		return fmt.Errorf("主站账号连接测试失败：账号 #%d，模型 %s，原因：%w", account.ID, row.ModelName, err)
 	}
 	if err := sub2.DisableOtherAPIKeyAccountsForGroups(ctx, platform, account.ID, groups); err != nil {
-		return fmt.Errorf("disable other main sub2api accounts for groups %s: %w", strings.Join(groupNames, ", "), err)
+		return fmt.Errorf("关闭同分组其他主站账号失败：分组 %s，原因：%w", strings.Join(groupNames, ", "), err)
 	}
 	if snapshot.ID == 0 {
 		snapshot = priceSnapshotFromPricingRow(row, sourceName, sourceBaseURL)
 	}
-	s.notifySyncUpdate(ctx, rule, Site{Name: sourceName, BaseURL: sourceBaseURL}, snapshot, action, account)
-	status := action + " " + keyAction + " " + row.GroupName + " rate " + fmtFloat(row.GroupRatio) + " -> " + strings.Join(groupNames, ", ") + " tested " + row.ModelName
+	if notifySync {
+		s.notifySyncUpdate(ctx, rule, Site{Name: sourceName, BaseURL: sourceBaseURL}, snapshot, action, account)
+	}
+	status := fmt.Sprintf("同步成功：主站账号%s，上游key%s，低价分组 %s，倍率 %s，同步到主站分组 %s，已测试模型 %s",
+		chineseSyncAction(action), chineseSyncAction(keyAction), row.GroupName, fmtFloat(row.GroupRatio), strings.Join(groupNames, ", "), row.ModelName)
+	if !notifySync {
+		status = "复核成功：" + strings.TrimPrefix(status, "同步成功：")
+	}
 	if strings.TrimSpace(signature) != "" {
 		return s.store.UpdateRuleSyncSuccess(ctx, rule.ID, status, signature)
 	}
 	return s.store.UpdateRuleSyncStatus(ctx, rule.ID, status, "")
+}
+
+func chineseSyncAction(action string) string {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "created":
+		return "已创建"
+	case "updated":
+		return "已更新"
+	case "reused":
+		return "已复用"
+	default:
+		if strings.TrimSpace(action) == "" {
+			return "已处理"
+		}
+		return action
+	}
+}
+
+func localizeSyncError(err error) string {
+	if err == nil {
+		return ""
+	}
+	text := strings.TrimSpace(err.Error())
+	replacements := []struct {
+		old string
+		new string
+	}{
+		{"sub2api sync is disabled", "主站 sub2api 同步开关未开启"},
+		{"sub2api main base url is not configured", "主站 sub2api 地址未配置"},
+		{"sub2api admin key is not configured", "主站 sub2api 管理员 key 未配置"},
+		{"main sub2api admin auth failed", "主站 sub2api 管理员认证失败"},
+		{"HTTP 429", "HTTP 429（上游临时限流）"},
+		{"API returned 503", "接口返回 503"},
+		{"Service temporarily unavailable", "服务暂时不可用"},
+		{"too many requests", "请求过于频繁"},
+		{"rate limit", "限流"},
+		{"TLS handshake timeout", "TLS 握手超时"},
+		{"tls handshake timeout", "TLS 握手超时"},
+		{"timeout", "超时"},
+		{"EOF", "上游连接中断"},
+		{"connection reset", "连接被重置"},
+		{"connection refused", "连接被拒绝"},
+		{"test failed", "测试失败"},
+		{"test main sub2api account", "测试主站 sub2api 账号"},
+		{"sub2api account test did not report success", "主站账号测试没有返回成功结果"},
+		{"not found", "未找到"},
+		{"unauthorized", "未授权"},
+		{"forbidden", "无权限"},
+		{"permission", "权限不足"},
+		{"unsupported", "不支持"},
+		{"does not support", "不支持"},
+		{"is required", "不能为空"},
+		{"failed", "失败"},
+		{"candidate", "候选"},
+		{"create NewAPI key", "创建 NewAPI key"},
+		{"create sub2api key", "创建 sub2api key"},
+		{"login NewAPI upstream", "登录 NewAPI 上游"},
+		{"generate NewAPI system token", "生成 NewAPI 系统 token"},
+		{"get newapi token key", "获取 NewAPI 令牌 key"},
+		{"token key", "令牌 key"},
+		{"upstream", "上游"},
+		{"returned HTTP", "返回 HTTP"},
+		{"Invalid URL", "接口地址无效"},
+		{"invalid url", "接口地址无效"},
+		{"official price not found for model", "官方价格未找到模型"},
+	}
+	for _, replacement := range replacements {
+		text = strings.ReplaceAll(text, replacement.old, replacement.new)
+	}
+	return text
 }
 
 func syncPlatformForRule(rule Rule, category Category) string {
