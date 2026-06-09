@@ -2776,8 +2776,30 @@ function renderRules() {
 function filteredRules() {
   const filter = state.ruleCategoryFilter || "all";
   const rows = state.rules || [];
-  if (filter === "all") return rows;
-  return rows.filter((rule) => String(rule.category || "other") === filter);
+  const filtered = filter === "all" ? rows : rows.filter((rule) => String(rule.category || "other") === filter);
+  return filtered.map((rule, index) => ({ rule, index }))
+    .sort(compareRuleCategoryOrder)
+    .map((item) => item.rule);
+}
+
+function compareRuleCategoryOrder(left, right) {
+  const leftRule = left?.rule || {};
+  const rightRule = right?.rule || {};
+  const leftRank = categorySortRank(leftRule.category);
+  const rightRank = categorySortRank(rightRule.category);
+  if (leftRank !== rightRank) return leftRank - rightRank;
+  const leftName = String(leftRule.category_name || leftRule.category || "");
+  const rightName = String(rightRule.category_name || rightRule.category || "");
+  const nameOrder = leftName.localeCompare(rightName, "zh-Hans-CN");
+  return nameOrder || Number(left?.index || 0) - Number(right?.index || 0);
+}
+
+function categorySortRank(category) {
+  const value = String(category || "other");
+  if (value === "codex") return 0;
+  if (value === "claud") return 1;
+  if (value === "other") return 99;
+  return 2;
 }
 
 function renderRulePager(totalRows, totalPages) {

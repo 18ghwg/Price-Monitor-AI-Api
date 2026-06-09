@@ -930,7 +930,9 @@ func (s Store) ListRules(ctx context.Context) ([]Rule, error) {
 			ORDER BY p.created_at DESC, p.id DESC
 			LIMIT 1
 		) latest_price ON true
-		ORDER BY COALESCE(latest_price.input_price, latest_price.request_price, latest_price.output_price) ASC NULLS LAST,
+		ORDER BY CASE r.category WHEN 'codex' THEN 0 WHEN 'claud' THEN 1 WHEN 'other' THEN 99 ELSE 2 END,
+		         COALESCE(c.name, r.category),
+		         COALESCE(latest_price.input_price, latest_price.request_price, latest_price.output_price) ASC NULLS LAST,
 		         latest_price.output_price ASC NULLS LAST,
 		         latest_price.group_ratio ASC NULLS LAST,
 		         r.id ASC
