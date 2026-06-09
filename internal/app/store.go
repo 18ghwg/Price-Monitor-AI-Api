@@ -77,6 +77,7 @@ type SettingsInput struct {
 	Sub2APIEmail           string                         `json:"sub2api_email"`
 	Sub2APIPassword        string                         `json:"sub2api_password"`
 	SyncThresholdRatio     float64                        `json:"sync_threshold_ratio"`
+	SyncThresholdRatios    map[string]float64             `json:"sync_threshold_ratios"`
 	EmailNotifyEnabled     bool                           `json:"email_notify_enabled"`
 	EmailNotifyPriceChange bool                           `json:"email_notify_price_change"`
 	EmailNotifySyncUpdate  bool                           `json:"email_notify_sync_update"`
@@ -1694,14 +1695,37 @@ func snapshotBalanceInsufficient(snapshot PriceSnapshot) bool {
 	return snapshot.UpstreamBalance != nil && *snapshot.UpstreamBalance <= 0
 }
 
+func normalizeSyncThresholdRatios(ratios map[string]float64) map[string]float64 {
+	normalized := map[string]float64{}
+	for category, ratio := range ratios {
+		category = normalizeCategorySlug(category)
+		if category == "" || ratio <= 0 {
+			continue
+		}
+		normalized[category] = ratio
+	}
+	return normalized
+}
+
+func syncThresholdRatioForCategory(settings IntegrationSettings, category string) *float64 {
+	category = normalizeCategorySlug(category)
+	if category != "" && settings.SyncThresholdRatios != nil {
+		if ratio, ok := settings.SyncThresholdRatios[category]; ok && ratio > 0 {
+			return ptr(ratio)
+		}
+	}
+	return settings.SyncThresholdRatio
+}
+
 func (s Store) GetIntegrationSettings(ctx context.Context) (IntegrationSettings, error) {
 	var settings IntegrationSettings
 	var syncThresholdRatio sql.NullFloat64
+	var syncThresholdRatiosRaw []byte
 	var templateConfigsRaw []byte
 	err := s.db.QueryRow(ctx, `
 		SELECT sub2api_enabled, sub2api_main_base_url, sub2api_admin_key,
 		       sub2api_base_url, sub2api_access_token, sub2api_email, sub2api_password,
-		       sync_threshold_ratio,
+		       sync_threshold_ratio, sync_threshold_ratios,
 		       email_notify_enabled, email_notify_price_change, email_notify_sync_update,
 		       smtp_host, smtp_port, smtp_encryption, smtp_username, smtp_password, smtp_from, smtp_to,
 		       email_template_enabled, email_template_subject, email_template_body, email_template_configs,
@@ -1712,7 +1736,7 @@ func (s Store) GetIntegrationSettings(ctx context.Context) (IntegrationSettings,
 		&settings.Sub2APIEnabled, &settings.Sub2APIMainBaseURL, &settings.Sub2APIAdminKey,
 		&settings.Sub2APIBaseURL, &settings.Sub2APIAccessToken,
 		&settings.Sub2APIEmail, &settings.Sub2APIPassword,
-		&syncThresholdRatio,
+		&syncThresholdRatio, &syncThresholdRatiosRaw,
 		&settings.EmailNotifyEnabled, &settings.EmailNotifyPriceChange, &settings.EmailNotifySyncUpdate,
 		&settings.SMTPHost, &settings.SMTPPort, &settings.SMTPEncryption, &settings.SMTPUsername, &settings.SMTPPassword,
 		&settings.SMTPFrom, &settings.SMTPTo,
@@ -1724,6 +1748,7 @@ func (s Store) GetIntegrationSettings(ctx context.Context) (IntegrationSettings,
 	}
 	settings.EmailTemplateConfigs = decodeEmailTemplateConfigs(templateConfigsRaw)
 	settings.SyncThresholdRatio = floatPtr(syncThresholdRatio)
+	settings.SyncThresholdRatios = decodeSyncThresholdRatios(syncThresholdRatiosRaw)
 	if settings.Sub2APIMainBaseURL == "" {
 		settings.Sub2APIMainBaseURL = settings.Sub2APIBaseURL
 	}
@@ -1747,6 +1772,7 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 	input.SMTPTo = strings.TrimSpace(input.SMTPTo)
 	input.EmailTemplateSubject = strings.TrimSpace(input.EmailTemplateSubject)
 	input.EmailTemplateConfigs = normalizeEmailTemplateConfigs(input.EmailTemplateConfigs)
+	input.SyncThresholdRatios = normalizeSyncThresholdRatios(input.SyncThresholdRatios)
 	if input.SMTPPort <= 0 {
 		input.SMTPPort = 587
 	}
@@ -1790,7 +1816,12 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 
 	var settings IntegrationSettings
 	var syncThresholdRatio sql.NullFloat64
+	var savedSyncThresholdRatiosRaw []byte
 	templateConfigsRaw, err := json.Marshal(input.EmailTemplateConfigs)
+	if err != nil {
+		return IntegrationSettings{}, err
+	}
+	syncThresholdRatiosRaw, err := json.Marshal(input.SyncThresholdRatios)
 	if err != nil {
 		return IntegrationSettings{}, err
 	}
@@ -1799,13 +1830,13 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 		INSERT INTO integration_settings (
 			id, sub2api_enabled, sub2api_main_base_url, sub2api_admin_key,
 			sub2api_base_url, sub2api_access_token, sub2api_email, sub2api_password,
-			sync_threshold_ratio,
+			sync_threshold_ratio, sync_threshold_ratios,
 			email_notify_enabled, email_notify_price_change, email_notify_sync_update,
 			smtp_host, smtp_port, smtp_encryption, smtp_username, smtp_password, smtp_from, smtp_to,
 			email_template_enabled, email_template_subject, email_template_body, email_template_configs,
 			updated_at
 		)
-		VALUES (true, $1, $2, $3, $2, $3, $4, $5, CASE WHEN $6::double precision > 0 THEN $6::double precision ELSE NULL END, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19::jsonb, now())
+		VALUES (true, $1, $2, $3, $2, $3, $4, $5, CASE WHEN $6::double precision > 0 THEN $6::double precision ELSE NULL END, $7::jsonb, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21::jsonb, now())
 		ON CONFLICT (id) DO UPDATE
 		SET sub2api_enabled = EXCLUDED.sub2api_enabled,
 		    sub2api_main_base_url = EXCLUDED.sub2api_main_base_url,
@@ -1815,6 +1846,7 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 		    sub2api_email = EXCLUDED.sub2api_email,
 		    sub2api_password = EXCLUDED.sub2api_password,
 		    sync_threshold_ratio = EXCLUDED.sync_threshold_ratio,
+		    sync_threshold_ratios = EXCLUDED.sync_threshold_ratios,
 		    email_notify_enabled = EXCLUDED.email_notify_enabled,
 		    email_notify_price_change = EXCLUDED.email_notify_price_change,
 		    email_notify_sync_update = EXCLUDED.email_notify_sync_update,
@@ -1832,21 +1864,21 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 		    updated_at = now()
 		RETURNING sub2api_enabled, sub2api_main_base_url, sub2api_admin_key,
 		          sub2api_base_url, sub2api_access_token, sub2api_email, sub2api_password,
-		          sync_threshold_ratio,
+		          sync_threshold_ratio, sync_threshold_ratios,
 		          email_notify_enabled, email_notify_price_change, email_notify_sync_update,
 		          smtp_host, smtp_port, smtp_encryption, smtp_username, smtp_password, smtp_from, smtp_to,
 		          email_template_enabled, email_template_subject, email_template_body, email_template_configs,
 		          updated_at
 	`,
 		input.Sub2APIEnabled, input.Sub2APIMainBaseURL, input.Sub2APIAdminKey, input.Sub2APIEmail, input.Sub2APIPassword,
-		input.SyncThresholdRatio, input.EmailNotifyEnabled, input.EmailNotifyPriceChange, input.EmailNotifySyncUpdate,
+		input.SyncThresholdRatio, string(syncThresholdRatiosRaw), input.EmailNotifyEnabled, input.EmailNotifyPriceChange, input.EmailNotifySyncUpdate,
 		input.SMTPHost, input.SMTPPort, input.SMTPEncryption, input.SMTPUsername, input.SMTPPassword, input.SMTPFrom, input.SMTPTo,
 		input.EmailTemplateEnabled, input.EmailTemplateSubject, input.EmailTemplateBody, string(templateConfigsRaw),
 	).Scan(
 		&settings.Sub2APIEnabled, &settings.Sub2APIMainBaseURL, &settings.Sub2APIAdminKey,
 		&settings.Sub2APIBaseURL, &settings.Sub2APIAccessToken,
 		&settings.Sub2APIEmail, &settings.Sub2APIPassword,
-		&syncThresholdRatio,
+		&syncThresholdRatio, &savedSyncThresholdRatiosRaw,
 		&settings.EmailNotifyEnabled, &settings.EmailNotifyPriceChange, &settings.EmailNotifySyncUpdate,
 		&settings.SMTPHost, &settings.SMTPPort, &settings.SMTPEncryption, &settings.SMTPUsername, &settings.SMTPPassword,
 		&settings.SMTPFrom, &settings.SMTPTo,
@@ -1855,7 +1887,19 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 	)
 	settings.EmailTemplateConfigs = decodeEmailTemplateConfigs(savedTemplateConfigsRaw)
 	settings.SyncThresholdRatio = floatPtr(syncThresholdRatio)
+	settings.SyncThresholdRatios = decodeSyncThresholdRatios(savedSyncThresholdRatiosRaw)
 	return settings, err
+}
+
+func decodeSyncThresholdRatios(raw []byte) map[string]float64 {
+	if len(raw) == 0 {
+		return map[string]float64{}
+	}
+	var values map[string]float64
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return map[string]float64{}
+	}
+	return normalizeSyncThresholdRatios(values)
 }
 
 func normalizeEmailTemplateConfigs(configs map[string]EmailTemplateConfig) map[string]EmailTemplateConfig {

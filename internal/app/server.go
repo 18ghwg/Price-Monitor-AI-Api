@@ -1101,8 +1101,10 @@ func (s *Server) bulkCreateRulesWithInput(w http.ResponseWriter, r *http.Request
 		syncEnabled = *input.SyncEnabled
 	}
 	syncThresholdRatio := input.SyncThresholdRatio
-	if syncThresholdRatio <= 0 && settings.SyncThresholdRatio != nil {
-		syncThresholdRatio = *settings.SyncThresholdRatio
+	if syncThresholdRatio <= 0 {
+		if thresholdRatio := syncThresholdRatioForCategory(settings, categorySlug); thresholdRatio != nil {
+			syncThresholdRatio = *thresholdRatio
+		}
 	}
 
 	totalTargets := 0
@@ -2140,28 +2142,29 @@ func (s *Server) syncThresholdSkipReason(ctx context.Context, rule Rule, snapsho
 	if err != nil {
 		return fmt.Sprintf("skip threshold: load settings: %v", err), false
 	}
-	if settings.SyncThresholdRatio == nil || *settings.SyncThresholdRatio <= 0 {
+	thresholdRatio := syncThresholdRatioForCategory(settings, rule.Category)
+	if thresholdRatio == nil || *thresholdRatio <= 0 {
 		return "", true
 	}
-	ratio := *settings.SyncThresholdRatio
+	ratio := *thresholdRatio
 	official, err := officialPriceThreshold(ctx, snapshot.ModelName, ratio)
 	if err != nil {
 		return fmt.Sprintf("skip threshold: %v", err), false
 	}
 	if overPrice(snapshot.InputPrice, official.InputPrice) {
-		return syncThresholdStatus("input", snapshot.InputPrice, official.InputPrice, ratio), false
+		return syncThresholdStatus(rule.Category, "input", snapshot.InputPrice, official.InputPrice, ratio), false
 	}
 	if overPrice(snapshot.OutputPrice, official.OutputPrice) {
-		return syncThresholdStatus("output", snapshot.OutputPrice, official.OutputPrice, ratio), false
+		return syncThresholdStatus(rule.Category, "output", snapshot.OutputPrice, official.OutputPrice, ratio), false
 	}
 	if overPrice(snapshot.CacheReadPrice, official.CacheReadPrice) {
-		return syncThresholdStatus("cache read", snapshot.CacheReadPrice, official.CacheReadPrice, ratio), false
+		return syncThresholdStatus(rule.Category, "cache read", snapshot.CacheReadPrice, official.CacheReadPrice, ratio), false
 	}
 	if overPrice(snapshot.CacheWritePrice, official.CacheWritePrice) {
-		return syncThresholdStatus("cache write", snapshot.CacheWritePrice, official.CacheWritePrice, ratio), false
+		return syncThresholdStatus(rule.Category, "cache write", snapshot.CacheWritePrice, official.CacheWritePrice, ratio), false
 	}
 	if overPrice(snapshot.RequestPrice, official.RequestPrice) {
-		return syncThresholdStatus("request", snapshot.RequestPrice, official.RequestPrice, ratio), false
+		return syncThresholdStatus(rule.Category, "request", snapshot.RequestPrice, official.RequestPrice, ratio), false
 	}
 	return "", true
 }
@@ -2196,8 +2199,8 @@ func overPrice(actual *float64, threshold *float64) bool {
 	return *actual > *threshold
 }
 
-func syncThresholdStatus(label string, actual *float64, threshold *float64, ratio float64) string {
-	return fmt.Sprintf("skip threshold %.9g: %s %s > %s", ratio, label, fmtFloatPtr(actual), fmtFloatPtr(threshold))
+func syncThresholdStatus(category string, label string, actual *float64, threshold *float64, ratio float64) string {
+	return fmt.Sprintf("skip threshold %s %.9g: %s %s > %s", normalizeCategorySlug(category), ratio, label, fmtFloatPtr(actual), fmtFloatPtr(threshold))
 }
 
 func firstFloatPtr(values ...*float64) *float64 {

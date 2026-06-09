@@ -299,7 +299,16 @@ const indexHTML = `<!doctype html>
                 <label>主站 sub2api 地址<input name="sub2api_main_base_url" placeholder="https://sub2api.example.com"></label>
                 <label>管理员 API Key<input name="sub2api_admin_key" type="password" placeholder="主站后台生成的 admin-...，留空保留现有值"></label>
               </div>
-              <label>全局同步低价阈值倍率<input name="sync_threshold_ratio" type="number" min="0" step="0.000001" placeholder="例如 0.05，留空则不限制"></label>
+              <input name="sync_threshold_ratio" type="hidden">
+              <div class="threshold-editor">
+                <div class="threshold-editor-head">
+                  <div>
+                    <strong>分类同步低价阈值倍率</strong>
+                    <p>每个分类独立设置，Codex 和 Claude 会分别按对应模型官方价格计算，留空表示该分类不限制。</p>
+                  </div>
+                </div>
+                <div id="syncThresholdRows" class="threshold-rows"></div>
+              </div>
               <div class="settings-subhead">
                 <span class="section-kicker">Email Alerts</span>
                 <h3>邮件通知</h3>
@@ -1127,6 +1136,72 @@ button.segment[aria-selected="true"] {
   gap: 12px;
 }
 
+.threshold-editor {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid rgba(219, 227, 239, .9);
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.threshold-editor-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.threshold-editor-head strong {
+  display: block;
+  margin-bottom: 4px;
+  color: #0f172a;
+}
+
+.threshold-editor-head p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.threshold-rows {
+  display: grid;
+  gap: 8px;
+}
+
+.threshold-row {
+  display: grid;
+  grid-template-columns: minmax(130px, 1fr) minmax(160px, 220px);
+  gap: 10px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid rgba(226, 232, 240, .95);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.threshold-row-title {
+  min-width: 0;
+}
+
+.threshold-row-title strong {
+  display: block;
+  color: #111827;
+  overflow-wrap: break-word;
+}
+
+.threshold-row-title span {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.threshold-row input {
+  width: 100%;
+}
+
 .login-screen {
   min-height: 100vh;
   display: grid;
@@ -1904,6 +1979,10 @@ tr:last-child td {
   .settings-note {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .threshold-row {
+    grid-template-columns: 1fr;
   }
 
   .sync-status {
@@ -2933,6 +3012,7 @@ function renderSettings() {
   form.elements.sub2api_admin_key.placeholder = savedKey ? "已保存：" + savedKey : "主站后台生成的 admin-...，留空保留现有值";
   form.elements.sub2api_admin_key.value = "";
   form.elements.sync_threshold_ratio.value = state.settings.sync_threshold_ratio ? String(state.settings.sync_threshold_ratio) : "";
+  renderSyncThresholdRows();
   form.elements.email_notify_enabled.checked = !!state.settings.email_notify_enabled;
   form.elements.email_notify_price_change.checked = state.settings.email_notify_price_change !== false;
   form.elements.email_notify_sync_update.checked = state.settings.email_notify_sync_update !== false;
@@ -2948,6 +3028,44 @@ function renderSettings() {
   if (form.elements.email_template_enabled) form.elements.email_template_enabled.checked = !!state.settings.email_template_enabled;
   renderEmailTemplateTabs();
   renderActiveEmailTemplate();
+}
+
+function syncThresholdRatios() {
+  if (!state.settings) return {};
+  if (!state.settings.sync_threshold_ratios || typeof state.settings.sync_threshold_ratios !== "object") {
+    state.settings.sync_threshold_ratios = {};
+  }
+  return state.settings.sync_threshold_ratios;
+}
+
+function renderSyncThresholdRows() {
+  const box = $("#syncThresholdRows");
+  if (!box) return;
+  const ratios = syncThresholdRatios();
+  const fallback = state.settings?.sync_threshold_ratio;
+  const categories = (state.categories || []).length ? state.categories : [
+    { slug: "codex", name: "Codex" },
+    { slug: "claud", name: "Claude" },
+  ];
+  box.innerHTML = categories.map((category) => {
+    const slug = category.slug || "";
+    const value = ratios[slug] !== undefined && ratios[slug] !== null ? ratios[slug] : "";
+    const placeholder = fallback ? "继承全局 " + fallback : "不限制";
+    return "<div class=\"threshold-row\">"
+      + "<div class=\"threshold-row-title\"><strong>" + escapeHTML(category.name || slug) + "</strong><span>" + escapeHTML(slug) + "</span></div>"
+      + "<input data-sync-threshold-category=\"" + escapeHTML(slug) + "\" type=\"number\" min=\"0\" step=\"0.000001\" value=\"" + escapeHTML(value === "" ? "" : String(value)) + "\" placeholder=\"" + escapeHTML(placeholder) + "\">"
+      + "</div>";
+  }).join("");
+}
+
+function collectSyncThresholdRatios() {
+  const values = {};
+  document.querySelectorAll("#syncThresholdRows [data-sync-threshold-category]").forEach((input) => {
+    const category = input.dataset.syncThresholdCategory || "";
+    const value = Number(input.value || 0);
+    if (category && value > 0) values[category] = value;
+  });
+  return values;
 }
 
 function emailTemplateConfigs() {
@@ -3922,6 +4040,7 @@ if (settingsForm) {
     const payload = formJSON(form);
     payload.smtp_port = Number(payload.smtp_port || 587);
     payload.sync_threshold_ratio = Number(payload.sync_threshold_ratio || 0);
+    payload.sync_threshold_ratios = collectSyncThresholdRatios();
     payload.email_template_subject = state.settings?.email_template_subject || "";
     payload.email_template_body = state.settings?.email_template_body || "";
     payload.email_template_configs = emailTemplateConfigs();

@@ -206,6 +206,7 @@ type IntegrationSettings struct {
 	Sub2APIEmail           string                         `json:"sub2api_email"`
 	Sub2APIPassword        string                         `json:"sub2api_password,omitempty"`
 	SyncThresholdRatio     *float64                       `json:"sync_threshold_ratio"`
+	SyncThresholdRatios    map[string]float64             `json:"sync_threshold_ratios"`
 	EmailNotifyEnabled     bool                           `json:"email_notify_enabled"`
 	EmailNotifyPriceChange bool                           `json:"email_notify_price_change"`
 	EmailNotifySyncUpdate  bool                           `json:"email_notify_sync_update"`

@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS integration_settings (
   sub2api_email TEXT NOT NULL DEFAULT '',
   sub2api_password TEXT NOT NULL DEFAULT '',
   sync_threshold_ratio DOUBLE PRECISION,
+  sync_threshold_ratios JSONB NOT NULL DEFAULT '{}'::jsonb,
   email_notify_enabled BOOLEAN NOT NULL DEFAULT false,
   email_notify_price_change BOOLEAN NOT NULL DEFAULT true,
   email_notify_sync_update BOOLEAN NOT NULL DEFAULT true,
@@ -120,6 +121,8 @@ ALTER TABLE IF EXISTS integration_settings
 ALTER TABLE IF EXISTS integration_settings
   ADD COLUMN IF NOT EXISTS sync_threshold_ratio DOUBLE PRECISION;
 ALTER TABLE IF EXISTS integration_settings
+  ADD COLUMN IF NOT EXISTS sync_threshold_ratios JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE IF EXISTS integration_settings
   ADD COLUMN IF NOT EXISTS email_notify_enabled BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE IF EXISTS integration_settings
   ADD COLUMN IF NOT EXISTS email_notify_price_change BOOLEAN NOT NULL DEFAULT true;
@@ -151,6 +154,13 @@ UPDATE integration_settings
 SET sub2api_main_base_url = COALESCE(NULLIF(sub2api_main_base_url, ''), sub2api_base_url),
     sub2api_admin_key = COALESCE(NULLIF(sub2api_admin_key, ''), sub2api_access_token)
 WHERE id = true;
+
+UPDATE integration_settings
+SET sync_threshold_ratios = jsonb_build_object('codex', sync_threshold_ratio, 'claud', sync_threshold_ratio)
+WHERE id = true
+  AND sync_threshold_ratio IS NOT NULL
+  AND sync_threshold_ratio > 0
+  AND sync_threshold_ratios = '{}'::jsonb;
 
 ALTER TABLE IF EXISTS categories
   ADD COLUMN IF NOT EXISTS sub2api_main_group_id BIGINT NOT NULL DEFAULT 0;
