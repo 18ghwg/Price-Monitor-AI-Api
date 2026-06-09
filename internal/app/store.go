@@ -113,10 +113,10 @@ func (s Store) CreateSite(ctx context.Context, input SiteInput) (Site, error) {
 	err := s.db.QueryRow(ctx, `
 		INSERT INTO sites (name, base_url, username, password, totp_code)
 		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id, name, base_url, username, password, totp_code, user_id, access_token, last_error, last_run_at, created_at, updated_at
+		RETURNING id, name, base_url, username, password, totp_code, user_id, access_token, cookie_jar, last_error, last_run_at, created_at, updated_at
 	`, input.Name, input.BaseURL, input.Username, input.Password, input.TOTPCode).Scan(
 		&site.ID, &site.Name, &site.BaseURL, &site.Username, &site.Password, &site.TOTPCode,
-		&site.UserID, &site.AccessToken, &site.LastError, &site.LastRunAt, &site.CreatedAt, &site.UpdatedAt,
+		&site.UserID, &site.AccessToken, &site.CookieJar, &site.LastError, &site.LastRunAt, &site.CreatedAt, &site.UpdatedAt,
 	)
 	return site, err
 }
@@ -143,7 +143,7 @@ func (s Store) ensureUniqueSite(ctx context.Context, input SiteInput, excludeID 
 
 func (s Store) ListSites(ctx context.Context) ([]Site, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, name, base_url, username, password, totp_code, user_id, access_token, last_error, last_run_at, created_at, updated_at
+		SELECT id, name, base_url, username, password, totp_code, user_id, access_token, cookie_jar, last_error, last_run_at, created_at, updated_at
 		FROM sites
 		ORDER BY id DESC
 	`)
@@ -157,7 +157,7 @@ func (s Store) ListSites(ctx context.Context) ([]Site, error) {
 		var site Site
 		if err := rows.Scan(
 			&site.ID, &site.Name, &site.BaseURL, &site.Username, &site.Password, &site.TOTPCode,
-			&site.UserID, &site.AccessToken, &site.LastError, &site.LastRunAt, &site.CreatedAt, &site.UpdatedAt,
+			&site.UserID, &site.AccessToken, &site.CookieJar, &site.LastError, &site.LastRunAt, &site.CreatedAt, &site.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -169,12 +169,12 @@ func (s Store) ListSites(ctx context.Context) ([]Site, error) {
 func (s Store) GetSite(ctx context.Context, siteID int64) (Site, error) {
 	var site Site
 	err := s.db.QueryRow(ctx, `
-		SELECT id, name, base_url, username, password, totp_code, user_id, access_token, last_error, last_run_at, created_at, updated_at
+		SELECT id, name, base_url, username, password, totp_code, user_id, access_token, cookie_jar, last_error, last_run_at, created_at, updated_at
 		FROM sites
 		WHERE id = $1
 	`, siteID).Scan(
 		&site.ID, &site.Name, &site.BaseURL, &site.Username, &site.Password, &site.TOTPCode,
-		&site.UserID, &site.AccessToken, &site.LastError, &site.LastRunAt, &site.CreatedAt, &site.UpdatedAt,
+		&site.UserID, &site.AccessToken, &site.CookieJar, &site.LastError, &site.LastRunAt, &site.CreatedAt, &site.UpdatedAt,
 	)
 	return site, err
 }
@@ -197,13 +197,14 @@ func (s Store) UpdateSite(ctx context.Context, siteID int64, input SiteInput) (S
 		    password = CASE WHEN $5 = '' THEN password ELSE $5 END,
 		    totp_code = $6,
 		    access_token = CASE WHEN base_url <> $3 OR username <> $4 OR ($5 <> '' AND password <> $5) THEN '' ELSE access_token END,
+		    cookie_jar = CASE WHEN base_url <> $3 OR username <> $4 OR ($5 <> '' AND password <> $5) THEN '' ELSE cookie_jar END,
 		    last_error = '',
 		    updated_at = now()
 		WHERE id = $1
-		RETURNING id, name, base_url, username, password, totp_code, user_id, access_token, last_error, last_run_at, created_at, updated_at
+		RETURNING id, name, base_url, username, password, totp_code, user_id, access_token, cookie_jar, last_error, last_run_at, created_at, updated_at
 	`, siteID, input.Name, input.BaseURL, input.Username, input.Password, input.TOTPCode).Scan(
 		&site.ID, &site.Name, &site.BaseURL, &site.Username, &site.Password, &site.TOTPCode,
-		&site.UserID, &site.AccessToken, &site.LastError, &site.LastRunAt, &site.CreatedAt, &site.UpdatedAt,
+		&site.UserID, &site.AccessToken, &site.CookieJar, &site.LastError, &site.LastRunAt, &site.CreatedAt, &site.UpdatedAt,
 	)
 	if err != nil {
 		return Site{}, err
@@ -223,11 +224,20 @@ func (s Store) DeleteSite(ctx context.Context, siteID int64) error {
 }
 
 func (s Store) UpdateSiteRun(ctx context.Context, siteID int64, userID int64, token string, runAt time.Time, lastErr string) error {
+	return s.UpdateSiteRunWithCookies(ctx, siteID, userID, token, "", runAt, lastErr)
+}
+
+func (s Store) UpdateSiteRunWithCookies(ctx context.Context, siteID int64, userID int64, token string, cookieJar string, runAt time.Time, lastErr string) error {
 	_, err := s.db.Exec(ctx, `
 		UPDATE sites
-		SET user_id = $2, access_token = $3, last_run_at = $4, last_error = $5, updated_at = now()
+		SET user_id = $2,
+		    access_token = $3,
+		    cookie_jar = CASE WHEN $4 <> '' THEN $4 ELSE cookie_jar END,
+		    last_run_at = $5,
+		    last_error = $6,
+		    updated_at = now()
 		WHERE id = $1
-	`, siteID, userID, token, runAt, lastErr)
+	`, siteID, userID, token, cookieJar, runAt, lastErr)
 	return err
 }
 
@@ -244,17 +254,17 @@ func (s Store) CreateSub2APIUpstream(ctx context.Context, input Sub2APIUpstreamI
 	err := s.db.QueryRow(ctx, `
 		INSERT INTO sub2api_upstreams (name, base_url, email, password, auth_token, totp_code)
 		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id, name, base_url, email, password, auth_token, totp_code, last_error, last_check_at, created_at, updated_at
+		RETURNING id, name, base_url, email, password, auth_token, totp_code, cookie_jar, last_error, last_check_at, created_at, updated_at
 	`, input.Name, input.BaseURL, input.Email, input.Password, input.AuthToken, input.TOTPCode).Scan(
 		&upstream.ID, &upstream.Name, &upstream.BaseURL, &upstream.Email, &upstream.Password, &upstream.AuthToken,
-		&upstream.TOTPCode, &upstream.LastError, &upstream.LastCheckAt, &upstream.CreatedAt, &upstream.UpdatedAt,
+		&upstream.TOTPCode, &upstream.CookieJar, &upstream.LastError, &upstream.LastCheckAt, &upstream.CreatedAt, &upstream.UpdatedAt,
 	)
 	return upstream, err
 }
 
 func (s Store) ListSub2APIUpstreams(ctx context.Context) ([]Sub2APIUpstream, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, name, base_url, email, password, auth_token, totp_code, last_error, last_check_at, created_at, updated_at
+		SELECT id, name, base_url, email, password, auth_token, totp_code, cookie_jar, last_error, last_check_at, created_at, updated_at
 		FROM sub2api_upstreams
 		ORDER BY id DESC
 	`)
@@ -268,7 +278,7 @@ func (s Store) ListSub2APIUpstreams(ctx context.Context) ([]Sub2APIUpstream, err
 		var upstream Sub2APIUpstream
 		if err := rows.Scan(
 			&upstream.ID, &upstream.Name, &upstream.BaseURL, &upstream.Email, &upstream.Password, &upstream.AuthToken,
-			&upstream.TOTPCode, &upstream.LastError, &upstream.LastCheckAt, &upstream.CreatedAt, &upstream.UpdatedAt,
+			&upstream.TOTPCode, &upstream.CookieJar, &upstream.LastError, &upstream.LastCheckAt, &upstream.CreatedAt, &upstream.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -280,12 +290,12 @@ func (s Store) ListSub2APIUpstreams(ctx context.Context) ([]Sub2APIUpstream, err
 func (s Store) GetSub2APIUpstream(ctx context.Context, upstreamID int64) (Sub2APIUpstream, error) {
 	var upstream Sub2APIUpstream
 	err := s.db.QueryRow(ctx, `
-		SELECT id, name, base_url, email, password, auth_token, totp_code, last_error, last_check_at, created_at, updated_at
+		SELECT id, name, base_url, email, password, auth_token, totp_code, cookie_jar, last_error, last_check_at, created_at, updated_at
 		FROM sub2api_upstreams
 		WHERE id = $1
 	`, upstreamID).Scan(
 		&upstream.ID, &upstream.Name, &upstream.BaseURL, &upstream.Email, &upstream.Password, &upstream.AuthToken,
-		&upstream.TOTPCode, &upstream.LastError, &upstream.LastCheckAt, &upstream.CreatedAt, &upstream.UpdatedAt,
+		&upstream.TOTPCode, &upstream.CookieJar, &upstream.LastError, &upstream.LastCheckAt, &upstream.CreatedAt, &upstream.UpdatedAt,
 	)
 	return upstream, err
 }
@@ -308,13 +318,14 @@ func (s Store) UpdateSub2APIUpstream(ctx context.Context, upstreamID int64, inpu
 		    password = CASE WHEN $5 = '' THEN password ELSE $5 END,
 		    auth_token = CASE WHEN $6 = '' THEN auth_token ELSE $6 END,
 		    totp_code = $7,
+		    cookie_jar = CASE WHEN base_url <> $3 OR email <> $4 OR ($5 <> '' AND password <> $5) OR ($6 <> '' AND auth_token <> $6) THEN '' ELSE cookie_jar END,
 		    last_error = '',
 		    updated_at = now()
 		WHERE id = $1
-		RETURNING id, name, base_url, email, password, auth_token, totp_code, last_error, last_check_at, created_at, updated_at
+		RETURNING id, name, base_url, email, password, auth_token, totp_code, cookie_jar, last_error, last_check_at, created_at, updated_at
 	`, upstreamID, input.Name, input.BaseURL, input.Email, input.Password, input.AuthToken, input.TOTPCode).Scan(
 		&upstream.ID, &upstream.Name, &upstream.BaseURL, &upstream.Email, &upstream.Password, &upstream.AuthToken,
-		&upstream.TOTPCode, &upstream.LastError, &upstream.LastCheckAt, &upstream.CreatedAt, &upstream.UpdatedAt,
+		&upstream.TOTPCode, &upstream.CookieJar, &upstream.LastError, &upstream.LastCheckAt, &upstream.CreatedAt, &upstream.UpdatedAt,
 	)
 	return upstream, err
 }
@@ -375,11 +386,19 @@ func (s Store) DeleteSub2APIUpstream(ctx context.Context, upstreamID int64) erro
 }
 
 func (s Store) UpdateSub2APIUpstreamCheck(ctx context.Context, upstreamID int64, checkedAt time.Time, lastErr string) error {
+	return s.UpdateSub2APIUpstreamCheckWithSession(ctx, upstreamID, checkedAt, lastErr, "", "")
+}
+
+func (s Store) UpdateSub2APIUpstreamCheckWithSession(ctx context.Context, upstreamID int64, checkedAt time.Time, lastErr string, cookieJar string, authToken string) error {
 	_, err := s.db.Exec(ctx, `
 		UPDATE sub2api_upstreams
-		SET last_check_at = $2, last_error = $3, updated_at = now()
+		SET last_check_at = $2,
+		    last_error = $3,
+		    cookie_jar = CASE WHEN $4 <> '' THEN $4 ELSE cookie_jar END,
+		    auth_token = CASE WHEN $5 <> '' THEN $5 ELSE auth_token END,
+		    updated_at = now()
 		WHERE id = $1
-	`, upstreamID, checkedAt, lastErr)
+	`, upstreamID, checkedAt, lastErr, cookieJar, authToken)
 	return err
 }
 
@@ -981,8 +1000,8 @@ func (s Store) GetRuleWithSource(ctx context.Context, ruleID int64) (Rule, Site,
 			r.last_sync_at, r.sync_status, r.sync_error,
 			r.checkin_enabled, r.checkin_status, r.checkin_reward, r.checkin_reward_unit, r.checkin_message, r.checkin_checked_at,
 			r.created_at, r.updated_at,
-			COALESCE(s.id, 0), COALESCE(s.name, ''), COALESCE(s.base_url, ''), COALESCE(s.username, ''), COALESCE(s.password, ''), COALESCE(s.totp_code, ''), COALESCE(s.user_id, 0), COALESCE(s.access_token, ''), COALESCE(s.last_error, ''), s.last_run_at, COALESCE(s.created_at, now()), COALESCE(s.updated_at, now()),
-			COALESCE(u.id, 0), COALESCE(u.name, ''), COALESCE(u.base_url, ''), COALESCE(u.email, ''), COALESCE(u.password, ''), COALESCE(u.auth_token, ''), COALESCE(u.totp_code, ''), COALESCE(u.last_error, ''), u.last_check_at, COALESCE(u.created_at, now()), COALESCE(u.updated_at, now())
+			COALESCE(s.id, 0), COALESCE(s.name, ''), COALESCE(s.base_url, ''), COALESCE(s.username, ''), COALESCE(s.password, ''), COALESCE(s.totp_code, ''), COALESCE(s.user_id, 0), COALESCE(s.access_token, ''), COALESCE(s.cookie_jar, ''), COALESCE(s.last_error, ''), s.last_run_at, COALESCE(s.created_at, now()), COALESCE(s.updated_at, now()),
+			COALESCE(u.id, 0), COALESCE(u.name, ''), COALESCE(u.base_url, ''), COALESCE(u.email, ''), COALESCE(u.password, ''), COALESCE(u.auth_token, ''), COALESCE(u.totp_code, ''), COALESCE(u.cookie_jar, ''), COALESCE(u.last_error, ''), u.last_check_at, COALESCE(u.created_at, now()), COALESCE(u.updated_at, now())
 		FROM monitor_rules r
 		LEFT JOIN sites s ON s.id = r.site_id
 		LEFT JOIN sub2api_upstreams u ON u.id = r.sub2api_upstream_id
@@ -997,8 +1016,8 @@ func (s Store) GetRuleWithSource(ctx context.Context, ruleID int64) (Rule, Site,
 		&rule.LastSyncAt, &rule.SyncStatus, &rule.SyncError,
 		&rule.CheckinEnabled, &rule.CheckinStatus, &rule.CheckinReward, &rule.CheckinRewardUnit, &rule.CheckinMessage, &rule.CheckinCheckedAt,
 		&rule.CreatedAt, &rule.UpdatedAt,
-		&site.ID, &site.Name, &site.BaseURL, &site.Username, &site.Password, &site.TOTPCode, &site.UserID, &site.AccessToken, &site.LastError, &site.LastRunAt, &site.CreatedAt, &site.UpdatedAt,
-		&upstream.ID, &upstream.Name, &upstream.BaseURL, &upstream.Email, &upstream.Password, &upstream.AuthToken, &upstream.TOTPCode, &upstream.LastError, &upstream.LastCheckAt, &upstream.CreatedAt, &upstream.UpdatedAt,
+		&site.ID, &site.Name, &site.BaseURL, &site.Username, &site.Password, &site.TOTPCode, &site.UserID, &site.AccessToken, &site.CookieJar, &site.LastError, &site.LastRunAt, &site.CreatedAt, &site.UpdatedAt,
+		&upstream.ID, &upstream.Name, &upstream.BaseURL, &upstream.Email, &upstream.Password, &upstream.AuthToken, &upstream.TOTPCode, &upstream.CookieJar, &upstream.LastError, &upstream.LastCheckAt, &upstream.CreatedAt, &upstream.UpdatedAt,
 	)
 	if err != nil {
 		return Rule{}, Site{}, Sub2APIUpstream{}, err

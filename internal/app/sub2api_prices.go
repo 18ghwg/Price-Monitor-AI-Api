@@ -166,55 +166,49 @@ func (s *Server) fetchSub2APIUserGroups(ctx context.Context, input sub2APIUserPr
 }
 
 func (s *Server) fetchSub2APIUserClientGroups(ctx context.Context, input sub2APIUserPriceInput) (*Sub2APIClient, []sub2Group, map[string]float64, error) {
-	baseURL, authToken, email, password, totpCode, err := s.sub2APIUserSource(ctx, input)
+	cfg, err := s.sub2APIUserSourceConfig(ctx, input)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	if baseURL == "" {
-		return nil, nil, nil, fmt.Errorf("sub2api upstream base url is not configured")
-	}
-	client, err := NewSub2APIClient(baseURL, authToken)
+	return s.fetchSub2APIUserClientGroupsForSource(ctx, cfg)
+}
+
+func (s *Server) fetchSub2APIUserClientGroupsForSource(ctx context.Context, cfg sub2APIUserSourceConfig) (*Sub2APIClient, []sub2Group, map[string]float64, error) {
+	client, err := s.sub2APIClientForUserSource(ctx, cfg, false)
 	if err != nil {
 		return nil, nil, nil, err
-	}
-	if strings.TrimSpace(authToken) == "" {
-		if err := client.LoginWith2FA(ctx, email, password, totpCode, input.TurnstileToken); err != nil {
-			return nil, nil, nil, err
-		}
 	}
 	groups, err := client.AvailableGroups(ctx)
 	if err != nil {
-		return nil, nil, nil, err
+		if isSessionAuthError(err) {
+			client, err = s.sub2APIClientForUserSource(ctx, cfg, true)
+			if err == nil {
+				groups, err = client.AvailableGroups(ctx)
+			}
+		}
+		if err != nil {
+			s.saveSub2APIUserSession(ctx, cfg, client, err.Error())
+			return nil, nil, nil, err
+		}
 	}
 	userRates, err := client.UserGroupRates(ctx)
 	if err != nil {
-		return nil, nil, nil, err
+		if isSessionAuthError(err) {
+			client, err = s.sub2APIClientForUserSource(ctx, cfg, true)
+			if err == nil {
+				groups, err = client.AvailableGroups(ctx)
+			}
+			if err == nil {
+				userRates, err = client.UserGroupRates(ctx)
+			}
+		}
+		if err != nil {
+			s.saveSub2APIUserSession(ctx, cfg, client, err.Error())
+			return nil, nil, nil, err
+		}
 	}
+	s.saveSub2APIUserSession(ctx, cfg, client, "")
 	return client, groups, userRates, nil
-}
-
-func (s *Server) sub2APIUserSource(ctx context.Context, input sub2APIUserPriceInput) (baseURL, authToken, email, password, totpCode string, err error) {
-	if input.Sub2APIUpstreamID > 0 {
-		upstream, err := s.store.GetSub2APIUpstream(ctx, input.Sub2APIUpstreamID)
-		if err != nil {
-			return "", "", "", "", "", fmt.Errorf("load sub2api upstream: %w", err)
-		}
-		return upstream.BaseURL,
-			firstNonEmpty(input.AuthToken, upstream.AuthToken),
-			firstNonEmpty(input.Email, upstream.Email),
-			firstNonEmpty(input.Password, upstream.Password),
-			firstNonEmpty(input.TOTPCode, upstream.TOTPCode),
-			nil
-	}
-	baseURL = normalizeBaseURL(input.BaseURL)
-	if baseURL == "" {
-		settings, err := s.store.GetIntegrationSettings(ctx)
-		if err != nil {
-			return "", "", "", "", "", fmt.Errorf("load integration settings: %w", err)
-		}
-		baseURL = firstNonEmpty(settings.Sub2APIMainBaseURL, settings.Sub2APIBaseURL)
-	}
-	return baseURL, input.AuthToken, input.Email, input.Password, input.TOTPCode, nil
 }
 
 func loadOfficialPrices(ctx context.Context, priceURL string) (map[string]any, string, error) {

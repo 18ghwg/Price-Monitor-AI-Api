@@ -81,6 +81,19 @@ func TestIsFallbackSyncErrorMatchesTemporaryServiceUnavailable(t *testing.T) {
 	}
 }
 
+func TestIsFallbackSyncErrorMatchesTemporaryBadGateway(t *testing.T) {
+	err := errors.New(`主站账号连接测试失败：账号 #55，模型 gpt-5.5，原因：API returned 502: error code: 502`)
+	if !isFallbackSyncError(err) {
+		t.Fatal("isFallbackSyncError() = false, want true for temporary bad gateway")
+	}
+	status := fallbackSyncStatus(err)
+	for _, want := range []string{"跳过该低价候选", "接口返回 502", "错误码 502"} {
+		if !strings.Contains(status, want) {
+			t.Fatalf("fallbackSyncStatus() = %q, want %q", status, want)
+		}
+	}
+}
+
 func TestLowBalanceNotificationSignatureUsesUpstreamAccount(t *testing.T) {
 	tests := []struct {
 		name     string

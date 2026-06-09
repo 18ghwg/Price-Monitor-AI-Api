@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS sites (
   totp_code TEXT NOT NULL DEFAULT '',
   user_id BIGINT NOT NULL DEFAULT 0,
   access_token TEXT NOT NULL DEFAULT '',
+  cookie_jar TEXT NOT NULL DEFAULT '',
   last_error TEXT NOT NULL DEFAULT '',
   last_run_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -103,6 +104,7 @@ CREATE TABLE IF NOT EXISTS sub2api_upstreams (
   password TEXT NOT NULL DEFAULT '',
   auth_token TEXT NOT NULL DEFAULT '',
   totp_code TEXT NOT NULL DEFAULT '',
+  cookie_jar TEXT NOT NULL DEFAULT '',
   last_error TEXT NOT NULL DEFAULT '',
   last_check_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -128,6 +130,10 @@ ALTER TABLE IF EXISTS integration_settings
   ADD COLUMN IF NOT EXISTS email_notify_price_change BOOLEAN NOT NULL DEFAULT true;
 ALTER TABLE IF EXISTS integration_settings
   ADD COLUMN IF NOT EXISTS email_notify_sync_update BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE IF EXISTS sites
+  ADD COLUMN IF NOT EXISTS cookie_jar TEXT NOT NULL DEFAULT '';
+ALTER TABLE IF EXISTS sub2api_upstreams
+  ADD COLUMN IF NOT EXISTS cookie_jar TEXT NOT NULL DEFAULT '';
 ALTER TABLE IF EXISTS integration_settings
   ADD COLUMN IF NOT EXISTS smtp_host TEXT NOT NULL DEFAULT '';
 ALTER TABLE IF EXISTS integration_settings

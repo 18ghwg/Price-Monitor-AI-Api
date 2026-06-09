@@ -472,7 +472,7 @@ func (s *Server) createSub2APIUpstream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
-	_, inspect, err := s.verifySub2APIUpstreamInput(r.Context(), input)
+	verified, inspect, err := s.verifySub2APIUpstreamInput(r.Context(), input)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
@@ -482,7 +482,7 @@ func (s *Server) createSub2APIUpstream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
-	_ = s.store.UpdateSub2APIUpstreamCheck(r.Context(), saved.ID, time.Now(), "")
+	_ = s.store.UpdateSub2APIUpstreamCheckWithSession(r.Context(), saved.ID, time.Now(), "", verified.CookieJar, verified.AuthToken)
 	writeJSON(w, http.StatusCreated, map[string]any{"data": map[string]any{
 		"upstream": redactSub2APIUpstream(saved),
 		"inspect":  inspect,
@@ -516,7 +516,7 @@ func (s *Server) updateSub2APIUpstream(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(verifyInput.AuthToken) == "" {
 		verifyInput.AuthToken = existing.AuthToken
 	}
-	_, inspect, err := s.verifySub2APIUpstreamInput(r.Context(), verifyInput)
+	verified, inspect, err := s.verifySub2APIUpstreamInput(r.Context(), verifyInput)
 	if err != nil {
 		_ = s.store.UpdateSub2APIUpstreamCheck(r.Context(), id, time.Now(), err.Error())
 		writeError(w, http.StatusBadGateway, err.Error())
@@ -527,7 +527,7 @@ func (s *Server) updateSub2APIUpstream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
-	_ = s.store.UpdateSub2APIUpstreamCheck(r.Context(), id, time.Now(), "")
+	_ = s.store.UpdateSub2APIUpstreamCheckWithSession(r.Context(), id, time.Now(), "", verified.CookieJar, verified.AuthToken)
 	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
 		"upstream": redactSub2APIUpstream(upstream),
 		"inspect":  inspect,
@@ -567,13 +567,25 @@ func (s *Server) verifySub2APIUpstreamInput(ctx context.Context, input Sub2APIUp
 	if upstream.AuthToken == "" && (upstream.Email == "" || upstream.Password == "") {
 		return upstream, sub2APIUserInspectResult{}, fmt.Errorf("upstream username/password or auth token is required")
 	}
-	inspect, err := s.inspectSub2APIUser(ctx, sub2APIUserPriceInput{
+	cfg := sub2APIUserSourceConfig{
 		BaseURL:   upstream.BaseURL,
+		AuthToken: upstream.AuthToken,
 		Email:     upstream.Email,
 		Password:  upstream.Password,
-		AuthToken: upstream.AuthToken,
 		TOTPCode:  upstream.TOTPCode,
-	})
+	}
+	client, groups, userRates, err := s.fetchSub2APIUserClientGroupsForSource(ctx, cfg)
+	if err == nil && client != nil {
+		upstream.CookieJar = client.DumpCookies()
+	}
+	inspect := sub2APIUserInspectResult{
+		Groups:         groups,
+		UserGroupRates: userRates,
+		CheapestGroups: cheapestSub2GroupsByPlatform(groups, userRates, ""),
+		Filters: map[string]string{
+			"platforms": "",
+		},
+	}
 	return upstream, inspect, err
 }
 
@@ -795,24 +807,24 @@ func (s *Server) sub2GroupFromRequest(ctx context.Context, client *Sub2APIClient
 	return client.EnsureGroupByIDOrName(ctx, groupID, groupName)
 }
 
-func (s *Server) verifyNewAPISiteInput(ctx context.Context, input SiteInput) (int64, string, error) {
+func (s *Server) verifyNewAPISiteInput(ctx context.Context, input SiteInput) (int64, string, string, error) {
 	input = normalizeSiteInput(input)
 	if input.Name == "" || input.BaseURL == "" || input.Username == "" || input.Password == "" {
-		return 0, "", fmt.Errorf("site name, base url, username and password are required")
+		return 0, "", "", fmt.Errorf("site name, base url, username and password are required")
 	}
 	client, err := NewNewAPIClient(input.BaseURL)
 	if err != nil {
-		return 0, "", err
+		return 0, "", "", err
 	}
 	userID, err := client.Login(ctx, input.Username, input.Password, input.TOTPCode)
 	if err != nil {
-		return 0, "", fmt.Errorf("login NewAPI upstream: %w", err)
+		return 0, "", client.DumpCookies(), fmt.Errorf("login NewAPI upstream: %w", err)
 	}
 	token, err := client.GenerateSystemAccessToken(ctx, userID)
 	if err != nil {
-		return 0, "", fmt.Errorf("generate NewAPI system access token: %w", err)
+		return userID, "", client.DumpCookies(), fmt.Errorf("generate NewAPI system access token: %w", err)
 	}
-	return userID, token, nil
+	return userID, token, client.DumpCookies(), nil
 }
 
 func (s *Server) createSite(w http.ResponseWriter, r *http.Request) {
@@ -826,7 +838,7 @@ func (s *Server) createSite(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
-	userID, token, err := s.verifyNewAPISiteInput(r.Context(), input)
+	userID, token, cookieJar, err := s.verifyNewAPISiteInput(r.Context(), input)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
@@ -837,12 +849,13 @@ func (s *Server) createSite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	runAt := time.Now()
-	if err := s.store.UpdateSiteRun(r.Context(), site.ID, userID, token, runAt, ""); err != nil {
+	if err := s.store.UpdateSiteRunWithCookies(r.Context(), site.ID, userID, token, cookieJar, runAt, ""); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	site.UserID = userID
 	site.AccessToken = token
+	site.CookieJar = cookieJar
 	site.LastError = ""
 	site.LastRunAt = &runAt
 	writeJSON(w, http.StatusCreated, map[string]any{"data": site})
@@ -875,12 +888,13 @@ func (s *Server) updateSite(w http.ResponseWriter, r *http.Request) {
 		input.TOTPCode != ""
 	var userID int64
 	var token string
+	var cookieJar string
 	if credentialsChanged {
 		verifyInput := input
 		if strings.TrimSpace(verifyInput.Password) == "" {
 			verifyInput.Password = existing.Password
 		}
-		userID, token, err = s.verifyNewAPISiteInput(r.Context(), verifyInput)
+		userID, token, cookieJar, err = s.verifyNewAPISiteInput(r.Context(), verifyInput)
 		if err != nil {
 			writeError(w, http.StatusBadGateway, err.Error())
 			return
@@ -897,12 +911,13 @@ func (s *Server) updateSite(w http.ResponseWriter, r *http.Request) {
 	}
 	if credentialsChanged {
 		runAt := time.Now()
-		if err := s.store.UpdateSiteRun(r.Context(), site.ID, userID, token, runAt, ""); err != nil {
+		if err := s.store.UpdateSiteRunWithCookies(r.Context(), site.ID, userID, token, cookieJar, runAt, ""); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		site.UserID = userID
 		site.AccessToken = token
+		site.CookieJar = cookieJar
 		site.LastError = ""
 		site.LastRunAt = &runAt
 	}
@@ -1327,36 +1342,32 @@ func (s *Server) RunRule(ctx context.Context, ruleID int64) ([]PriceSnapshot, er
 }
 
 func (s *Server) runNewAPIRule(ctx context.Context, rule Rule, site Site) ([]PriceSnapshot, error) {
-	client, err := NewNewAPIClient(site.BaseURL)
+	client, userID, token, err := s.newAPIClientForSite(ctx, site, false)
 	if err != nil {
+		s.saveNewAPISession(ctx, site, client, site.UserID, site.AccessToken, err.Error())
 		return nil, err
 	}
-	userID, err := client.Login(ctx, site.Username, site.Password, site.TOTPCode)
-	if err != nil {
-		_ = s.store.UpdateSiteRun(ctx, site.ID, site.UserID, site.AccessToken, time.Now(), err.Error())
-		return nil, err
-	}
-	token := site.AccessToken
-	if token == "" || userID != site.UserID {
-		token, err = client.GenerateSystemAccessToken(ctx, userID)
-		if err != nil {
-			_ = s.store.UpdateSiteRun(ctx, site.ID, userID, "", time.Now(), err.Error())
-			return nil, err
-		}
-	}
-	s.recordNewAPIRuleCheckin(ctx, rule.ID, site.ID, client, userID, token)
 
 	pricing, _, err := client.FetchPricing(ctx, userID, token)
 	if err != nil {
-		token, tokenErr := client.GenerateSystemAccessToken(ctx, userID)
-		if tokenErr == nil {
+		if generated, tokenErr := client.GenerateSystemAccessToken(ctx, userID); tokenErr == nil {
+			token = generated
 			pricing, _, err = client.FetchPricing(ctx, userID, token)
 		}
 	}
 	if err != nil {
-		_ = s.store.UpdateSiteRun(ctx, site.ID, userID, token, time.Now(), err.Error())
+		if isSessionAuthError(err) {
+			client, userID, token, err = s.newAPIClientForSite(ctx, site, true)
+			if err == nil {
+				pricing, _, err = client.FetchPricing(ctx, userID, token)
+			}
+		}
+	}
+	if err != nil {
+		s.saveNewAPISession(ctx, site, client, userID, token, err.Error())
 		return nil, err
 	}
+	s.recordNewAPIRuleCheckin(ctx, rule.ID, site.ID, client, userID, token)
 	balance, balanceErr := client.FetchBalance(ctx, userID, token)
 	if balanceErr != nil {
 		log.Printf("fetch newapi balance for site %d: %v", site.ID, balanceErr)
@@ -1369,14 +1380,14 @@ func (s *Server) runNewAPIRule(ctx context.Context, rule Rule, site Site) ([]Pri
 
 	rows, err := BuildKeywordRows(pricing, rule.ModelKeyword)
 	if err != nil {
-		_ = s.store.UpdateSiteRun(ctx, site.ID, userID, token, time.Now(), err.Error())
+		s.saveNewAPISession(ctx, site, client, userID, token, err.Error())
 		return nil, err
 	}
 	rows = CheapestPricingRows(filterPricingRowsForRule(rule, rows))
 	if len(rows) == 0 {
 		err := fmt.Errorf("no pricing rows found for model %q in category %q", rule.ModelKeyword, firstNonEmpty(rule.CategoryName, rule.Category))
 		_ = s.store.MarkMissingSnapshotGroupsInvalid(ctx, rule.ID, rule.ModelKeyword, nil, "upstream group does not match rule category or disappeared")
-		_ = s.store.UpdateSiteRun(ctx, site.ID, userID, token, time.Now(), err.Error())
+		s.saveNewAPISession(ctx, site, client, userID, token, err.Error())
 		return nil, err
 	}
 
@@ -1440,7 +1451,7 @@ func (s *Server) runNewAPIRule(ctx context.Context, rule Rule, site Site) ([]Pri
 	if err := s.store.MarkMissingSnapshotGroupsInvalid(ctx, rule.ID, rule.ModelKeyword, activeGroups, "upstream group disappeared or is no longer cheapest"); err != nil {
 		log.Printf("mark missing newapi snapshot groups invalid for rule %d: %v", rule.ID, err)
 	}
-	_ = s.store.UpdateSiteRun(ctx, site.ID, userID, token, time.Now(), "")
+	s.saveNewAPISession(ctx, site, client, userID, token, "")
 	if rule.SyncEnabled && !syncAttempted && syncErr == nil && !syncDecisionRecorded {
 		_ = s.store.UpdateRuleSyncStatus(ctx, rule.ID, "不是当前最低价", "")
 	}
@@ -1909,25 +1920,23 @@ func (s *Server) syncCandidateSnapshotToMain(ctx context.Context, rule Rule, can
 	keyName := upstreamKeyName(candidateRule, candidate.ModelName)
 	switch strings.ToLower(strings.TrimSpace(candidate.SourceType)) {
 	case "", RuleSourceNewAPI:
-		client, err := NewNewAPIClient(site.BaseURL)
+		client, userID, token, err := s.newAPIClientForSite(ctx, site, false)
 		if err != nil {
-			return false, fmt.Errorf("candidate %s create NewAPI client: %w", candidateLabel(candidate), err)
-		}
-		userID, err := client.Login(ctx, site.Username, site.Password, site.TOTPCode)
-		if err != nil {
-			return false, fmt.Errorf("candidate %s login NewAPI upstream: %w", candidateLabel(candidate), err)
-		}
-		token := site.AccessToken
-		if token == "" || userID != site.UserID {
-			token, err = client.GenerateSystemAccessToken(ctx, userID)
-			if err != nil {
-				return false, fmt.Errorf("candidate %s generate NewAPI system token: %w", candidateLabel(candidate), err)
-			}
+			s.saveNewAPISession(ctx, site, client, site.UserID, site.AccessToken, err.Error())
+			return false, fmt.Errorf("candidate %s auth NewAPI upstream: %w", candidateLabel(candidate), err)
 		}
 		apiKey, keyAction, err := createNewAPIUpstreamKey(ctx, client, userID, token, keyName, candidate.GroupName)
+		if err != nil && isSessionAuthError(err) {
+			client, userID, token, err = s.newAPIClientForSite(ctx, site, true)
+			if err == nil {
+				apiKey, keyAction, err = createNewAPIUpstreamKey(ctx, client, userID, token, keyName, candidate.GroupName)
+			}
+		}
 		if err != nil {
+			s.saveNewAPISession(ctx, site, client, userID, token, err.Error())
 			return true, fmt.Errorf("candidate %s create NewAPI key for group %s: %w", candidateLabel(candidate), candidate.GroupName, err)
 		}
+		s.saveNewAPISession(ctx, site, client, userID, token, "")
 		return true, s.syncUpstreamKeyToMainSub2APIWithSignature(ctx, rule, site.Name, site.BaseURL, apiKey, row, candidate, keyAction, signature, notifySync)
 	case RuleSourceSub2API:
 		group, err := sub2GroupFromSnapshot(candidate)
@@ -2122,6 +2131,10 @@ func isFallbackSyncError(err error) bool {
 		"was not found",
 		"invalid url",
 		"http 429",
+		"http 502",
+		"api returned 502",
+		"error code: 502",
+		"bad gateway",
 		"api returned 503",
 		"service temporarily unavailable",
 		"too many requests",
@@ -2271,22 +2284,36 @@ func createNewAPIUpstreamKey(ctx context.Context, newAPI *NewAPIClient, userID i
 }
 
 func (s *Server) ensureSub2APIUpstreamAPIKey(ctx context.Context, upstream Sub2APIUpstream, keyName string, group sub2Group) (string, string, error) {
-	client, err := NewSub2APIClient(upstream.BaseURL, upstream.AuthToken)
+	cfg := sub2APIUserSourceConfig{
+		UpstreamID: upstream.ID,
+		BaseURL:    upstream.BaseURL,
+		AuthToken:  upstream.AuthToken,
+		Email:      upstream.Email,
+		Password:   upstream.Password,
+		TOTPCode:   upstream.TOTPCode,
+		CookieJar:  upstream.CookieJar,
+	}
+	client, err := s.sub2APIClientForUserSource(ctx, cfg, false)
 	if err != nil {
 		return "", "", err
 	}
-	if strings.TrimSpace(upstream.AuthToken) == "" {
-		if err := client.LoginWith2FA(ctx, upstream.Email, upstream.Password, upstream.TOTPCode, ""); err != nil {
-			return "", "", err
+	key, action, err := client.EnsureAPIKeyForGroup(ctx, keyName, group)
+	if err != nil && isSessionAuthError(err) {
+		client, err = s.sub2APIClientForUserSource(ctx, cfg, true)
+		if err == nil {
+			key, action, err = client.EnsureAPIKeyForGroup(ctx, keyName, group)
 		}
 	}
-	key, action, err := client.EnsureAPIKeyForGroup(ctx, keyName, group)
 	if err != nil {
+		s.saveSub2APIUserSession(ctx, cfg, client, err.Error())
 		return "", "", err
 	}
 	if strings.TrimSpace(key.Key) == "" {
-		return "", "", fmt.Errorf("sub2api api key %q did not return key value", keyName)
+		err := fmt.Errorf("sub2api api key %q did not return key value", keyName)
+		s.saveSub2APIUserSession(ctx, cfg, client, err.Error())
+		return "", "", err
 	}
+	s.saveSub2APIUserSession(ctx, cfg, client, "")
 	return key.Key, action, nil
 }
 
@@ -2391,6 +2418,11 @@ func localizeSyncError(err error) string {
 		{"sub2api admin key is not configured", "主站 sub2api 管理员 key 未配置"},
 		{"main sub2api admin auth failed", "主站 sub2api 管理员认证失败"},
 		{"HTTP 429", "HTTP 429（上游临时限流）"},
+		{"HTTP 502", "HTTP 502（上游网关错误）"},
+		{"API returned 502", "接口返回 502"},
+		{"error code: 502", "错误码 502"},
+		{"Bad Gateway", "网关错误"},
+		{"bad gateway", "网关错误"},
 		{"API returned 503", "接口返回 503"},
 		{"Service temporarily unavailable", "服务暂时不可用"},
 		{"too many requests", "请求过于频繁"},
@@ -2415,6 +2447,7 @@ func localizeSyncError(err error) string {
 		{"candidate", "候选"},
 		{"create NewAPI key", "创建 NewAPI key"},
 		{"create sub2api key", "创建 sub2api key"},
+		{"auth NewAPI upstream", "认证 NewAPI 上游"},
 		{"login NewAPI upstream", "登录 NewAPI 上游"},
 		{"generate NewAPI system token", "生成 NewAPI 系统 token"},
 		{"get newapi token key", "获取 NewAPI 令牌 key"},

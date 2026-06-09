@@ -26,6 +26,7 @@ type Site struct {
 	TOTPCode    string     `json:"-"`
 	UserID      int64      `json:"-"`
 	AccessToken string     `json:"-"`
+	CookieJar   string     `json:"-"`
 	LastError   string     `json:"last_error"`
 	LastRunAt   *time.Time `json:"last_run_at"`
 	CreatedAt   time.Time  `json:"created_at"`
@@ -96,6 +97,7 @@ type Sub2APIUpstream struct {
 	AuthToken   string     `json:"auth_token,omitempty"`
 	Password    string     `json:"password,omitempty"`
 	TOTPCode    string     `json:"totp_code,omitempty"`
+	CookieJar   string     `json:"-"`
 	LastError   string     `json:"last_error"`
 	LastCheckAt *time.Time `json:"last_check_at"`
 	CreatedAt   time.Time  `json:"created_at"`
