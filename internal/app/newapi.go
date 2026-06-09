@@ -401,9 +401,33 @@ func (c *NewAPIClient) getTokenKey(ctx context.Context, headers map[string]strin
 		Key string `json:"key"`
 	}
 	if err := c.request(ctx, http.MethodPost, fmt.Sprintf("api/token/%d/key", tokenID), headers, nil, &result); err != nil {
+		if key, batchErr := c.getTokenKeyBatch(ctx, headers, tokenID); batchErr == nil {
+			return key, nil
+		}
 		return "", fmt.Errorf("get newapi token key: %w", err)
 	}
-	key := strings.TrimSpace(result.Key)
+	return normalizeNewAPIKey(result.Key)
+}
+
+func (c *NewAPIClient) getTokenKeyBatch(ctx context.Context, headers map[string]string, tokenID int) (string, error) {
+	var result struct {
+		Keys map[string]string `json:"keys"`
+	}
+	if err := c.request(ctx, http.MethodPost, "api/token/batch/keys", headers, map[string][]int{"ids": []int{tokenID}}, &result); err != nil {
+		return "", fmt.Errorf("get newapi token key batch: %w", err)
+	}
+	if result.Keys == nil {
+		return "", fmt.Errorf("newapi token key batch response missing keys")
+	}
+	key := result.Keys[strconv.Itoa(tokenID)]
+	if key == "" {
+		key = result.Keys[fmt.Sprintf("%d", tokenID)]
+	}
+	return normalizeNewAPIKey(key)
+}
+
+func normalizeNewAPIKey(key string) (string, error) {
+	key = strings.TrimSpace(key)
 	if key == "" {
 		return "", fmt.Errorf("newapi token key is empty")
 	}

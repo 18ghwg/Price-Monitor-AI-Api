@@ -1815,7 +1815,7 @@ func (s *Server) syncBestAvailableCandidate(ctx context.Context, rule Rule, mode
 		}
 		if isFallbackSyncError(err) {
 			fallbackErrors = append(fallbackErrors, fmt.Sprintf("%s/%s: %v", candidate.SiteName, candidate.GroupName, err))
-			s.recordSyncFailure(ctx, candidateRule, candidate, err)
+			_ = s.store.UpdateRuleSyncStatus(ctx, candidateRule.ID, fallbackSyncStatus(err), "")
 			continue
 		}
 		s.recordSyncFailure(ctx, candidateRule, candidate, err)
@@ -1823,6 +1823,7 @@ func (s *Server) syncBestAvailableCandidate(ctx context.Context, rule Rule, mode
 	}
 	if len(fallbackErrors) > 0 {
 		err := fmt.Errorf("all sync candidates failed: %s", strings.Join(fallbackErrors, "；"))
+		_ = s.store.UpdateRuleSyncStatus(ctx, rule.ID, err.Error(), "")
 		return true, true, err
 	}
 	if len(candidates) > 0 {
@@ -1869,6 +1870,15 @@ func lowBalanceNotifyWindow(skipped []PriceSnapshot) []PriceSnapshot {
 
 func lowBalanceStatus(snapshot PriceSnapshot) string {
 	return fmt.Sprintf("skip low balance: %s %s %s", snapshot.SiteName, snapshot.GroupName, formatBalance(snapshot.UpstreamBalance, snapshot.BalanceUnit))
+}
+
+func fallbackSyncStatus(err error) string {
+	text := strings.TrimSpace(err.Error())
+	const maxLen = 240
+	if len(text) > maxLen {
+		text = text[:maxLen] + "..."
+	}
+	return "skip fallback candidate: " + text
 }
 
 func (s *Server) recordSyncFailure(ctx context.Context, rule Rule, candidate PriceSnapshot, err error) {
@@ -2107,6 +2117,9 @@ func isFallbackSyncError(err error) bool {
 		"不可用",
 		"not found",
 		"was not found",
+		"invalid url",
+		"token key",
+		"/api/token/",
 	}
 	for _, needle := range needles {
 		if strings.Contains(text, needle) {
@@ -2196,7 +2209,8 @@ func overPrice(actual *float64, threshold *float64) bool {
 	if actual == nil || threshold == nil {
 		return false
 	}
-	return *actual > *threshold
+	const priceEpsilon = 1e-9
+	return *actual-*threshold > priceEpsilon
 }
 
 func syncThresholdStatus(category string, label string, actual *float64, threshold *float64, ratio float64) string {

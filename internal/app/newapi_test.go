@@ -157,6 +157,46 @@ func TestNewAPIClientEnsureAPIKeyForGroupUpdatesExistingTokenGroup(t *testing.T)
 	}
 }
 
+func TestNewAPIClientEnsureAPIKeyForGroupFallsBackToBatchKey(t *testing.T) {
+	var sawBatch bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/token/search":
+			writeNewAPITestJSON(w, map[string]any{
+				"items": []map[string]any{{"id": 123, "name": "pm-token", "group": "cheap-group"}},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/token/123/key":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"message":"Invalid URL (POST /api/token/123/key)"}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/token/batch/keys":
+			sawBatch = true
+			writeNewAPITestJSON(w, map[string]any{"keys": map[string]string{"123": "batch-key"}})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewNewAPIClient(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, action, err := client.EnsureAPIKeyForGroup(context.Background(), 99, "system-token", "pm-token", "cheap-group")
+	if err != nil {
+		t.Fatalf("EnsureAPIKeyForGroup() error = %v", err)
+	}
+	if action != "reused" {
+		t.Fatalf("action = %q, want reused", action)
+	}
+	if key != "sk-batch-key" {
+		t.Fatalf("key = %q, want sk-batch-key", key)
+	}
+	if !sawBatch {
+		t.Fatalf("batch key fallback was not called")
+	}
+}
+
 func TestNewAPIClientFetchBalance(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

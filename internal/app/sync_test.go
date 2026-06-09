@@ -28,6 +28,17 @@ func TestIsFallbackSyncErrorMatchesUnsupportedGroup(t *testing.T) {
 	}
 }
 
+func TestIsFallbackSyncErrorMatchesNewAPITokenKeyRoute(t *testing.T) {
+	err := errors.New("candidate newapi create NewAPI key: get newapi token key: upstream https://doro.lol/api/token/4173/key returned HTTP 404: Invalid URL")
+	if !isFallbackSyncError(err) {
+		t.Fatal("isFallbackSyncError() = false, want true for unsupported token key route")
+	}
+	status := fallbackSyncStatus(err)
+	if !strings.HasPrefix(status, "skip fallback candidate: ") {
+		t.Fatalf("fallbackSyncStatus() = %q, want fallback prefix", status)
+	}
+}
+
 func TestLowBalanceNotificationSignatureUsesUpstreamAccount(t *testing.T) {
 	tests := []struct {
 		name     string

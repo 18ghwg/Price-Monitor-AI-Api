@@ -43,6 +43,14 @@ func TestOfficialPriceThresholdIncludesClaude(t *testing.T) {
 	}
 }
 
+func TestOverPriceAllowsTinyFloatRounding(t *testing.T) {
+	actual := 0.07500000000000001
+	threshold := 0.075
+	if overPrice(&actual, &threshold) {
+		t.Fatalf("overPrice() = true for tiny rounding difference")
+	}
+}
+
 func floatPtrApprox(value *float64, want float64) bool {
 	return value != nil && math.Abs(*value-want) < 1e-12
 }
