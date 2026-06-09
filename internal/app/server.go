@@ -1385,8 +1385,8 @@ func (s *Server) runNewAPIRule(ctx context.Context, rule Rule, site Site) ([]Pri
 	}
 	rows = CheapestPricingRows(filterPricingRowsForRule(rule, rows))
 	if len(rows) == 0 {
-		err := fmt.Errorf("no pricing rows found for model %q in category %q", rule.ModelKeyword, firstNonEmpty(rule.CategoryName, rule.Category))
-		_ = s.store.MarkMissingSnapshotGroupsInvalid(ctx, rule.ID, rule.ModelKeyword, nil, "upstream group does not match rule category or disappeared")
+		err := missingPricingRowsError(rule, false)
+		_ = s.store.MarkMissingSnapshotGroupsInvalid(ctx, rule.ID, rule.ModelKeyword, nil, "上游分组不匹配当前规则分类，或模型/分组已不存在")
 		s.saveNewAPISession(ctx, site, client, userID, token, err.Error())
 		return nil, err
 	}
@@ -1495,8 +1495,8 @@ func (s *Server) runSub2APIRule(ctx context.Context, rule Rule, upstream Sub2API
 	}
 	rows := cheapestSub2PriceRows(filterSub2APIPriceRowsForRule(rule, result.Rows))
 	if len(rows) == 0 {
-		_ = s.store.MarkMissingSnapshotGroupsInvalid(ctx, rule.ID, rule.ModelKeyword, nil, "upstream group does not match rule category or disappeared")
-		return nil, fmt.Errorf("no sub2api pricing rows found for model %q in category %q", rule.ModelKeyword, firstNonEmpty(rule.CategoryName, rule.Category))
+		_ = s.store.MarkMissingSnapshotGroupsInvalid(ctx, rule.ID, rule.ModelKeyword, nil, "上游分组不匹配当前规则分类，或模型/分组已不存在")
+		return nil, missingPricingRowsError(rule, true)
 	}
 
 	snapshots := make([]PriceSnapshot, 0, len(rows))
@@ -1616,6 +1616,18 @@ func pricingRowFromSub2APIUserPriceRow(row Sub2APIUserPriceRow) PricingRow {
 		CacheReadPrice:  row.FinalCacheReadPerMillion,
 		CacheWritePrice: cacheWritePrice,
 	}
+}
+
+func missingPricingRowsError(rule Rule, sub2api bool) error {
+	source := "上游价格接口"
+	if sub2api {
+		source = "sub2api 上游价格接口"
+	}
+	return fmt.Errorf("未找到模型价格：模型 %q，分类 %q。可能原因：%s 没有返回该模型，或该模型不属于当前分类分组",
+		rule.ModelKeyword,
+		firstNonEmpty(rule.CategoryName, rule.Category),
+		source,
+	)
 }
 
 func cheapestSub2PriceRows(rows []Sub2APIUserPriceRow) []Sub2APIUserPriceRow {

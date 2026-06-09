@@ -12,7 +12,7 @@ func BuildPricingRows(pricing map[string]any, wantedModel, wantedGroup string) (
 	usableGroup := asMap(pricing["usable_group"])
 	models, ok := pricing["data"].([]any)
 	if !ok {
-		return nil, fmt.Errorf("pricing response missing data array")
+		return nil, fmt.Errorf("价格接口响应缺少 data 数组")
 	}
 
 	var rows []PricingRow
@@ -73,13 +73,13 @@ func BuildCheapestKeywordRows(pricing map[string]any, wantedModel string) ([]Pri
 func BuildKeywordRows(pricing map[string]any, wantedModel string) ([]PricingRow, error) {
 	wantedModel = strings.TrimSpace(wantedModel)
 	if wantedModel == "" {
-		return nil, fmt.Errorf("model name is required")
+		return nil, fmt.Errorf("模型名称不能为空")
 	}
 	groupRatio := asMap(pricing["group_ratio"])
 	usableGroup := asMap(pricing["usable_group"])
 	models, ok := pricing["data"].([]any)
 	if !ok {
-		return nil, fmt.Errorf("pricing response missing data array")
+		return nil, fmt.Errorf("价格接口响应缺少 data 数组")
 	}
 
 	var rows []PricingRow
