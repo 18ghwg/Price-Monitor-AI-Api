@@ -40,6 +40,10 @@ func TestNewAPIClientCreateAPIKeyForGroup(t *testing.T) {
 			writeNewAPITestJSON(w, map[string]any{
 				"items": items,
 			})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/token/":
+			writeNewAPITestJSON(w, map[string]any{
+				"items": []map[string]any{},
+			})
 		case r.Method == http.MethodPost && r.URL.Path == "/api/token/123/key":
 			sawKey = true
 			writeNewAPITestJSON(w, map[string]any{"key": "raw-key"})
@@ -194,6 +198,111 @@ func TestNewAPIClientEnsureAPIKeyForGroupFallsBackToBatchKey(t *testing.T) {
 	}
 	if !sawBatch {
 		t.Fatalf("batch key fallback was not called")
+	}
+}
+
+func TestNewAPIClientEnsureAPIKeyForGroupFindsTokenFromList(t *testing.T) {
+	var sawList bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/token/search":
+			writeNewAPITestJSON(w, map[string]any{"items": []map[string]any{}})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/token/" && r.URL.Query().Get("page_size") == "100":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"success":false,"message":"not found"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/token/" && r.URL.Query().Get("size") == "100":
+			sawList = true
+			writeNewAPITestJSON(w, map[string]any{
+				"items": []map[string]any{{
+					"id":    123,
+					"name":  "pm-token",
+					"group": "cheap-group",
+					"key":   "listed-key",
+				}},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/token/123/key":
+			writeNewAPITestJSON(w, map[string]any{"key": "existing-key"})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewNewAPIClient(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, action, err := client.EnsureAPIKeyForGroup(context.Background(), 99, "system-token", "pm-token", "cheap-group")
+	if err != nil {
+		t.Fatalf("EnsureAPIKeyForGroup() error = %v", err)
+	}
+	if action != "reused" {
+		t.Fatalf("action = %q, want reused", action)
+	}
+	if key != "sk-existing-key" {
+		t.Fatalf("key = %q, want sk-existing-key", key)
+	}
+	if !sawList {
+		t.Fatalf("token list fallback was not called")
+	}
+}
+
+func TestNewAPIClientEnsureAPIKeyForGroupFallsBackToListedKey(t *testing.T) {
+	var sawList bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/token/search":
+			writeNewAPITestJSON(w, map[string]any{
+				"items": []map[string]any{{"id": 4173, "name": "pm-r56-claude-opus-4-8", "group": "Claude 逆向A1"}},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/token/4173/key":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"message":"Invalid URL (POST /api/token/4173/key)"}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/token/batch/keys":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"success":false,"message":"not found"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/token/" && r.URL.Query().Get("page_size") == "100":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"success":false,"message":"not found"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/token/" && r.URL.Query().Get("size") == "100":
+			sawList = true
+			writeNewAPITestJSON(w, map[string]any{
+				"page":      1,
+				"page_size": 10,
+				"total":     1,
+				"items": []map[string]any{{
+					"id":              4173,
+					"name":            "pm-r56-claude-opus-4-8",
+					"group":           "Claude 逆向A1",
+					"key":             "l37GOqyWhbYk2rRyV9fngJm8VMoy6BDget6hXnpWBk7mv7h3",
+					"unlimited_quota": true,
+				}},
+			})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewNewAPIClient(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, action, err := client.EnsureAPIKeyForGroup(context.Background(), 99, "system-token", "pm-r56-claude-opus-4-8", "Claude 逆向A1")
+	if err != nil {
+		t.Fatalf("EnsureAPIKeyForGroup() error = %v", err)
+	}
+	if action != "reused" {
+		t.Fatalf("action = %q, want reused", action)
+	}
+	want := "sk-l37GOqyWhbYk2rRyV9fngJm8VMoy6BDget6hXnpWBk7mv7h3"
+	if key != want {
+		t.Fatalf("key = %q, want %q", key, want)
+	}
+	if !sawList {
+		t.Fatalf("listed key fallback was not called")
 	}
 }
 

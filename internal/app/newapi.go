@@ -22,6 +22,13 @@ type NewAPIClient struct {
 	client  *http.Client
 }
 
+type newAPITokenItem struct {
+	ID    int    `json:"id"`
+	Name  string `json:"name"`
+	Group string `json:"group"`
+	Key   string `json:"key"`
+}
+
 type apiEnvelope struct {
 	Success bool            `json:"success"`
 	Message string          `json:"message"`
@@ -347,7 +354,7 @@ func (c *NewAPIClient) EnsureAPIKeyForGroup(ctx context.Context, userID int64, t
 			}
 			action = "updated"
 		}
-		key, err := c.getTokenKey(ctx, headers, tokenID)
+		key, err := c.getTokenKey(ctx, headers, tokenID, name)
 		return key, action, err
 	}
 
@@ -369,7 +376,7 @@ func (c *NewAPIClient) EnsureAPIKeyForGroup(ctx context.Context, userID int64, t
 	if !found {
 		return "", "", fmt.Errorf("created newapi token %q was not found", name)
 	}
-	key, err := c.getTokenKey(ctx, headers, tokenID)
+	key, err := c.getTokenKey(ctx, headers, tokenID, name)
 	return key, "created", err
 }
 
@@ -396,7 +403,7 @@ func (c *NewAPIClient) updateTokenGroup(ctx context.Context, headers map[string]
 	return nil
 }
 
-func (c *NewAPIClient) getTokenKey(ctx context.Context, headers map[string]string, tokenID int) (string, error) {
+func (c *NewAPIClient) getTokenKey(ctx context.Context, headers map[string]string, tokenID int, name string) (string, error) {
 	var result struct {
 		Key string `json:"key"`
 	}
@@ -404,9 +411,19 @@ func (c *NewAPIClient) getTokenKey(ctx context.Context, headers map[string]strin
 		if key, batchErr := c.getTokenKeyBatch(ctx, headers, tokenID); batchErr == nil {
 			return key, nil
 		}
+		if key, listErr := c.getTokenKeyFromList(ctx, headers, tokenID, name); listErr == nil {
+			return key, nil
+		}
 		return "", fmt.Errorf("get newapi token key: %w", err)
 	}
-	return normalizeNewAPIKey(result.Key)
+	key, err := normalizeNewAPIKey(result.Key)
+	if err == nil {
+		return key, nil
+	}
+	if key, listErr := c.getTokenKeyFromList(ctx, headers, tokenID, name); listErr == nil {
+		return key, nil
+	}
+	return "", err
 }
 
 func (c *NewAPIClient) getTokenKeyBatch(ctx context.Context, headers map[string]string, tokenID int) (string, error) {
@@ -426,6 +443,20 @@ func (c *NewAPIClient) getTokenKeyBatch(ctx context.Context, headers map[string]
 	return normalizeNewAPIKey(key)
 }
 
+func (c *NewAPIClient) getTokenKeyFromList(ctx context.Context, headers map[string]string, tokenID int, name string) (string, error) {
+	items, err := c.listTokenFirstPage(ctx, headers)
+	if err != nil {
+		return "", fmt.Errorf("list newapi tokens: %w", err)
+	}
+	name = strings.TrimSpace(name)
+	for _, item := range items {
+		if item.ID == tokenID || (name != "" && item.Name == name) {
+			return normalizeNewAPIKey(item.Key)
+		}
+	}
+	return "", fmt.Errorf("newapi token %d was not found in token list", tokenID)
+}
+
 func normalizeNewAPIKey(key string) (string, error) {
 	key = strings.TrimSpace(key)
 	if key == "" {
@@ -440,21 +471,55 @@ func normalizeNewAPIKey(key string) (string, error) {
 func (c *NewAPIClient) findTokenByName(ctx context.Context, userID int64, token string, name string) (int, string, bool, error) {
 	path := "api/token/search?keyword=" + url.QueryEscape(name) + "&p=0&page_size=20"
 	var page struct {
-		Items []struct {
-			ID    int    `json:"id"`
-			Name  string `json:"name"`
-			Group string `json:"group"`
-		} `json:"items"`
+		Items []newAPITokenItem `json:"items"`
 	}
-	if err := c.request(ctx, http.MethodGet, path, newAPIAuthHeaders(userID, token), nil, &page); err != nil {
-		return 0, "", false, fmt.Errorf("search newapi token: %w", err)
+	headers := newAPIAuthHeaders(userID, token)
+	var searchErr error
+	if err := c.request(ctx, http.MethodGet, path, headers, nil, &page); err == nil {
+		for _, item := range page.Items {
+			if item.Name == name && item.ID > 0 {
+				return item.ID, item.Group, true, nil
+			}
+		}
+	} else {
+		searchErr = err
 	}
-	for _, item := range page.Items {
+
+	items, listErr := c.listTokenFirstPage(ctx, headers)
+	if listErr != nil {
+		if searchErr != nil {
+			return 0, "", false, fmt.Errorf("search newapi token: %w", searchErr)
+		}
+		return 0, "", false, nil
+	}
+	for _, item := range items {
 		if item.Name == name && item.ID > 0 {
 			return item.ID, item.Group, true, nil
 		}
 	}
 	return 0, "", false, nil
+}
+
+func (c *NewAPIClient) listTokenFirstPage(ctx context.Context, headers map[string]string) ([]newAPITokenItem, error) {
+	items, err := c.listTokens(ctx, headers, "api/token/?p=1&page_size=100")
+	if err == nil {
+		return items, nil
+	}
+	items, sizeErr := c.listTokens(ctx, headers, "api/token/?p=1&size=100")
+	if sizeErr == nil {
+		return items, nil
+	}
+	return nil, err
+}
+
+func (c *NewAPIClient) listTokens(ctx context.Context, headers map[string]string, path string) ([]newAPITokenItem, error) {
+	var page struct {
+		Items []newAPITokenItem `json:"items"`
+	}
+	if err := c.request(ctx, http.MethodGet, path, headers, nil, &page); err != nil {
+		return nil, err
+	}
+	return page.Items, nil
 }
 
 func newAPIAuthHeaders(userID int64, token string) map[string]string {
