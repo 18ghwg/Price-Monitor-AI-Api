@@ -1357,6 +1357,35 @@ func (s Store) MarkMissingSnapshotGroupsInvalid(ctx context.Context, ruleID int6
 	return err
 }
 
+func (s Store) MarkCategoryMismatchedSnapshotsInvalid(ctx context.Context, reason string) (int64, error) {
+	tag, err := s.db.Exec(ctx, `
+		UPDATE price_snapshots p
+		SET invalid = true,
+		    invalid_reason = CASE WHEN $1 = '' THEN 'snapshot group does not match rule category' ELSE $1 END,
+		    invalid_at = COALESCE(invalid_at, now())
+		FROM monitor_rules r
+		WHERE r.id = p.rule_id
+		  AND p.invalid = false
+		  AND (
+		    (
+		      (lower(r.category) LIKE '%claud%' OR lower(r.category) LIKE '%anthropic%' OR lower(r.model_keyword) LIKE '%claude%' OR lower(r.model_keyword) LIKE '%anthropic%')
+		      AND (lower(COALESCE(p.group_name, '') || ' ' || COALESCE(p.group_desc, '')) LIKE '%codex%' OR lower(COALESCE(p.group_name, '') || ' ' || COALESCE(p.group_desc, '')) LIKE '%openai%' OR lower(COALESCE(p.group_name, '') || ' ' || COALESCE(p.group_desc, '')) LIKE '%gpt%')
+		      AND NOT (lower(COALESCE(p.group_name, '') || ' ' || COALESCE(p.group_desc, '')) LIKE '%claude%' OR lower(COALESCE(p.group_name, '') || ' ' || COALESCE(p.group_desc, '')) LIKE '%claud%' OR lower(COALESCE(p.group_name, '') || ' ' || COALESCE(p.group_desc, '')) LIKE '%anthropic%')
+		    )
+		    OR
+		    (
+		      (lower(r.category) LIKE '%codex%' OR lower(r.category) LIKE '%openai%' OR lower(r.category) LIKE '%gpt%' OR lower(r.model_keyword) LIKE '%gpt%' OR lower(r.model_keyword) LIKE '%codex%')
+		      AND (lower(COALESCE(p.group_name, '') || ' ' || COALESCE(p.group_desc, '')) LIKE '%claude%' OR lower(COALESCE(p.group_name, '') || ' ' || COALESCE(p.group_desc, '')) LIKE '%claud%' OR lower(COALESCE(p.group_name, '') || ' ' || COALESCE(p.group_desc, '')) LIKE '%anthropic%')
+		      AND NOT (lower(COALESCE(p.group_name, '') || ' ' || COALESCE(p.group_desc, '')) LIKE '%codex%' OR lower(COALESCE(p.group_name, '') || ' ' || COALESCE(p.group_desc, '')) LIKE '%openai%' OR lower(COALESCE(p.group_name, '') || ' ' || COALESCE(p.group_desc, '')) LIKE '%gpt%')
+		    )
+		  )
+	`, strings.TrimSpace(reason))
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
 func (s Store) PruneExpiredInvalidSnapshots(ctx context.Context, olderThan time.Duration) (int64, error) {
 	if olderThan <= 0 {
 		olderThan = 7 * 24 * time.Hour

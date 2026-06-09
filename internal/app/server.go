@@ -1365,14 +1365,15 @@ func (s *Server) runNewAPIRule(ctx context.Context, rule Rule, site Site) ([]Pri
 		log.Printf("fetch newapi recharge status for site %d: %v", site.ID, rechargeErr)
 	}
 
-	rows, err := BuildCheapestKeywordRows(pricing, rule.ModelKeyword)
+	rows, err := BuildKeywordRows(pricing, rule.ModelKeyword)
 	if err != nil {
 		_ = s.store.UpdateSiteRun(ctx, site.ID, userID, token, time.Now(), err.Error())
 		return nil, err
 	}
+	rows = CheapestPricingRows(filterPricingRowsForRule(rule, rows))
 	if len(rows) == 0 {
-		err := fmt.Errorf("no pricing rows found for model %q", rule.ModelKeyword)
-		_ = s.store.MarkMissingSnapshotGroupsInvalid(ctx, rule.ID, rule.ModelKeyword, nil, "model or upstream group disappeared or is no longer cheapest")
+		err := fmt.Errorf("no pricing rows found for model %q in category %q", rule.ModelKeyword, firstNonEmpty(rule.CategoryName, rule.Category))
+		_ = s.store.MarkMissingSnapshotGroupsInvalid(ctx, rule.ID, rule.ModelKeyword, nil, "upstream group does not match rule category or disappeared")
 		_ = s.store.UpdateSiteRun(ctx, site.ID, userID, token, time.Now(), err.Error())
 		return nil, err
 	}
@@ -1479,10 +1480,10 @@ func (s *Server) runSub2APIRule(ctx context.Context, rule Rule, upstream Sub2API
 			Limit:             5000,
 		}),
 	}
-	rows := cheapestSub2PriceRows(result.Rows)
+	rows := cheapestSub2PriceRows(filterSub2APIPriceRowsForRule(rule, result.Rows))
 	if len(rows) == 0 {
-		_ = s.store.MarkMissingSnapshotGroupsInvalid(ctx, rule.ID, rule.ModelKeyword, nil, "model or upstream group disappeared or is no longer cheapest")
-		return nil, fmt.Errorf("no sub2api pricing rows found for model %q", rule.ModelKeyword)
+		_ = s.store.MarkMissingSnapshotGroupsInvalid(ctx, rule.ID, rule.ModelKeyword, nil, "upstream group does not match rule category or disappeared")
+		return nil, fmt.Errorf("no sub2api pricing rows found for model %q in category %q", rule.ModelKeyword, firstNonEmpty(rule.CategoryName, rule.Category))
 	}
 
 	snapshots := make([]PriceSnapshot, 0, len(rows))
@@ -1651,6 +1652,89 @@ func sub2APIUserPriceRowLess(left, right Sub2APIUserPriceRow) bool {
 		return left.EffectiveRate < right.EffectiveRate
 	}
 	return left.GroupName < right.GroupName
+}
+
+type pricingCategoryKind int
+
+const (
+	pricingCategoryUnknown pricingCategoryKind = iota
+	pricingCategoryOpenAI
+	pricingCategoryClaude
+)
+
+func filterPricingRowsForRule(rule Rule, rows []PricingRow) []PricingRow {
+	kind := pricingCategoryKindForRule(rule)
+	if kind == pricingCategoryUnknown {
+		return rows
+	}
+	filtered := make([]PricingRow, 0, len(rows))
+	for _, row := range rows {
+		if pricingRowMatchesCategoryKind(row, kind) {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
+}
+
+func filterSub2APIPriceRowsForRule(rule Rule, rows []Sub2APIUserPriceRow) []Sub2APIUserPriceRow {
+	kind := pricingCategoryKindForRule(rule)
+	if kind == pricingCategoryUnknown {
+		return rows
+	}
+	filtered := make([]Sub2APIUserPriceRow, 0, len(rows))
+	for _, row := range rows {
+		platform := strings.ToLower(strings.TrimSpace(row.GroupPlatform))
+		switch kind {
+		case pricingCategoryClaude:
+			if platform == sub2PlatformAnthropic || platform == "claude" || platform == "claud" {
+				filtered = append(filtered, row)
+			}
+		case pricingCategoryOpenAI:
+			if platform == sub2PlatformOpenAI || platform == "codex" || platform == "gpt" {
+				filtered = append(filtered, row)
+			}
+		}
+	}
+	return filtered
+}
+
+func pricingCategoryKindForRule(rule Rule) pricingCategoryKind {
+	value := strings.ToLower(strings.TrimSpace(strings.Join([]string{
+		rule.Category,
+		rule.CategoryName,
+		rule.ModelKeyword,
+		rule.ModelName,
+	}, " ")))
+	if containsAny(value, "claude", "claud", "anthropic") {
+		return pricingCategoryClaude
+	}
+	if containsAny(value, "codex", "openai", "gpt") {
+		return pricingCategoryOpenAI
+	}
+	return pricingCategoryUnknown
+}
+
+func pricingRowMatchesCategoryKind(row PricingRow, kind pricingCategoryKind) bool {
+	groupText := strings.ToLower(strings.TrimSpace(row.GroupName + " " + row.GroupDesc))
+	switch kind {
+	case pricingCategoryClaude:
+		return !containsAny(groupText, "codex", "openai", "gpt") ||
+			containsAny(groupText, "claude", "claud", "anthropic")
+	case pricingCategoryOpenAI:
+		return !containsAny(groupText, "claude", "claud", "anthropic") ||
+			containsAny(groupText, "codex", "openai", "gpt")
+	default:
+		return true
+	}
+}
+
+func containsAny(value string, needles ...string) bool {
+	for _, needle := range needles {
+		if strings.Contains(value, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func sub2APIUserPriceRowRaw(row Sub2APIUserPriceRow) []byte {
@@ -2278,6 +2362,11 @@ func (s *Server) startScheduler(ctx context.Context, interval time.Duration) {
 }
 
 func (s *Server) runEnabledRules(ctx context.Context) {
+	if invalidated, err := s.store.MarkCategoryMismatchedSnapshotsInvalid(ctx, "snapshot group does not match rule category"); err != nil {
+		log.Printf("mark category mismatched snapshots invalid: %v", err)
+	} else if invalidated > 0 {
+		log.Printf("marked %d category mismatched snapshots invalid", invalidated)
+	}
 	if deleted, err := s.store.PruneExpiredInvalidSnapshots(ctx, 7*24*time.Hour); err != nil {
 		log.Printf("prune expired invalid snapshots: %v", err)
 	} else if deleted > 0 {

@@ -63,6 +63,14 @@ func BuildPricingRows(pricing map[string]any, wantedModel, wantedGroup string) (
 }
 
 func BuildCheapestKeywordRows(pricing map[string]any, wantedModel string) ([]PricingRow, error) {
+	rows, err := BuildKeywordRows(pricing, wantedModel)
+	if err != nil {
+		return nil, err
+	}
+	return CheapestPricingRows(rows), nil
+}
+
+func BuildKeywordRows(pricing map[string]any, wantedModel string) ([]PricingRow, error) {
 	wantedModel = strings.TrimSpace(wantedModel)
 	if wantedModel == "" {
 		return nil, fmt.Errorf("model name is required")
@@ -82,16 +90,9 @@ func BuildCheapestKeywordRows(pricing map[string]any, wantedModel string) ([]Pri
 			continue
 		}
 
-		var cheapest *PricingRow
 		for _, group := range enabledGroups(model, groupRatio) {
 			row := buildPricingRow(model, usableGroup, groupRatio, modelName, group)
-			if cheapest == nil || pricingRowLess(row, *cheapest) {
-				current := row
-				cheapest = &current
-			}
-		}
-		if cheapest != nil {
-			rows = append(rows, *cheapest)
+			rows = append(rows, row)
 		}
 	}
 
@@ -105,6 +106,38 @@ func BuildCheapestKeywordRows(pricing map[string]any, wantedModel string) ([]Pri
 		return rows[i].ModelName < rows[j].ModelName
 	})
 	return rows, nil
+}
+
+func CheapestPricingRows(rows []PricingRow) []PricingRow {
+	cheapest := map[string]PricingRow{}
+	for _, row := range rows {
+		if strings.TrimSpace(row.ModelName) == "" {
+			continue
+		}
+		current, ok := cheapest[row.ModelName]
+		if !ok || pricingRowLess(row, current) {
+			cheapest[row.ModelName] = row
+		}
+	}
+	models := make([]string, 0, len(cheapest))
+	for model := range cheapest {
+		models = append(models, model)
+	}
+	sort.Strings(models)
+	out := make([]PricingRow, 0, len(models))
+	for _, model := range models {
+		out = append(out, cheapest[model])
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if pricingRowLess(out[i], out[j]) {
+			return true
+		}
+		if pricingRowLess(out[j], out[i]) {
+			return false
+		}
+		return out[i].ModelName < out[j].ModelName
+	})
+	return out
 }
 
 func buildPricingRow(model map[string]any, usableGroup map[string]any, groupRatio map[string]any, modelName string, group string) PricingRow {

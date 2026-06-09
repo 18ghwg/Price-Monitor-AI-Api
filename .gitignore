@@ -1,5 +1,6 @@
 .gocache/
 .gomodcache/
+.cache/
 newapi-price-monitor
 .DS_Store
 *.log

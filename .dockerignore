@@ -2,6 +2,7 @@
 .DS_Store
 .gocache
 .gomodcache
+.cache
 new-api-main
 sub2api-main
 tmp
