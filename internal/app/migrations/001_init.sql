@@ -381,8 +381,19 @@ ALTER TABLE IF EXISTS price_snapshots
   ADD COLUMN IF NOT EXISTS model_keyword TEXT NOT NULL DEFAULT '';
 
 INSERT INTO categories (name, slug)
-VALUES ('Codex', 'codex'), ('Claud', 'claud'), ('其他', 'other')
-ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name, updated_at = now();
+VALUES ('Codex', 'codex'), ('Claude', 'claud'), ('其他', 'other')
+ON CONFLICT (slug) DO UPDATE
+SET name = CASE
+    WHEN categories.slug = 'claud' AND lower(trim(categories.name)) IN ('', 'claud') THEN 'Claude'
+    WHEN trim(categories.name) = '' THEN EXCLUDED.name
+    ELSE categories.name
+  END,
+  updated_at = CASE
+    WHEN (categories.slug = 'claud' AND lower(trim(categories.name)) IN ('', 'claud'))
+      OR trim(categories.name) = ''
+    THEN now()
+    ELSE categories.updated_at
+  END;
 
 UPDATE monitor_rules
 SET category = 'claud'
