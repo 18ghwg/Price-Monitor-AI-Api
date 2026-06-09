@@ -136,6 +136,24 @@ const indexHTML = `<!doctype html>
             <p>启用定时后会按规则间隔自动写入价格快照；点击运行会立即登录站点并手动写入一次。</p>
           </div>
         </div>
+        <form id="bulkRuleForm" class="bulk-rule-bar">
+          <label>批量来源
+            <select name="source_type">
+              <option value="all">全部站点</option>
+              <option value="newapi">仅 NewAPI</option>
+              <option value="sub2api">仅 sub2api</option>
+            </select>
+          </label>
+          <label>分类<select name="category" id="bulkRuleCategorySelect" required></select></label>
+          <label>完整模型名<input name="model_keyword" required placeholder="claude-opus-4-8 / gpt-5.5"></label>
+          <label>间隔（分钟）<input name="interval_minutes" type="number" min="1" value="15"></label>
+          <label class="checkbox-label"><input name="schedule_enabled" type="checkbox" checked>启用定时</label>
+          <button id="bulkRuleSubmitBtn" class="secondary" type="submit">批量添加规则</button>
+        </form>
+        <div class="filters" aria-label="规则分类筛选">
+          <span class="filter-label">规则分类</span>
+          <div id="ruleCategoryFilters" class="filters-inner"></div>
+        </div>
         <div id="ruleControls" class="table-controls" hidden>
           <span id="ruleSummary" class="summary-line muted"></span>
           <button id="refreshRulesBtn" class="secondary table-refresh" type="button">刷新规则</button>
@@ -169,8 +187,9 @@ const indexHTML = `<!doctype html>
           <h2>最新价格快照</h2>
           <p>价格单位与原脚本一致：Token 类价格为 USD / 1M tokens，请求类价格为 USD / request。</p>
         </div>
-        <div class="filters" aria-label="价格分类筛选">
-          <div id="categoryFilters" class="filters-inner"></div>
+        <div class="filters" aria-label="价格快照分类筛选">
+          <span class="filter-label">快照分类</span>
+          <div id="snapshotCategoryFilters" class="filters-inner"></div>
         </div>
         <div id="snapshotControls" class="table-controls" hidden>
           <span id="snapshotSummary" class="summary-line muted"></span>
@@ -1039,6 +1058,27 @@ input[type="checkbox"] {
   margin-bottom: 12px;
 }
 
+.bulk-rule-bar {
+  display: grid;
+  grid-template-columns: minmax(120px, .8fr) minmax(140px, .9fr) minmax(220px, 1.4fr) minmax(92px, .6fr) auto auto;
+  gap: 10px;
+  align-items: end;
+  padding: 12px;
+  margin: 0 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f9fafb;
+}
+
+.bulk-rule-bar label {
+  margin-bottom: 0;
+}
+
+.bulk-rule-bar .checkbox-label {
+  min-height: 44px;
+  align-content: center;
+}
+
 .segmented-control {
   display: inline-flex;
   flex-wrap: wrap;
@@ -1163,8 +1203,16 @@ textarea:focus {
 .filters {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
   margin: -4px 0 16px;
+}
+
+.filter-label {
+  flex: 0 0 auto;
+  color: var(--muted-strong);
+  font-size: 13px;
+  font-weight: 800;
 }
 
 .filters-inner {
@@ -1818,7 +1866,8 @@ tr:last-child td {
   .hero-grid,
   .workspace,
   .settings-grid,
-  .site-list {
+  .site-list,
+  .bulk-rule-bar {
     grid-template-columns: 1fr;
   }
 
@@ -2081,7 +2130,8 @@ const appJS = `const state = {
   activeSiteListType: "newapi",
   activeRuleSourceType: "newapi",
   activeEmailTemplateType: "price_change",
-  categoryFilter: "all",
+  ruleCategoryFilter: "all",
+  snapshotCategoryFilter: "all",
   sort: { key: "effective_price", dir: "asc" },
 };
 
@@ -2241,7 +2291,7 @@ async function loadAll() {
     api("/api/sites"),
     api("/api/categories"),
     api("/api/rules"),
-    api("/api/snapshots?limit=500&category=" + encodeURIComponent(state.categoryFilter)),
+    api("/api/snapshots?limit=500&category=" + encodeURIComponent(state.snapshotCategoryFilter)),
     api("/api/settings"),
     api("/api/sub2api/upstreams"),
     api("/api/sub2api/groups").catch(() => []),
@@ -2253,8 +2303,11 @@ async function loadAll() {
   state.settings = settings || null;
   state.sub2Upstreams = sub2Upstreams || [];
   state.sub2Groups = sub2Groups || [];
-  if (state.categoryFilter !== "all" && !state.categories.some((item) => item.slug === state.categoryFilter)) {
-    state.categoryFilter = "all";
+  if (state.ruleCategoryFilter !== "all" && !state.categories.some((item) => item.slug === state.ruleCategoryFilter)) {
+    state.ruleCategoryFilter = "all";
+  }
+  if (state.snapshotCategoryFilter !== "all" && !state.categories.some((item) => item.slug === state.snapshotCategoryFilter)) {
+    state.snapshotCategoryFilter = "all";
     state.snapshots = await api("/api/snapshots?limit=500&category=all") || [];
   }
   render();
@@ -2289,7 +2342,7 @@ async function refreshSnapshots(options = {}) {
   }
   try {
     if (options.resetPage) state.snapshotPage = 1;
-    state.snapshots = await api("/api/snapshots?limit=500&category=" + encodeURIComponent(state.categoryFilter)) || [];
+    state.snapshots = await api("/api/snapshots?limit=500&category=" + encodeURIComponent(state.snapshotCategoryFilter)) || [];
     setText("#snapshotCount", state.snapshots.length);
     renderSnapshots();
     renderSortHeaders();
@@ -2383,14 +2436,8 @@ function hideLogin() {
 }
 
 function renderCategoryControls() {
-  const filters = $("#categoryFilters");
-  if (filters) {
-    const buttons = [{ slug: "all", name: "全部" }, ...state.categories].map((category) => {
-      const active = category.slug === state.categoryFilter ? " active" : "";
-      return "<button class=\"filter" + active + "\" data-category-filter=\"" + escapeAttr(category.slug) + "\" type=\"button\">" + escapeHTML(category.name) + "</button>";
-    });
-    filters.innerHTML = buttons.join("");
-  }
+  renderCategoryFilterButtons($("#ruleCategoryFilters"), state.ruleCategoryFilter, "rule");
+  renderCategoryFilterButtons($("#snapshotCategoryFilters"), state.snapshotCategoryFilter, "snapshot");
 
   const list = $("#categoriesList");
   if (!list) return;
@@ -2410,6 +2457,15 @@ function renderCategoryControls() {
       + "</span>"
       + "</span>";
   }).join("") : "<div class=\"empty-state\">暂无分类。</div>";
+}
+
+function renderCategoryFilterButtons(container, activeSlug, target) {
+  if (!container) return;
+  const buttons = [{ slug: "all", name: "全部" }, ...state.categories].map((category) => {
+    const active = category.slug === activeSlug ? " active" : "";
+    return "<button class=\"filter" + active + "\" data-category-filter-target=\"" + escapeAttr(target) + "\" data-category-filter=\"" + escapeAttr(category.slug) + "\" type=\"button\">" + escapeHTML(category.name) + "</button>";
+  });
+  container.innerHTML = buttons.join("");
 }
 
 function renderCategoryMainGroupOptions() {
@@ -2569,12 +2625,8 @@ function renderRuleFormOptions() {
     }
   }
 
-  const categorySelect = $("#ruleCategorySelect");
-  if (categorySelect) {
-    categorySelect.innerHTML = state.categories.length
-      ? state.categories.map((category) => "<option value=\"" + escapeAttr(category.slug) + "\">" + escapeHTML(category.name) + "</option>").join("")
-      : "<option value=\"other\">其他</option>";
-  }
+  renderCategorySelectOptions($("#ruleCategorySelect"));
+  renderCategorySelectOptions($("#bulkRuleCategorySelect"));
 
   const upstreamSelect = $("#ruleSub2UpstreamSelect");
   if (upstreamSelect) {
@@ -2602,6 +2654,17 @@ function renderRuleFormOptions() {
     }
   }
   syncRuleSourceFields();
+}
+
+function renderCategorySelectOptions(select) {
+  if (!select) return;
+  const selected = select.value || "";
+  select.innerHTML = state.categories.length
+    ? state.categories.map((category) => "<option value=\"" + escapeAttr(category.slug) + "\">" + escapeHTML(category.name) + "</option>").join("")
+    : "<option value=\"other\">其他</option>";
+  if (selected && Array.from(select.options).some((option) => option.value === selected)) {
+    select.value = selected;
+  }
 }
 
 function currentRuleSourceType() {
@@ -2663,7 +2726,8 @@ function renderRules() {
   const summary = $("#ruleSummary");
   const pageSizeSelect = $("#rulePageSize");
   if (!body) return;
-  const rows = state.rules || [];
+  const allRows = state.rules || [];
+  const rows = filteredRules();
   const totalPages = Math.max(1, Math.ceil(rows.length / state.rulePageSize));
   if (state.rulePage > totalPages) state.rulePage = totalPages;
   if (state.rulePage < 1) state.rulePage = 1;
@@ -2673,7 +2737,7 @@ function renderRules() {
   if (pageSizeSelect && String(pageSizeSelect.value) !== String(state.rulePageSize)) pageSizeSelect.value = String(state.rulePageSize);
   if (summary) {
     summary.textContent = rows.length
-      ? "显示 " + (start + 1) + "-" + Math.min(start + pageRows.length, rows.length) + " / " + rows.length + " 条监控规则"
+      ? "显示 " + (start + 1) + "-" + Math.min(start + pageRows.length, rows.length) + " / " + rows.length + " 条监控规则" + (rows.length !== allRows.length ? "，总计 " + allRows.length + " 条" : "")
       : "暂无监控规则";
   }
   body.innerHTML = pageRows.length ? pageRows.map((rule) => {
@@ -2707,6 +2771,13 @@ function renderRules() {
       + "</tr>";
   }).join("") : "<tr><td class=\"empty-state\" colspan=\"10\">暂无监控规则，添加站点后创建第一条关键词监控。</td></tr>";
   renderRulePager(rows.length, totalPages);
+}
+
+function filteredRules() {
+  const filter = state.ruleCategoryFilter || "all";
+  const rows = state.rules || [];
+  if (filter === "all") return rows;
+  return rows.filter((rule) => String(rule.category || "other") === filter);
 }
 
 function renderRulePager(totalRows, totalPages) {
@@ -4091,6 +4162,55 @@ if (refreshSnapshotsBtn) refreshSnapshotsBtn.addEventListener("click", () => {
   refreshSnapshots({ button: refreshSnapshotsBtn }).catch((error) => toast(error.message));
 });
 
+const bulkRuleForm = $("#bulkRuleForm");
+if (bulkRuleForm) {
+  bulkRuleForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = $("#bulkRuleSubmitBtn");
+    const originalText = button ? button.textContent : "";
+    const payload = formJSON(form);
+    payload.model_keyword = String(payload.model_keyword || "").trim();
+    payload.model_name = payload.model_keyword;
+    payload.interval_minutes = Number(payload.interval_minutes || 15);
+    payload.sync_enabled = !!state.settings?.sub2api_enabled;
+    const sourceType = String(payload.source_type || "all").toLowerCase();
+    const targetCount = (sourceType === "all" || sourceType === "newapi" ? newapiSites().length : 0)
+      + (sourceType === "all" || sourceType === "sub2api" ? state.sub2Upstreams.length : 0);
+    if (!payload.model_keyword) {
+      toast("请填写要批量监控的完整模型名");
+      return;
+    }
+    if (!payload.category) {
+      toast("请选择要批量写入的分类");
+      return;
+    }
+    if (targetCount <= 0) {
+      toast("当前来源范围没有可批量添加的上游站点");
+      return;
+    }
+    if (button) {
+      button.disabled = true;
+      button.textContent = "创建中";
+    }
+    try {
+      const result = await api("/api/rules/bulk-create", { method: "POST", body: JSON.stringify(payload) });
+      const created = Number(result?.created || 0);
+      const skipped = Number(result?.skipped || 0);
+      const total = Number(result?.total_targets || 0);
+      toast("批量规则完成：新增 " + created + " 条，跳过 " + skipped + " 条，共 " + total + " 个站点");
+      await refreshRules({ silent: true });
+    } catch (error) {
+      toast(error.message);
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = originalText || "批量添加规则";
+      }
+    }
+  });
+}
+
 const logoutBtn = $("#logoutBtn");
 if (logoutBtn) {
   logoutBtn.addEventListener("click", async () => {
@@ -4158,11 +4278,20 @@ document.addEventListener("click", async (event) => {
 
   const filter = event.target.closest("[data-category-filter]");
   if (filter) {
-    state.categoryFilter = filter.getAttribute("data-category-filter") || "all";
-    state.snapshotPage = 1;
+    const value = filter.getAttribute("data-category-filter") || "all";
+    const target = filter.getAttribute("data-category-filter-target") || "snapshot";
     try {
-      renderCategoryControls();
-      await refreshSnapshots({ silent: true, resetPage: true });
+      if (target === "rule") {
+        state.ruleCategoryFilter = value;
+        state.rulePage = 1;
+        renderCategoryControls();
+        renderRules();
+      } else {
+        state.snapshotCategoryFilter = value;
+        state.snapshotPage = 1;
+        renderCategoryControls();
+        await refreshSnapshots({ silent: true, resetPage: true });
+      }
     } catch (error) {
       toast(error.message);
     }
@@ -4399,7 +4528,8 @@ document.addEventListener("click", async (event) => {
     try {
       await api("/api/categories/" + id + "/delete", { method: "POST" });
       if (state.editingCategoryId === id) resetCategoryForm();
-      if (state.categoryFilter === category.slug) state.categoryFilter = "all";
+      if (state.ruleCategoryFilter === category.slug) state.ruleCategoryFilter = "all";
+      if (state.snapshotCategoryFilter === category.slug) state.snapshotCategoryFilter = "all";
       toast("分类已删除");
       await loadAll();
     } catch (error) {

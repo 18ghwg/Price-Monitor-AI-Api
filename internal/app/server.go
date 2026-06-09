@@ -99,6 +99,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/categories/{id}/delete", s.deleteCategory)
 	mux.HandleFunc("GET /api/rules", s.listRules)
 	mux.HandleFunc("POST /api/rules", s.createRule)
+	mux.HandleFunc("POST /api/rules/bulk-create", s.bulkCreateRules)
+	mux.HandleFunc("POST /api/rules/bulk-create-claude", s.bulkCreateClaudeRules)
 	mux.HandleFunc("PUT /api/rules/{id}", s.updateRule)
 	mux.HandleFunc("DELETE /api/rules/{id}", s.deleteRule)
 	mux.HandleFunc("POST /api/rules/{id}/update", s.updateRule)
@@ -1008,6 +1010,190 @@ func (s *Server) createRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"data": rule})
+}
+
+func (s *Server) bulkCreateClaudeRules(w http.ResponseWriter, r *http.Request) {
+	input := bulkRuleInput{
+		SourceType:      "newapi",
+		Category:        "claud",
+		ModelKeyword:    "claude-opus-4-8",
+		ModelName:       "claude-opus-4-8",
+		ScheduleEnabled: boolPtr(true),
+		IntervalMinutes: 15,
+	}
+	s.bulkCreateRulesWithInput(w, r, input)
+}
+
+type bulkRuleInput struct {
+	SourceType         string  `json:"source_type"`
+	Category           string  `json:"category"`
+	ModelKeyword       string  `json:"model_keyword"`
+	ModelName          string  `json:"model_name"`
+	GroupName          string  `json:"group_name"`
+	ScheduleEnabled    *bool   `json:"schedule_enabled"`
+	IntervalMinutes    int     `json:"interval_minutes"`
+	SyncEnabled        *bool   `json:"sync_enabled"`
+	SyncBaseGroup      string  `json:"sync_base_group"`
+	SyncThresholdRatio float64 `json:"sync_threshold_ratio"`
+}
+
+func (s *Server) bulkCreateRules(w http.ResponseWriter, r *http.Request) {
+	var input bulkRuleInput
+	if err := decodeRequest(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.bulkCreateRulesWithInput(w, r, input)
+}
+
+func (s *Server) bulkCreateRulesWithInput(w http.ResponseWriter, r *http.Request, input bulkRuleInput) {
+	settings, err := s.store.GetIntegrationSettings(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "load settings failed")
+		return
+	}
+	sites, err := s.store.ListSites(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "list sites failed")
+		return
+	}
+	upstreams, err := s.store.ListSub2APIUpstreams(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "list sub2api upstreams failed")
+		return
+	}
+
+	sourceType := strings.ToLower(strings.TrimSpace(input.SourceType))
+	if sourceType == "" {
+		sourceType = "all"
+	}
+	if sourceType != "all" && sourceType != RuleSourceNewAPI && sourceType != RuleSourceSub2API {
+		writeError(w, http.StatusBadRequest, "source_type must be all, newapi or sub2api")
+		return
+	}
+	categorySlug := normalizeCategorySlug(input.Category)
+	if categorySlug == "" {
+		writeError(w, http.StatusBadRequest, "category is required")
+		return
+	}
+	modelKeyword := strings.TrimSpace(input.ModelKeyword)
+	if modelKeyword == "" {
+		modelKeyword = strings.TrimSpace(input.ModelName)
+	}
+	if modelKeyword == "" {
+		writeError(w, http.StatusBadRequest, "model keyword is required")
+		return
+	}
+	modelName := strings.TrimSpace(input.ModelName)
+	if modelName == "" {
+		modelName = modelKeyword
+	}
+	intervalMinutes := input.IntervalMinutes
+	if intervalMinutes <= 0 {
+		intervalMinutes = 15
+	}
+	scheduleEnabled := true
+	if input.ScheduleEnabled != nil {
+		scheduleEnabled = *input.ScheduleEnabled
+	}
+	syncEnabled := settings.Sub2APIEnabled
+	if input.SyncEnabled != nil {
+		syncEnabled = *input.SyncEnabled
+	}
+	syncThresholdRatio := input.SyncThresholdRatio
+	if syncThresholdRatio <= 0 && settings.SyncThresholdRatio != nil {
+		syncThresholdRatio = *settings.SyncThresholdRatio
+	}
+
+	totalTargets := 0
+	if sourceType == "all" || sourceType == RuleSourceNewAPI {
+		totalTargets += len(sites)
+	}
+	if sourceType == "all" || sourceType == RuleSourceSub2API {
+		totalTargets += len(upstreams)
+	}
+	created := make([]Rule, 0, totalTargets)
+	skipped := 0
+	create := func(ruleInput RuleInput) bool {
+		rule, createErr := s.store.CreateRule(r.Context(), ruleInput)
+		if createErr != nil {
+			if isDuplicateRuleErr(createErr) {
+				skipped++
+				return true
+			}
+			writeError(w, http.StatusUnprocessableEntity, createErr.Error())
+			return false
+		}
+		created = append(created, rule)
+		return true
+	}
+	if sourceType == "all" || sourceType == RuleSourceNewAPI {
+		for _, site := range sites {
+			if !create(RuleInput{
+				SourceType:         RuleSourceNewAPI,
+				SiteID:             site.ID,
+				Category:           categorySlug,
+				ModelKeyword:       modelKeyword,
+				ModelName:          modelName,
+				GroupName:          input.GroupName,
+				Enabled:            true,
+				ScheduleEnabled:    scheduleEnabled,
+				IntervalMinutes:    intervalMinutes,
+				SyncEnabled:        syncEnabled,
+				SyncBaseGroup:      input.SyncBaseGroup,
+				SyncThresholdRatio: syncThresholdRatio,
+			}) {
+				return
+			}
+		}
+	}
+	if sourceType == "all" || sourceType == RuleSourceSub2API {
+		for _, upstream := range upstreams {
+			if !create(RuleInput{
+				SourceType:         RuleSourceSub2API,
+				Sub2APIUpstreamID:  upstream.ID,
+				Category:           categorySlug,
+				ModelKeyword:       modelKeyword,
+				ModelName:          modelName,
+				GroupName:          input.GroupName,
+				Enabled:            true,
+				ScheduleEnabled:    scheduleEnabled,
+				IntervalMinutes:    intervalMinutes,
+				SyncEnabled:        syncEnabled,
+				SyncBaseGroup:      input.SyncBaseGroup,
+				SyncThresholdRatio: syncThresholdRatio,
+			}) {
+				return
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
+		"created":         len(created),
+		"skipped":         skipped,
+		"total_targets":   totalTargets,
+		"total_sites":     len(sites),
+		"total_upstreams": len(upstreams),
+		"source_type":     sourceType,
+		"category":        categorySlug,
+		"model_keyword":   modelKeyword,
+		"model_name":      modelName,
+		"sync_enabled":    syncEnabled,
+		"rules":           created,
+	}})
+}
+
+func isDuplicateRuleErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "已存在") ||
+		strings.Contains(text, "duplicate") ||
+		strings.Contains(text, "repeat")
+}
+
+func boolPtr(value bool) *bool {
+	return &value
 }
 
 func (s *Server) updateRule(w http.ResponseWriter, r *http.Request) {
