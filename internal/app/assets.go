@@ -4220,7 +4220,8 @@ if (bulkRuleForm) {
       const created = Number(result?.created || 0);
       const skipped = Number(result?.skipped || 0);
       const total = Number(result?.total_targets || 0);
-      toast("批量规则完成：新增 " + created + " 条，跳过 " + skipped + " 条，共 " + total + " 个站点");
+      const staggered = Number(result?.staggered || 0);
+      toast("批量规则完成：新增 " + created + " 条，跳过 " + skipped + " 条，已错峰 " + staggered + " 条，共 " + total + " 个站点");
       await refreshRules({ silent: true });
     } catch (error) {
       toast(error.message);

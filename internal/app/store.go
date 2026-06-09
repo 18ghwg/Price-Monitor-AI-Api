@@ -65,6 +65,7 @@ type RuleInput struct {
 	Sub2APIGroupName   string  `json:"sub2api_group_name"`
 	Sub2APIGroupID     int64   `json:"sub2api_group_id"`
 	SyncThresholdRatio float64 `json:"sync_threshold_ratio"`
+	InitialNextRunAt   *time.Time
 }
 
 type SettingsInput struct {
@@ -617,7 +618,7 @@ func (s Store) CreateRule(ctx context.Context, input RuleInput) (Rule, error) {
 				schedule_enabled, interval_minutes, next_run_at,
 				sync_enabled, sync_base_group, sync_threshold_ratio, sub2api_group_name, sub2api_group_id
 			)
-			VALUES ($1, NULLIF($2, 0), $3, $4, $5, $6, $7, true, $8, $9::int, CASE WHEN $8 THEN now() + make_interval(mins => $9::int) ELSE NULL END, $10, $11, NULLIF($12, 0), $13, $14)
+			VALUES ($1, NULLIF($2, 0), $3, $4, $5, $6, $7, true, $8, $9::int, CASE WHEN $8 THEN COALESCE($15::timestamptz, now() + make_interval(mins => $9::int)) ELSE NULL END, $10, $11, NULLIF($12, 0), $13, $14)
 			RETURNING id, source_type, COALESCE(site_id, 0) AS site_id, sub2api_upstream_id, category, model_keyword, model_name, group_name, enabled,
 			          schedule_enabled, interval_minutes, next_run_at, last_scheduled_run_at,
 			          sync_enabled, sync_base_group, sync_threshold_ratio, sub2api_group_name, sub2api_group_id,
@@ -643,7 +644,7 @@ func (s Store) CreateRule(ctx context.Context, input RuleInput) (Rule, error) {
 		LEFT JOIN categories c ON c.slug = r.category
 	`, input.SourceType, input.SiteID, input.Sub2APIUpstreamID, input.Category, input.ModelKeyword, input.ModelName, input.GroupName,
 		input.ScheduleEnabled, input.IntervalMinutes, input.SyncEnabled, input.SyncBaseGroup,
-		input.SyncThresholdRatio, input.Sub2APIGroupName, input.Sub2APIGroupID).Scan(
+		input.SyncThresholdRatio, input.Sub2APIGroupName, input.Sub2APIGroupID, input.InitialNextRunAt).Scan(
 		&rule.ID, &rule.SourceType, &rule.SiteID, &rule.SiteName, &rule.Sub2APIUpstreamID, &rule.Sub2APIUpstreamName,
 		&rule.SourceName, &rule.SourceBaseURL, &rule.SourceAccount, &rule.Category, &rule.CategoryName,
 		&rule.ModelKeyword, &rule.ModelName, &rule.GroupName, &rule.Enabled,
@@ -1067,6 +1068,51 @@ func (s Store) MarkRuleScheduled(ctx context.Context, ruleID int64, runAt time.T
 		WHERE id = $1
 	`, ruleID, runAt, nextRunAt)
 	return err
+}
+
+func (s Store) StaggerRules(ctx context.Context, sourceType string, category string, modelKeyword string, intervalMinutes int, base time.Time) (int64, error) {
+	sourceType = strings.ToLower(strings.TrimSpace(sourceType))
+	category = normalizeCategorySlug(category)
+	modelKeyword = strings.TrimSpace(modelKeyword)
+	if category == "" || modelKeyword == "" {
+		return 0, nil
+	}
+	if intervalMinutes <= 0 {
+		intervalMinutes = 15
+	}
+	args := []any{category, modelKeyword, intervalMinutes, base}
+	sourceFilter := ""
+	if sourceType == RuleSourceNewAPI || sourceType == RuleSourceSub2API {
+		args = append(args, sourceType)
+		sourceFilter = fmt.Sprintf("AND COALESCE(source_type, 'newapi') = $%d", len(args))
+	}
+	tag, err := s.db.Exec(ctx, `
+		WITH target AS (
+			SELECT id,
+			       row_number() OVER (ORDER BY COALESCE(next_run_at, created_at), id) - 1 AS offset_index,
+			       count(*) OVER () AS total_count
+			FROM monitor_rules
+			WHERE enabled = true
+			  AND schedule_enabled = true
+			  AND category = $1
+			  AND lower(trim(model_keyword)) = lower(trim($2::text))
+			  `+sourceFilter+`
+		)
+		UPDATE monitor_rules r
+		SET next_run_at = $4::timestamptz
+		  + interval '1 minute'
+		  + greatest(
+		      interval '1 minute',
+		      make_interval(secs => (($3::double precision * 60) / greatest(target.total_count, 1))::int)
+		    ) * target.offset_index,
+		    updated_at = now()
+		FROM target
+		WHERE r.id = target.id
+	`, args...)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
 }
 
 func nextScheduledRunAt(runAt time.Time, intervalMinutes int) time.Time {

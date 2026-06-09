@@ -1114,6 +1114,16 @@ func (s *Server) bulkCreateRulesWithInput(w http.ResponseWriter, r *http.Request
 	}
 	created := make([]Rule, 0, totalTargets)
 	skipped := 0
+	targetIndex := 0
+	nextInitialRunAt := func() *time.Time {
+		if !scheduleEnabled {
+			return nil
+		}
+		offset := staggerOffset(targetIndex, totalTargets, intervalMinutes)
+		targetIndex++
+		next := time.Now().Add(offset)
+		return &next
+	}
 	create := func(ruleInput RuleInput) bool {
 		rule, createErr := s.store.CreateRule(r.Context(), ruleInput)
 		if createErr != nil {
@@ -1139,6 +1149,7 @@ func (s *Server) bulkCreateRulesWithInput(w http.ResponseWriter, r *http.Request
 				Enabled:            true,
 				ScheduleEnabled:    scheduleEnabled,
 				IntervalMinutes:    intervalMinutes,
+				InitialNextRunAt:   nextInitialRunAt(),
 				SyncEnabled:        syncEnabled,
 				SyncBaseGroup:      input.SyncBaseGroup,
 				SyncThresholdRatio: syncThresholdRatio,
@@ -1159,6 +1170,7 @@ func (s *Server) bulkCreateRulesWithInput(w http.ResponseWriter, r *http.Request
 				Enabled:            true,
 				ScheduleEnabled:    scheduleEnabled,
 				IntervalMinutes:    intervalMinutes,
+				InitialNextRunAt:   nextInitialRunAt(),
 				SyncEnabled:        syncEnabled,
 				SyncBaseGroup:      input.SyncBaseGroup,
 				SyncThresholdRatio: syncThresholdRatio,
@@ -1167,9 +1179,15 @@ func (s *Server) bulkCreateRulesWithInput(w http.ResponseWriter, r *http.Request
 			}
 		}
 	}
+	staggered, err := s.store.StaggerRules(r.Context(), sourceType, categorySlug, modelKeyword, intervalMinutes, time.Now())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "stagger rules failed: "+err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
 		"created":         len(created),
 		"skipped":         skipped,
+		"staggered":       staggered,
 		"total_targets":   totalTargets,
 		"total_sites":     len(sites),
 		"total_upstreams": len(upstreams),
@@ -1180,6 +1198,21 @@ func (s *Server) bulkCreateRulesWithInput(w http.ResponseWriter, r *http.Request
 		"sync_enabled":    syncEnabled,
 		"rules":           created,
 	}})
+}
+
+func staggerOffset(index int, total int, intervalMinutes int) time.Duration {
+	if total <= 1 {
+		return time.Minute
+	}
+	if intervalMinutes <= 0 {
+		intervalMinutes = 15
+	}
+	window := time.Duration(intervalMinutes) * time.Minute
+	step := window / time.Duration(total)
+	if step < time.Minute {
+		step = time.Minute
+	}
+	return time.Minute + time.Duration(index)*step
 }
 
 func isDuplicateRuleErr(err error) bool {
