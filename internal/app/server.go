@@ -101,6 +101,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/rules", s.createRule)
 	mux.HandleFunc("POST /api/rules/bulk-create", s.bulkCreateRules)
 	mux.HandleFunc("POST /api/rules/bulk-create-claude", s.bulkCreateClaudeRules)
+	mux.HandleFunc("POST /api/rules/bulk-update", s.bulkUpdateRules)
 	mux.HandleFunc("PUT /api/rules/{id}", s.updateRule)
 	mux.HandleFunc("DELETE /api/rules/{id}", s.deleteRule)
 	mux.HandleFunc("POST /api/rules/{id}/update", s.updateRule)
@@ -1244,6 +1245,27 @@ func isDuplicateRuleErr(err error) bool {
 
 func boolPtr(value bool) *bool {
 	return &value
+}
+
+func (s *Server) bulkUpdateRules(w http.ResponseWriter, r *http.Request) {
+	var input BulkRuleUpdateInput
+	if err := decodeRequest(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	rules, err := s.store.BulkUpdateRules(r.Context(), input)
+	if err != nil {
+		status := http.StatusUnprocessableEntity
+		if notFound(err) {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
+		"updated": len(rules),
+		"rules":   rules,
+	}})
 }
 
 func (s *Server) updateRule(w http.ResponseWriter, r *http.Request) {

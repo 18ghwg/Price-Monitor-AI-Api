@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -66,6 +67,18 @@ type RuleInput struct {
 	Sub2APIGroupID     int64   `json:"sub2api_group_id"`
 	SyncThresholdRatio float64 `json:"sync_threshold_ratio"`
 	InitialNextRunAt   *time.Time
+}
+
+type BulkRuleUpdateInput struct {
+	RuleIDs               []int64 `json:"rule_ids"`
+	UpdateModelKeyword    bool    `json:"update_model_keyword"`
+	ModelKeyword          string  `json:"model_keyword"`
+	UpdateIntervalMinutes bool    `json:"update_interval_minutes"`
+	IntervalMinutes       int     `json:"interval_minutes"`
+	UpdateScheduleEnabled bool    `json:"update_schedule_enabled"`
+	ScheduleEnabled       bool    `json:"schedule_enabled"`
+	UpdateSyncEnabled     bool    `json:"update_sync_enabled"`
+	SyncEnabled           bool    `json:"sync_enabled"`
 }
 
 type SettingsInput struct {
@@ -773,6 +786,158 @@ func (s Store) UpdateRule(ctx context.Context, ruleID int64, input RuleInput) (R
 	return rule, nil
 }
 
+func (s Store) BulkUpdateRules(ctx context.Context, input BulkRuleUpdateInput) ([]Rule, error) {
+	ruleIDs, err := normalizeRuleIDs(input.RuleIDs)
+	if err != nil {
+		return nil, err
+	}
+	if !input.UpdateModelKeyword && !input.UpdateIntervalMinutes && !input.UpdateScheduleEnabled && !input.UpdateSyncEnabled {
+		return nil, fmt.Errorf("请选择至少一个要批量修改的字段")
+	}
+	modelKeyword := strings.TrimSpace(input.ModelKeyword)
+	if input.UpdateModelKeyword && modelKeyword == "" {
+		return nil, fmt.Errorf("模型名称不能为空")
+	}
+	if input.UpdateIntervalMinutes && input.IntervalMinutes <= 0 {
+		return nil, fmt.Errorf("监控间隔必须大于 0")
+	}
+
+	rules := make([]Rule, 0, len(ruleIDs))
+	intendedInputs := make(map[int64]RuleInput, len(ruleIDs))
+	intendedSignatures := map[string]int64{}
+	for _, ruleID := range ruleIDs {
+		rule, _, _, err := s.GetRuleWithSource(ctx, ruleID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, fmt.Errorf("规则 #%d 不存在", ruleID)
+			}
+			return nil, err
+		}
+		nextInput := ruleInputFromRule(rule)
+		if input.UpdateModelKeyword {
+			nextInput.ModelKeyword = modelKeyword
+			nextInput.ModelName = modelKeyword
+		}
+		if input.UpdateIntervalMinutes {
+			nextInput.IntervalMinutes = input.IntervalMinutes
+		}
+		if input.UpdateScheduleEnabled {
+			nextInput.ScheduleEnabled = input.ScheduleEnabled
+		}
+		if input.UpdateSyncEnabled {
+			nextInput.SyncEnabled = input.SyncEnabled
+		}
+		normalizedInput, err := s.normalizeRuleInput(ctx, nextInput)
+		if err != nil {
+			return nil, fmt.Errorf("规则 #%d：%w", ruleID, err)
+		}
+		if input.UpdateModelKeyword {
+			if err := s.ensureUniqueRule(ctx, normalizedInput, ruleID); err != nil {
+				return nil, fmt.Errorf("规则 #%d：%w", ruleID, err)
+			}
+			signature := intendedRuleSignature(rule, normalizedInput)
+			if previousID, ok := intendedSignatures[signature]; ok {
+				return nil, fmt.Errorf("规则 #%d 和规则 #%d 修改后会重复", previousID, ruleID)
+			}
+			intendedSignatures[signature] = ruleID
+		}
+		intendedInputs[ruleID] = normalizedInput
+		rules = append(rules, rule)
+	}
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	for _, rule := range rules {
+		nextInput := intendedInputs[rule.ID]
+		if _, err := tx.Exec(ctx, `
+			UPDATE monitor_rules
+			SET model_keyword = $2,
+			    model_name = $3,
+			    schedule_enabled = $4,
+			    interval_minutes = $5,
+			    next_run_at = CASE
+			      WHEN $4 THEN
+			        CASE
+			          WHEN schedule_enabled = false OR interval_minutes <> $5 THEN now() + make_interval(mins => $5)
+			          ELSE COALESCE(next_run_at, now())
+			        END
+			      ELSE NULL
+			    END,
+			    sync_enabled = $6,
+			    updated_at = now()
+			WHERE id = $1
+		`, rule.ID, nextInput.ModelKeyword, nextInput.ModelName, nextInput.ScheduleEnabled, nextInput.IntervalMinutes, nextInput.SyncEnabled); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+
+	return s.rulesByIDs(ctx, ruleIDs)
+}
+
+func normalizeRuleIDs(rawIDs []int64) ([]int64, error) {
+	seen := map[int64]bool{}
+	ids := make([]int64, 0, len(rawIDs))
+	for _, id := range rawIDs {
+		if id <= 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("请选择要编辑的监控规则")
+	}
+	return ids, nil
+}
+
+func ruleInputFromRule(rule Rule) RuleInput {
+	return RuleInput{
+		SourceType:         rule.SourceType,
+		SiteID:             rule.SiteID,
+		Sub2APIUpstreamID:  rule.Sub2APIUpstreamID,
+		Category:           rule.Category,
+		ModelKeyword:       rule.ModelKeyword,
+		ModelName:          firstNonEmpty(rule.ModelName, rule.ModelKeyword),
+		GroupName:          rule.GroupName,
+		Enabled:            rule.Enabled,
+		ScheduleEnabled:    rule.ScheduleEnabled,
+		IntervalMinutes:    rule.IntervalMinutes,
+		SyncEnabled:        rule.SyncEnabled,
+		SyncBaseGroup:      rule.SyncBaseGroup,
+		Sub2APIGroupName:   rule.Sub2APIGroupName,
+		Sub2APIGroupID:     rule.Sub2APIGroupID,
+		SyncThresholdRatio: floatValueFromPtr(rule.SyncThresholdRatio),
+	}
+}
+
+func intendedRuleSignature(rule Rule, input RuleInput) string {
+	sourceType := strings.ToLower(strings.TrimSpace(input.SourceType))
+	category := normalizeCategorySlug(input.Category)
+	model := strings.ToLower(strings.TrimSpace(input.ModelKeyword))
+	if sourceType == RuleSourceSub2API {
+		return strings.Join([]string{
+			sourceType,
+			strings.ToLower(strings.TrimRight(normalizeBaseURL(rule.SourceBaseURL), "/")),
+			strings.ToLower(strings.TrimSpace(rule.SourceAccount)),
+			category,
+			model,
+		}, "\x00")
+	}
+	return strings.Join([]string{
+		sourceType,
+		strconv.FormatInt(input.SiteID, 10),
+		strconv.FormatInt(input.Sub2APIUpstreamID, 10),
+		category,
+		model,
+	}, "\x00")
+}
+
 func (s Store) ensureUniqueRule(ctx context.Context, input RuleInput, excludeID int64) error {
 	var existingID int64
 	var err error
@@ -983,6 +1148,69 @@ func (s Store) ListRules(ctx context.Context) ([]Rule, error) {
 		rules = append(rules, rule)
 	}
 	return rules, rows.Err()
+}
+
+func (s Store) rulesByIDs(ctx context.Context, ids []int64) ([]Rule, error) {
+	if len(ids) == 0 {
+		return []Rule{}, nil
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT r.id, COALESCE(r.source_type, 'newapi'), COALESCE(r.site_id, 0), COALESCE(s.name, ''), r.sub2api_upstream_id, COALESCE(u.name, ''),
+		       CASE WHEN COALESCE(r.source_type, 'newapi') = 'sub2api' THEN COALESCE(u.name, '') ELSE COALESCE(s.name, '') END AS source_name,
+		       CASE WHEN COALESCE(r.source_type, 'newapi') = 'sub2api' THEN COALESCE(u.base_url, '') ELSE COALESCE(s.base_url, '') END AS source_base_url,
+		       CASE WHEN COALESCE(r.source_type, 'newapi') = 'sub2api' THEN CASE WHEN trim(COALESCE(u.email, '')) <> '' THEN trim(u.email) WHEN trim(COALESCE(u.auth_token, '')) <> '' THEN 'token:' || left(md5(u.auth_token), 12) ELSE '' END ELSE COALESCE(s.username, '') END AS source_account,
+		       r.category, COALESCE(c.name, r.category),
+		       r.model_keyword, r.model_name, COALESCE(r.group_name, ''), r.enabled,
+		       r.schedule_enabled, r.interval_minutes, r.next_run_at, r.last_scheduled_run_at,
+		       r.sync_enabled, r.sync_base_group, r.sync_threshold_ratio, r.sub2api_group_name, r.sub2api_group_id,
+		       r.last_sync_at, r.sync_status, r.sync_error,
+		       latest_price.upstream_balance, COALESCE(latest_price.balance_unit, ''),
+		       r.checkin_enabled, r.checkin_status, r.checkin_reward, r.checkin_reward_unit, r.checkin_message, r.checkin_checked_at,
+		       r.created_at, r.updated_at
+		FROM monitor_rules r
+		LEFT JOIN sites s ON s.id = r.site_id
+		LEFT JOIN sub2api_upstreams u ON u.id = r.sub2api_upstream_id
+		LEFT JOIN categories c ON c.slug = r.category
+		LEFT JOIN LATERAL (
+			SELECT p.upstream_balance, p.balance_unit
+			FROM price_snapshots p
+			WHERE p.rule_id = r.id
+			  AND p.invalid = false
+			ORDER BY p.created_at DESC, p.id DESC
+			LIMIT 1
+		) latest_price ON true
+		WHERE r.id = ANY($1)
+		ORDER BY array_position($1, r.id)
+	`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var rules []Rule
+	for rows.Next() {
+		var rule Rule
+		if err := rows.Scan(
+			&rule.ID, &rule.SourceType, &rule.SiteID, &rule.SiteName, &rule.Sub2APIUpstreamID, &rule.Sub2APIUpstreamName,
+			&rule.SourceName, &rule.SourceBaseURL, &rule.SourceAccount, &rule.Category, &rule.CategoryName,
+			&rule.ModelKeyword, &rule.ModelName, &rule.GroupName,
+			&rule.Enabled, &rule.ScheduleEnabled, &rule.IntervalMinutes, &rule.NextRunAt, &rule.LastScheduledRunAt,
+			&rule.SyncEnabled, &rule.SyncBaseGroup, &rule.SyncThresholdRatio, &rule.Sub2APIGroupName, &rule.Sub2APIGroupID,
+			&rule.LastSyncAt, &rule.SyncStatus, &rule.SyncError, &rule.UpstreamBalance, &rule.BalanceUnit,
+			&rule.CheckinEnabled, &rule.CheckinStatus, &rule.CheckinReward, &rule.CheckinRewardUnit, &rule.CheckinMessage, &rule.CheckinCheckedAt,
+			&rule.CreatedAt, &rule.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		rules = append(rules, rule)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(rules) != len(ids) {
+		return nil, fmt.Errorf("部分规则不存在或已被删除")
+	}
+	return rules, nil
 }
 
 func (s Store) GetRuleWithSource(ctx context.Context, ruleID int64) (Rule, Site, Sub2APIUpstream, error) {
@@ -2020,6 +2248,13 @@ func floatPtr(value sql.NullFloat64) *float64 {
 		return nil
 	}
 	return &value.Float64
+}
+
+func floatValueFromPtr(value *float64) float64 {
+	if value == nil {
+		return 0
+	}
+	return *value
 }
 
 func timePtr(value sql.NullTime) *time.Time {

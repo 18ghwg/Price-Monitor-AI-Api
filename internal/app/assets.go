@@ -160,10 +160,24 @@ const indexHTML = `<!doctype html>
           <button id="refreshRulesBtn" class="secondary table-refresh" type="button">刷新规则</button>
           <label class="table-page-size">每页<select id="rulePageSize"><option value="10" selected>10</option><option value="20">20</option><option value="50">50</option><option value="100">100</option></select></label>
         </div>
+        <form id="bulkRuleEditForm" class="bulk-rule-edit-bar" hidden>
+          <span id="bulkRuleEditSummary" class="summary-line">已选择 0 条规则</span>
+          <label class="checkbox-label"><input name="update_model_keyword" type="checkbox">修改模型</label>
+          <label>完整模型名<input name="model_keyword" placeholder="gpt-5.5 / claude-opus-4-8"></label>
+          <label class="checkbox-label"><input name="update_interval_minutes" type="checkbox">修改间隔</label>
+          <label>分钟<input name="interval_minutes" type="number" min="1" value="15"></label>
+          <label class="checkbox-label"><input name="update_schedule_enabled" type="checkbox">修改定时</label>
+          <label>定时<select name="schedule_enabled"><option value="true">启用</option><option value="false">停用</option></select></label>
+          <label class="checkbox-label"><input name="update_sync_enabled" type="checkbox">修改同步</label>
+          <label>同步<select name="sync_enabled"><option value="true">开启同步</option><option value="false">关闭同步</option></select></label>
+          <button id="bulkRuleEditSubmitBtn" class="secondary" type="submit">应用到选中规则</button>
+          <button id="bulkRuleEditClearBtn" class="secondary" type="button">清空选择</button>
+        </form>
         <div class="table-wrap responsive-wrap">
           <table class="responsive-table">
             <thead>
               <tr>
+                <th class="select-col"><input id="ruleSelectAllVisible" type="checkbox" aria-label="选择当前页规则"></th>
                 <th>ID</th>
                 <th>站点</th>
                 <th>账户余额</th>
@@ -1090,6 +1104,45 @@ input[type="checkbox"] {
   align-content: center;
 }
 
+.bulk-rule-edit-bar {
+  display: grid;
+  grid-template-columns: minmax(112px, .8fr) auto minmax(180px, 1.2fr) auto minmax(84px, .55fr) auto minmax(98px, .65fr) auto minmax(112px, .7fr) auto auto;
+  gap: 10px;
+  align-items: end;
+  padding: 12px;
+  margin: 0 0 12px;
+  border: 1px solid rgba(139, 92, 246, .22);
+  border-radius: 8px;
+  background: #f5f3ff;
+}
+
+.bulk-rule-edit-bar[hidden] {
+  display: none;
+}
+
+.bulk-rule-edit-bar label,
+.bulk-rule-edit-bar .summary-line {
+  margin-bottom: 0;
+}
+
+.bulk-rule-edit-bar .checkbox-label {
+  min-height: 44px;
+  align-content: center;
+  color: var(--primary-dark);
+  font-weight: 850;
+}
+
+.select-col {
+  width: 48px;
+}
+
+.rule-select,
+#ruleSelectAllVisible {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--primary);
+}
+
 .segmented-control {
   display: inline-flex;
   flex-wrap: wrap;
@@ -1944,7 +1997,8 @@ tr:last-child td {
   .workspace,
   .settings-grid,
   .site-list,
-  .bulk-rule-bar {
+  .bulk-rule-bar,
+  .bulk-rule-edit-bar {
     grid-template-columns: 1fr;
   }
 
@@ -2189,6 +2243,7 @@ const appJS = `const state = {
   rulePage: 1,
   rulePageSize: 10,
   ruleSearch: "",
+  selectedRuleIds: new Set(),
   snapshots: [],
   snapshotPage: 1,
   snapshotPageSize: 10,
@@ -2911,6 +2966,7 @@ function renderRules() {
   const pageSizeSelect = $("#rulePageSize");
   const searchInput = $("#ruleSearch");
   if (!body) return;
+  pruneSelectedRules();
   const allRows = state.rules || [];
   const rows = filteredRules();
   const totalPages = Math.max(1, Math.ceil(rows.length / state.rulePageSize));
@@ -2929,6 +2985,7 @@ function renderRules() {
   body.innerHTML = pageRows.length ? pageRows.map((rule) => {
     const id = rule.id;
     const isEnabled = rule.enabled;
+    const selected = state.selectedRuleIds.has(Number(id));
     const enabled = isEnabled ? "启用" : "停用";
     const statusClass = isEnabled ? "status" : "status disabled";
     const schedule = rule.schedule_enabled ? ("每 " + (rule.interval_minutes || 15) + " 分钟") : "关闭";
@@ -2936,6 +2993,7 @@ function renderRules() {
       ? ("<span class=\"status\">" + escapeHTML(displaySyncText(rule.sync_status) || "待同步") + "</span>" + (rule.sync_error ? "<div class=\"error\">" + escapeHTML(displaySyncText(rule.sync_error)) + "</div>" : ""))
       : "<span class=\"status disabled\">关闭</span>";
     return "<tr>"
+      + "<td data-label=\"选择\"><input class=\"rule-select\" data-rule-select=\"" + id + "\" type=\"checkbox\" aria-label=\"选择规则 #" + id + "\"" + (selected ? " checked" : "") + "></td>"
       + "<td data-label=\"ID\">" + id + "</td>"
       + "<td data-label=\"站点\"><span class=\"source-site\">" + sourceBadge(rule.source_type) + sourceSiteLink(rule) + "</span>"
       + (rule.source_account ? "<div class=\"muted\">账号：" + escapeHTML(rule.source_account) + "</div>" : "")
@@ -2955,8 +3013,30 @@ function renderRules() {
       + "<button class=\"secondary\" data-run=\"" + id + "\" type=\"button\">运行一次</button>"
       + "</div></td>"
       + "</tr>";
-  }).join("") : "<tr><td class=\"empty-state\" colspan=\"10\">" + (state.ruleSearch ? "没有匹配的监控规则。" : "暂无监控规则，添加站点后创建第一条关键词监控。") + "</td></tr>";
+  }).join("") : "<tr><td class=\"empty-state\" colspan=\"11\">" + (state.ruleSearch ? "没有匹配的监控规则。" : "暂无监控规则，添加站点后创建第一条关键词监控。") + "</td></tr>";
+  renderBulkRuleEditBar(pageRows);
   renderRulePager(rows.length, totalPages);
+}
+
+function pruneSelectedRules() {
+  const existing = new Set((state.rules || []).map((rule) => Number(rule.id)));
+  Array.from(state.selectedRuleIds).forEach((id) => {
+    if (!existing.has(Number(id))) state.selectedRuleIds.delete(Number(id));
+  });
+}
+
+function renderBulkRuleEditBar(pageRows) {
+  const form = $("#bulkRuleEditForm");
+  const summary = $("#bulkRuleEditSummary");
+  const selectAll = $("#ruleSelectAllVisible");
+  const selectedCount = state.selectedRuleIds.size;
+  if (form) form.hidden = selectedCount === 0;
+  if (summary) summary.textContent = "已选择 " + selectedCount + " 条规则";
+  if (!selectAll) return;
+  const visibleIDs = pageRows.map((rule) => Number(rule.id));
+  const checkedCount = visibleIDs.filter((id) => state.selectedRuleIds.has(id)).length;
+  selectAll.checked = visibleIDs.length > 0 && checkedCount === visibleIDs.length;
+  selectAll.indeterminate = checkedCount > 0 && checkedCount < visibleIDs.length;
 }
 
 function filteredRules() {
@@ -4545,6 +4625,53 @@ if (bulkRuleForm) {
   });
 }
 
+const bulkRuleEditForm = $("#bulkRuleEditForm");
+if (bulkRuleEditForm) {
+  bulkRuleEditForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = $("#bulkRuleEditSubmitBtn");
+    const originalText = button ? button.textContent : "";
+    const payload = formJSON(form);
+    payload.rule_ids = Array.from(state.selectedRuleIds);
+    payload.model_keyword = String(payload.model_keyword || "").trim();
+    payload.interval_minutes = Number(payload.interval_minutes || 15);
+    payload.schedule_enabled = String(payload.schedule_enabled) === "true";
+    payload.sync_enabled = String(payload.sync_enabled) === "true";
+    if (!payload.rule_ids.length) {
+      toast("请选择要编辑的监控规则");
+      return;
+    }
+    if (!payload.update_model_keyword && !payload.update_interval_minutes && !payload.update_schedule_enabled && !payload.update_sync_enabled) {
+      toast("请选择至少一个要批量修改的字段");
+      return;
+    }
+    if (payload.update_model_keyword && !payload.model_keyword) {
+      toast("请填写新的完整模型名");
+      return;
+    }
+    if (button) {
+      button.disabled = true;
+      button.textContent = "应用中";
+    }
+    try {
+      const result = await api("/api/rules/bulk-update", { method: "POST", body: JSON.stringify(payload) });
+      toast("批量编辑完成，已更新 " + (result?.updated || payload.rule_ids.length) + " 条规则");
+      state.selectedRuleIds.clear();
+      form.reset();
+      if (form.elements.interval_minutes) form.elements.interval_minutes.value = "15";
+      await refreshRules({ silent: true });
+    } catch (error) {
+      toast(error.message);
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = originalText || "应用到选中规则";
+      }
+    }
+  });
+}
+
 const logoutBtn = $("#logoutBtn");
 if (logoutBtn) {
   logoutBtn.addEventListener("click", async () => {
@@ -4552,6 +4679,39 @@ if (logoutBtn) {
     showLogin();
   });
 }
+
+document.addEventListener("change", (event) => {
+  const rowSelector = event.target.closest("[data-rule-select]");
+  if (rowSelector) {
+    const id = Number(rowSelector.getAttribute("data-rule-select") || 0);
+    if (id) {
+      if (rowSelector.checked) {
+        state.selectedRuleIds.add(id);
+      } else {
+        state.selectedRuleIds.delete(id);
+      }
+      renderRules();
+    }
+    return;
+  }
+
+  const selectAll = event.target.closest("#ruleSelectAllVisible");
+  if (selectAll) {
+    const rows = filteredRules();
+    const start = (state.rulePage - 1) * state.rulePageSize;
+    const visibleRows = rows.slice(start, start + state.rulePageSize);
+    visibleRows.forEach((rule) => {
+      const id = Number(rule.id);
+      if (selectAll.checked) {
+        state.selectedRuleIds.add(id);
+      } else {
+        state.selectedRuleIds.delete(id);
+      }
+    });
+    renderRules();
+    return;
+  }
+});
 
 document.addEventListener("click", async (event) => {
   const jumpButton = event.target.closest("[data-jump-section]");
@@ -4569,6 +4729,13 @@ document.addEventListener("click", async (event) => {
   const viewButton = event.target.closest("[data-app-view]");
   if (viewButton) {
     setActiveView(viewButton.getAttribute("data-app-view"));
+    return;
+  }
+
+  const clearRuleSelection = event.target.closest("#bulkRuleEditClearBtn");
+  if (clearRuleSelection) {
+    state.selectedRuleIds.clear();
+    renderRules();
     return;
   }
 
