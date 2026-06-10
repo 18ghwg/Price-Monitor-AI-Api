@@ -1853,6 +1853,9 @@ func (s *Server) syncBestAvailableCandidate(ctx context.Context, rule Rule, mode
 			}
 			attempted, err := s.syncCandidateSnapshotToMain(ctx, candidateRule, candidate, signature, notifySync)
 			if err == nil {
+				if candidateRule.ID != rule.ID {
+					_ = s.store.UpdateRuleSyncStatus(ctx, rule.ID, fmt.Sprintf("不是当前可同步最低价：%s", candidateLabel(candidate)), "")
+				}
 				return attempted, true, nil
 			}
 			if isStaleGroupSyncError(err) {
