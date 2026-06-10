@@ -228,6 +228,7 @@ func (s Store) UpdateSiteRun(ctx context.Context, siteID int64, userID int64, to
 }
 
 func (s Store) UpdateSiteRunWithCookies(ctx context.Context, siteID int64, userID int64, token string, cookieJar string, runAt time.Time, lastErr string) error {
+	lastErr = localizeErrorText(lastErr)
 	_, err := s.db.Exec(ctx, `
 		UPDATE sites
 		SET user_id = $2,
@@ -390,6 +391,7 @@ func (s Store) UpdateSub2APIUpstreamCheck(ctx context.Context, upstreamID int64,
 }
 
 func (s Store) UpdateSub2APIUpstreamCheckWithSession(ctx context.Context, upstreamID int64, checkedAt time.Time, lastErr string, cookieJar string, authToken string) error {
+	lastErr = localizeErrorText(lastErr)
 	_, err := s.db.Exec(ctx, `
 		UPDATE sub2api_upstreams
 		SET last_check_at = $2,
@@ -1162,6 +1164,8 @@ func (s Store) RestoreRuleAfterManualRun(ctx context.Context, ruleID int64) erro
 }
 
 func (s Store) UpdateRuleSyncStatus(ctx context.Context, ruleID int64, status string, errText string) error {
+	status = localizeErrorText(status)
+	errText = localizeErrorText(errText)
 	_, err := s.db.Exec(ctx, `
 		UPDATE monitor_rules
 		SET last_sync_at = CASE WHEN $2 <> '' THEN now() ELSE last_sync_at END,
@@ -1201,6 +1205,7 @@ func (s Store) UpdateRuleCheckinStatus(ctx context.Context, ruleID int64, result
 }
 
 func (s Store) UpdateRuleSyncSuccess(ctx context.Context, ruleID int64, status string, signature string) error {
+	status = localizeErrorText(status)
 	_, err := s.db.Exec(ctx, `
 		UPDATE monitor_rules
 		SET last_sync_at = now(),
@@ -1219,6 +1224,8 @@ func (s Store) RecordRuleSyncFailure(ctx context.Context, ruleID int64, status s
 	if pauseAfter <= 0 {
 		pauseAfter = 3
 	}
+	status = localizeErrorText(status)
+	errText = localizeErrorText(errText)
 	var failureCount int
 	var previousSignature string
 	if err := s.db.QueryRow(ctx, `

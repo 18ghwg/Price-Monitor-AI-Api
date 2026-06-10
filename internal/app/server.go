@@ -2484,64 +2484,7 @@ func localizeSyncError(err error) string {
 	if err == nil {
 		return ""
 	}
-	text := strings.TrimSpace(err.Error())
-	replacements := []struct {
-		old string
-		new string
-	}{
-		{"sub2api sync is disabled", "主站 sub2api 同步开关未开启"},
-		{"sub2api main base url is not configured", "主站 sub2api 地址未配置"},
-		{"sub2api admin key is not configured", "主站 sub2api 管理员 key 未配置"},
-		{"main sub2api admin auth failed", "主站 sub2api 管理员认证失败"},
-		{"HTTP 429", "HTTP 429（上游临时限流）"},
-		{"HTTP 502", "HTTP 502（上游网关错误）"},
-		{"API returned 502", "接口返回 502"},
-		{"error code: 502", "错误码 502"},
-		{"Bad Gateway", "网关错误"},
-		{"bad gateway", "网关错误"},
-		{"API returned 503", "接口返回 503"},
-		{"Service temporarily unavailable", "服务暂时不可用"},
-		{"too many requests", "请求过于频繁"},
-		{"rate limit", "限流"},
-		{"TLS handshake timeout", "TLS 握手超时"},
-		{"tls handshake timeout", "TLS 握手超时"},
-		{"timeout", "超时"},
-		{"EOF", "上游连接中断"},
-		{"connection reset", "连接被重置"},
-		{"connection refused", "连接被拒绝"},
-		{"test failed", "测试失败"},
-		{"test main sub2api account", "测试主站 sub2api 账号"},
-		{"sub2api account test did not report success", "主站账号测试没有返回成功结果"},
-		{"No available channel for model", "没有可用渠道支持模型"},
-		{"no available channel for model", "没有可用渠道支持模型"},
-		{"under group", "上游低价分组"},
-		{"distributor", "分销商"},
-		{"not found", "未找到"},
-		{"unauthorized", "未授权"},
-		{"forbidden", "无权限"},
-		{"permission", "权限不足"},
-		{"unsupported", "不支持"},
-		{"does not support", "不支持"},
-		{"is required", "不能为空"},
-		{"failed", "失败"},
-		{"candidate", "候选"},
-		{"create NewAPI key", "创建 NewAPI key"},
-		{"create sub2api key", "创建 sub2api key"},
-		{"auth NewAPI upstream", "认证 NewAPI 上游"},
-		{"login NewAPI upstream", "登录 NewAPI 上游"},
-		{"generate NewAPI system token", "生成 NewAPI 系统 token"},
-		{"get newapi token key", "获取 NewAPI 令牌 key"},
-		{"token key", "令牌 key"},
-		{"upstream", "上游"},
-		{"returned HTTP", "返回 HTTP"},
-		{"Invalid URL", "接口地址无效"},
-		{"invalid url", "接口地址无效"},
-		{"official price not found for model", "官方价格未找到模型"},
-	}
-	for _, replacement := range replacements {
-		text = strings.ReplaceAll(text, replacement.old, replacement.new)
-	}
-	return text
+	return localizeErrorText(err.Error())
 }
 
 func syncPlatformForRule(rule Rule, category Category) string {
@@ -2798,6 +2741,7 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 }
 
 func writeError(w http.ResponseWriter, status int, message string) {
+	message = localizeErrorText(message)
 	writeJSON(w, status, map[string]any{
 		"error": map[string]string{
 			"code":    http.StatusText(status),

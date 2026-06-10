@@ -543,7 +543,7 @@ func (c *NewAPIClient) request(ctx context.Context, method, path string, headers
 	}
 	if !envelope.Success {
 		if envelope.Message != "" {
-			return errors.New(envelope.Message)
+			return errors.New(localizeErrorText(envelope.Message))
 		}
 		return fmt.Errorf("upstream returned success=false")
 	}
@@ -596,7 +596,7 @@ func (c *NewAPIClient) rawRequest(ctx context.Context, method, path string, head
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("upstream %s returned HTTP %d: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(data)))
+		return nil, localizedHTTPError("NewAPI 上游", endpoint, resp.StatusCode, data)
 	}
 	return data, nil
 }

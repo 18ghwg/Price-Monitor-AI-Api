@@ -743,9 +743,9 @@ func (c *Sub2APIClient) TestAccountConnection(ctx context.Context, accountID int
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		if resp.StatusCode == http.StatusUnauthorized {
-			return fmt.Errorf("sub2api %s returned HTTP 401: %s; main sub2api admin auth failed", endpoint, strings.TrimSpace(string(body)))
+			return fmt.Errorf("%w；主站 sub2api 管理员认证失败，请检查系统设置中的管理员 API Key", localizedHTTPError("sub2api", endpoint, resp.StatusCode, body))
 		}
-		return fmt.Errorf("sub2api %s returned HTTP %d: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(body)))
+		return localizedHTTPError("sub2api", endpoint, resp.StatusCode, body)
 	}
 	if err := parseSub2AccountTestSSE(string(body)); err != nil {
 		return err
@@ -769,7 +769,7 @@ func parseSub2AccountTestSSE(body string) error {
 			continue
 		}
 		if strings.EqualFold(event.Type, "error") {
-			return errors.New(firstNonEmpty(event.Error, event.Message, raw))
+			return errors.New(localizeErrorText(firstNonEmpty(event.Error, event.Message, raw)))
 		}
 		if strings.EqualFold(event.Type, "test_complete") && event.Success {
 			sawCompletion = true
@@ -1225,9 +1225,9 @@ func (c *Sub2APIClient) request(ctx context.Context, method, path string, header
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		if resp.StatusCode == http.StatusUnauthorized && strings.Contains(path, "/admin/") {
-			return fmt.Errorf("sub2api %s returned HTTP 401: %s; main sub2api admin auth failed, use the admin API key generated in sub2api admin settings (sent as x-api-key), or paste a valid admin JWT as Bearer token", endpoint, strings.TrimSpace(string(data)))
+			return fmt.Errorf("%w；主站 sub2api 管理员认证失败，请使用 sub2api 管理后台生成的管理员 API Key，或填写有效的管理员 JWT", localizedHTTPError("sub2api", endpoint, resp.StatusCode, data))
 		}
-		return fmt.Errorf("sub2api %s returned HTTP %d: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(data)))
+		return localizedHTTPError("sub2api", endpoint, resp.StatusCode, data)
 	}
 	var envelope sub2Envelope
 	if err := json.Unmarshal(data, &envelope); err != nil {
@@ -1235,7 +1235,7 @@ func (c *Sub2APIClient) request(ctx context.Context, method, path string, header
 	}
 	if envelope.Code != 0 {
 		if envelope.Message != "" {
-			return errors.New(envelope.Message)
+			return errors.New(localizeErrorText(envelope.Message))
 		}
 		return fmt.Errorf("sub2api returned code %d", envelope.Code)
 	}

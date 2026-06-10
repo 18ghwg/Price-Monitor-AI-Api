@@ -242,7 +242,7 @@ func fetchOfficialPrices(ctx context.Context, priceURL string) (map[string]any, 
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("official price url returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+		return nil, localizedHTTPError("官方价格接口", priceURL, resp.StatusCode, data)
 	}
 	return decodeOfficialPrices(data)
 }

@@ -2304,6 +2304,7 @@ function displaySyncText(value) {
   let text = String(value || "").trim();
   if (!text) return "";
   text = text.replace(/^not current available cheapest:\s*/i, "不是当前可同步最低价：");
+  text = text.replace(/^not current cheapest:\s*/i, "不是当前最低价：");
   text = text.replace(/^not current cheapest$/i, "不是当前最低价");
   text = text.replace(/^skip low balance:\s*/i, "跳过余额不足：");
   text = text.replace(/^skip fallback candidate:\s*/i, "跳过该低价候选：");
@@ -2339,8 +2340,23 @@ function localizeSyncText(value) {
     ["sub2api main base url is not configured", "主站 sub2api 地址未配置"],
     ["sub2api admin key is not configured", "主站 sub2api 管理员 key 未配置"],
     ["main sub2api admin auth failed", "主站 sub2api 管理员认证失败"],
+    ["not current available cheapest:", "不是当前可同步最低价："],
+    ["not current cheapest:", "不是当前最低价："],
+    ["not current cheapest", "不是当前最低价"],
+    ["HTTP 401", "HTTP 401（认证失败）"],
+    ["HTTP 403", "HTTP 403（无权限）"],
+    ["HTTP 404", "HTTP 404（接口或资源不存在）"],
     ["HTTP 429", "HTTP 429（上游临时限流）"],
+    ["HTTP 500", "HTTP 500（上游内部错误）"],
     ["HTTP 502", "HTTP 502（上游网关错误）"],
+    ["HTTP 503", "HTTP 503（上游服务不可用）"],
+    ["Invalid token", "令牌无效"],
+    ["INVALID_TOKEN", "令牌无效"],
+    ["Invalid API key", "API Key 无效"],
+    ["INVALID_API_KEY", "API Key 无效"],
+    ["invalid email or password", "邮箱或密码错误"],
+    ["INSUFFICIENT_BALANCE", "账户余额不足"],
+    ["Insufficient account balance", "账户余额不足"],
     ["API returned 502", "接口返回 502"],
     ["error code: 502", "错误码 502"],
     ["Bad Gateway", "网关错误"],
@@ -3048,7 +3064,7 @@ function renderSites() {
     return sourceType === activeType;
   });
   body.innerHTML = rows.length ? rows.map((site) => {
-    const error = site.last_error ? "<div class=\"error\">" + escapeHTML(site.last_error) + "</div>" : "";
+    const error = site.last_error ? "<div class=\"error\">" + escapeHTML(displaySyncText(site.last_error)) + "</div>" : "";
     const sourceType = String(site.source_type || "newapi").toLowerCase() === "sub2api" ? "sub2api" : "newapi";
     const editAttr = sourceType === "sub2api" ? "data-edit-sub2-upstream" : "data-edit-site";
     const deleteAttr = sourceType === "sub2api" ? "data-delete-sub2-upstream" : "data-delete-site";
