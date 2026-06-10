@@ -94,6 +94,22 @@ func TestIsFallbackSyncErrorMatchesTemporaryBadGateway(t *testing.T) {
 	}
 }
 
+func TestIsStaleGroupSyncErrorMatchesNoAvailableChannel(t *testing.T) {
+	err := errors.New(`主站账号连接测试失败：账号 #53，模型 gpt-5.5，主站分组 openai-local, VIP，上游低价分组 GPTfree，原因：接口返回 503: {"error":{"code":"model_not_found","message":"No available channel for model gpt-5.5 under group GPTfree (distributor)"}}`)
+	if !isStaleGroupSyncError(err) {
+		t.Fatal("isStaleGroupSyncError() = false, want true for stale upstream group errors")
+	}
+	if !isFallbackSyncError(err) {
+		t.Fatal("isFallbackSyncError() = false, want true so stale group candidate can be skipped")
+	}
+	status := fallbackSyncStatus(err)
+	for _, want := range []string{"没有可用渠道支持模型", "上游低价分组 GPTfree"} {
+		if !strings.Contains(status, want) {
+			t.Fatalf("fallbackSyncStatus() = %q, want %q", status, want)
+		}
+	}
+}
+
 func TestLowBalanceNotificationSignatureUsesUpstreamAccount(t *testing.T) {
 	tests := []struct {
 		name     string

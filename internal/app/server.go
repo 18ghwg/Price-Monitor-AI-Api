@@ -1331,6 +1331,19 @@ func (s *Server) RunRule(ctx context.Context, ruleID int64) ([]PriceSnapshot, er
 	if err != nil {
 		return nil, err
 	}
+	return s.runRuleWithSource(ctx, rule, site, upstream)
+}
+
+func (s *Server) runRuleWithoutSync(ctx context.Context, ruleID int64) ([]PriceSnapshot, error) {
+	rule, site, upstream, err := s.store.GetRuleWithSource(ctx, ruleID)
+	if err != nil {
+		return nil, err
+	}
+	rule.SyncEnabled = false
+	return s.runRuleWithSource(ctx, rule, site, upstream)
+}
+
+func (s *Server) runRuleWithSource(ctx context.Context, rule Rule, site Site, upstream Sub2APIUpstream) ([]PriceSnapshot, error) {
 	switch strings.ToLower(strings.TrimSpace(rule.SourceType)) {
 	case "", RuleSourceNewAPI:
 		return s.runNewAPIRule(ctx, rule, site)
@@ -1793,65 +1806,91 @@ func (s *Server) lowestSnapshotEvent(ctx context.Context, rule Rule, inserted Pr
 }
 
 func (s *Server) syncBestAvailableCandidate(ctx context.Context, rule Rule, modelName string) (bool, bool, error) {
-	candidates, skippedLowBalance, err := s.store.SyncCandidates(ctx, rule.Category, modelName)
-	if err != nil {
-		log.Printf("load sync candidates for rule %d model %q: %v", rule.ID, modelName, err)
-		return false, false, nil
-	}
-	if len(candidates) == 0 {
-		if len(skippedLowBalance) > 0 {
-			if notifySkipped := s.recordLowBalanceSkips(ctx, skippedLowBalance); len(notifySkipped) > 0 {
-				s.notifyLowBalanceSkip(ctx, rule, notifySkipped, PriceSnapshot{})
-			}
-			return false, true, nil
-		}
-		return false, false, nil
-	}
-	if len(skippedLowBalance) > 0 {
-		if notifySkipped := s.recordLowBalanceSkips(ctx, skippedLowBalance); len(notifySkipped) > 0 {
-			s.notifyLowBalanceSkip(ctx, rule, notifySkipped, candidates[0])
-		}
-	}
-
+	refreshedRules := map[int64]bool{}
 	var fallbackErrors []string
-	for _, candidate := range candidates {
-		candidateRule, _, _, err := s.store.GetRuleWithSource(ctx, candidate.RuleID)
+	var lastCandidates []PriceSnapshot
+	for pass := 0; pass < 2; pass++ {
+		candidates, skippedLowBalance, err := s.store.SyncCandidates(ctx, rule.Category, modelName)
 		if err != nil {
-			log.Printf("load candidate rule %d for sync: %v", candidate.RuleID, err)
-			continue
+			log.Printf("load sync candidates for rule %d model %q: %v", rule.ID, modelName, err)
+			return false, false, nil
 		}
-		if reason, ok := s.syncThresholdSkipReason(ctx, candidateRule, candidate); !ok {
-			_ = s.store.UpdateRuleSyncStatus(ctx, candidateRule.ID, reason, "")
-			continue
+		lastCandidates = candidates
+		if len(candidates) == 0 {
+			if len(skippedLowBalance) > 0 {
+				if notifySkipped := s.recordLowBalanceSkips(ctx, skippedLowBalance); len(notifySkipped) > 0 {
+					s.notifyLowBalanceSkip(ctx, rule, notifySkipped, PriceSnapshot{})
+				}
+				return false, true, nil
+			}
+			return false, false, nil
 		}
-		signature := syncCandidateSignature(candidate)
-		lastSignature, signatureErr := s.store.RuleSyncSignature(ctx, candidateRule.ID)
-		if signatureErr != nil && !notFound(signatureErr) {
-			log.Printf("load sync signature for candidate rule %d: %v", candidateRule.ID, signatureErr)
+		if pass == 0 && len(skippedLowBalance) > 0 {
+			if notifySkipped := s.recordLowBalanceSkips(ctx, skippedLowBalance); len(notifySkipped) > 0 {
+				s.notifyLowBalanceSkip(ctx, rule, notifySkipped, candidates[0])
+			}
 		}
-		notifySync := true
-		if signature != "" && signature == lastSignature {
-			notifySync = false
+
+		refreshedThisPass := false
+		for _, candidate := range candidates {
+			candidateRule, _, _, err := s.store.GetRuleWithSource(ctx, candidate.RuleID)
+			if err != nil {
+				log.Printf("load candidate rule %d for sync: %v", candidate.RuleID, err)
+				continue
+			}
+			if reason, ok := s.syncThresholdSkipReason(ctx, candidateRule, candidate); !ok {
+				_ = s.store.UpdateRuleSyncStatus(ctx, candidateRule.ID, reason, "")
+				continue
+			}
+			signature := syncCandidateSignature(candidate)
+			lastSignature, signatureErr := s.store.RuleSyncSignature(ctx, candidateRule.ID)
+			if signatureErr != nil && !notFound(signatureErr) {
+				log.Printf("load sync signature for candidate rule %d: %v", candidateRule.ID, signatureErr)
+			}
+			notifySync := true
+			if signature != "" && signature == lastSignature {
+				notifySync = false
+			}
+			attempted, err := s.syncCandidateSnapshotToMain(ctx, candidateRule, candidate, signature, notifySync)
+			if err == nil {
+				return attempted, true, nil
+			}
+			if isStaleGroupSyncError(err) {
+				status := "检测到上游低价分组已失效，已立即刷新该上游规则并重新参与排名"
+				_ = s.store.UpdateRuleSyncStatus(ctx, candidateRule.ID, status, "")
+				_ = s.store.MarkMissingSnapshotGroupsInvalid(ctx, candidateRule.ID, candidate.ModelName, nil, "同步测试失败：上游低价分组已失效，已触发重新监控")
+				if refreshedRules[candidateRule.ID] {
+					fallbackErrors = append(fallbackErrors, fmt.Sprintf("%s/%s: %v", candidate.SiteName, candidate.GroupName, err))
+					continue
+				}
+				refreshedRules[candidateRule.ID] = true
+				if _, refreshErr := s.runRuleWithoutSync(ctx, candidateRule.ID); refreshErr != nil {
+					fallbackErrors = append(fallbackErrors, fmt.Sprintf("%s/%s: 刷新上游规则失败：%v", candidate.SiteName, candidate.GroupName, refreshErr))
+					continue
+				}
+				fallbackErrors = append(fallbackErrors, fmt.Sprintf("%s/%s: %v", candidate.SiteName, candidate.GroupName, err))
+				refreshedThisPass = true
+				break
+			}
+			if isFallbackSyncError(err) {
+				fallbackErrors = append(fallbackErrors, fmt.Sprintf("%s/%s: %v", candidate.SiteName, candidate.GroupName, err))
+				_ = s.store.UpdateRuleSyncStatus(ctx, candidateRule.ID, fallbackSyncStatus(err), "")
+				continue
+			}
+			s.recordSyncFailure(ctx, candidateRule, candidate, err)
+			return attempted, true, err
 		}
-		attempted, err := s.syncCandidateSnapshotToMain(ctx, candidateRule, candidate, signature, notifySync)
-		if err == nil {
-			return attempted, true, nil
+		if !refreshedThisPass || pass > 0 {
+			break
 		}
-		if isFallbackSyncError(err) {
-			fallbackErrors = append(fallbackErrors, fmt.Sprintf("%s/%s: %v", candidate.SiteName, candidate.GroupName, err))
-			_ = s.store.UpdateRuleSyncStatus(ctx, candidateRule.ID, fallbackSyncStatus(err), "")
-			continue
-		}
-		s.recordSyncFailure(ctx, candidateRule, candidate, err)
-		return attempted, true, err
 	}
 	if len(fallbackErrors) > 0 {
 		err := fmt.Errorf("所有可同步低价候选都失败：%s", strings.Join(fallbackErrors, "；"))
 		_ = s.store.UpdateRuleSyncStatus(ctx, rule.ID, err.Error(), "")
 		return true, true, err
 	}
-	if len(candidates) > 0 {
-		_ = s.store.UpdateRuleSyncStatus(ctx, rule.ID, fmt.Sprintf("不是当前可同步最低价：%s %s", candidates[0].SiteName, candidates[0].GroupName), "")
+	if len(lastCandidates) > 0 {
+		_ = s.store.UpdateRuleSyncStatus(ctx, rule.ID, fmt.Sprintf("不是当前可同步最低价：%s %s", lastCandidates[0].SiteName, lastCandidates[0].GroupName), "")
 	}
 	return false, true, nil
 }
@@ -2170,6 +2209,30 @@ func isFallbackSyncError(err error) bool {
 	return false
 }
 
+func isStaleGroupSyncError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	needles := []string{
+		"no available channel for model",
+		"model_not_found",
+		"under group",
+		"当前分组",
+		"所选分组",
+		"分组已失效",
+		"分组不存在",
+		"模型不存在",
+		"没有可用渠道支持模型",
+	}
+	for _, needle := range needles {
+		if strings.Contains(text, needle) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) shouldSyncGlobalCheapestWithBalance(ctx context.Context, rule Rule, snapshot PriceSnapshot) (bool, []PriceSnapshot, bool) {
 	candidate, skipped, err := s.store.CheapestSyncCandidate(ctx, rule.Category, snapshot.ModelName)
 	if err != nil {
@@ -2378,7 +2441,8 @@ func (s *Server) syncUpstreamKeyToMainSub2APIWithSignature(ctx context.Context, 
 		return err
 	}
 	if err := sub2.TestAccountConnection(ctx, account.ID, row.ModelName); err != nil {
-		return fmt.Errorf("主站账号连接测试失败：账号 #%d，模型 %s，原因：%w", account.ID, row.ModelName, err)
+		return fmt.Errorf("主站账号连接测试失败：账号 #%d，模型 %s，主站分组 %s，上游低价分组 %s，原因：%w",
+			account.ID, row.ModelName, strings.Join(groupNames, ", "), row.GroupName, err)
 	}
 	if err := sub2.DisableOtherAPIKeyAccountsForGroups(ctx, platform, account.ID, groups); err != nil {
 		return fmt.Errorf("关闭同分组其他主站账号失败：分组 %s，原因：%w", strings.Join(groupNames, ", "), err)
@@ -2448,6 +2512,10 @@ func localizeSyncError(err error) string {
 		{"test failed", "测试失败"},
 		{"test main sub2api account", "测试主站 sub2api 账号"},
 		{"sub2api account test did not report success", "主站账号测试没有返回成功结果"},
+		{"No available channel for model", "没有可用渠道支持模型"},
+		{"no available channel for model", "没有可用渠道支持模型"},
+		{"under group", "上游低价分组"},
+		{"distributor", "分销商"},
 		{"not found", "未找到"},
 		{"unauthorized", "未授权"},
 		{"forbidden", "无权限"},

@@ -2358,6 +2358,10 @@ function localizeSyncText(value) {
     ["test main sub2api account", "测试主站 sub2api 账号"],
     ["sub2api account test did not report success", "主站账号测试没有返回成功结果"],
     ["test failed", "测试失败"],
+    ["No available channel for model", "没有可用渠道支持模型"],
+    ["no available channel for model", "没有可用渠道支持模型"],
+    ["under group", "上游低价分组"],
+    ["distributor", "分销商"],
     ["candidate", "候选"],
     ["create NewAPI key", "创建 NewAPI key"],
     ["create sub2api key", "创建 sub2api key"],
@@ -2911,7 +2915,7 @@ function renderRules() {
       : "<span class=\"status disabled\">关闭</span>";
     return "<tr>"
       + "<td data-label=\"ID\">" + id + "</td>"
-      + "<td data-label=\"站点\"><span class=\"source-site\">" + sourceBadge(rule.source_type) + "<span class=\"source-site-name\">" + escapeHTML(rule.source_name || rule.site_name || "") + "</span></span>"
+      + "<td data-label=\"站点\"><span class=\"source-site\">" + sourceBadge(rule.source_type) + sourceSiteLink(rule) + "</span>"
       + (rule.source_account ? "<div class=\"muted\">账号：" + escapeHTML(rule.source_account) + "</div>" : "")
       + "</td>"
       + "<td data-label=\"账户余额\">" + fmtBalance(rule.upstream_balance, rule.balance_unit) + "</td>"
@@ -3756,6 +3760,15 @@ function loginURL(baseURL) {
   } catch (_error) {
     return baseURL || "#";
   }
+}
+
+function sourceSiteLink(rule) {
+  const name = rule?.source_name || rule?.site_name || "";
+  const baseURL = rule?.source_base_url || "";
+  if (!baseURL) {
+    return "<span class=\"source-site-name\">" + escapeHTML(name) + "</span>";
+  }
+  return "<a class=\"site-link source-site-name\" href=\"" + escapeAttr(baseURL) + "\" target=\"_blank\" rel=\"noopener noreferrer\">" + escapeHTML(name) + "</a>";
 }
 
 function normalizeCompareText(value) {
