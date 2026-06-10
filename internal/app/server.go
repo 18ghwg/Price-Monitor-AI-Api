@@ -1853,7 +1853,8 @@ func (s *Server) syncBestAvailableCandidate(ctx context.Context, rule Rule, mode
 			return false, false, nil
 		}
 		if pass == 0 && len(skippedLowBalance) > 0 {
-			if notifySkipped := s.recordLowBalanceSkips(ctx, skippedLowBalance); len(notifySkipped) > 0 {
+			s.updateLowBalanceStatuses(ctx, skippedLowBalance)
+			if notifySkipped := s.recordLowBalanceNotifications(ctx, lowBalanceSkippedBelowCandidate(skippedLowBalance, candidates[0])); len(notifySkipped) > 0 {
 				s.notifyLowBalanceSkip(ctx, rule, notifySkipped, candidates[0])
 			}
 		}
@@ -1929,11 +1930,22 @@ func (s *Server) recordLowBalanceSkips(ctx context.Context, skipped []PriceSnaps
 	if len(skipped) == 0 {
 		return nil
 	}
+	s.updateLowBalanceStatuses(ctx, skipped)
+	return s.recordLowBalanceNotifications(ctx, skipped)
+}
+
+func (s *Server) updateLowBalanceStatuses(ctx context.Context, skipped []PriceSnapshot) {
 	for _, snapshot := range skipped {
 		if snapshot.RuleID <= 0 {
 			continue
 		}
 		_ = s.store.UpdateRuleSyncStatus(ctx, snapshot.RuleID, lowBalanceStatus(snapshot), "")
+	}
+}
+
+func (s *Server) recordLowBalanceNotifications(ctx context.Context, skipped []PriceSnapshot) []PriceSnapshot {
+	if len(skipped) == 0 {
+		return nil
 	}
 	var notifySkipped []PriceSnapshot
 	for _, snapshot := range lowBalanceNotifyWindow(skipped) {
@@ -1951,6 +1963,20 @@ func (s *Server) recordLowBalanceSkips(ctx context.Context, skipped []PriceSnaps
 		}
 	}
 	return notifySkipped
+}
+
+func lowBalanceSkippedBelowCandidate(skipped []PriceSnapshot, candidate PriceSnapshot) []PriceSnapshot {
+	if candidate.ID <= 0 {
+		return skipped
+	}
+	filtered := make([]PriceSnapshot, 0, len(skipped))
+	candidateRow := pricingRowFromSnapshot(candidate)
+	for _, snapshot := range skipped {
+		if pricingRowLess(pricingRowFromSnapshot(snapshot), candidateRow) {
+			filtered = append(filtered, snapshot)
+		}
+	}
+	return filtered
 }
 
 func lowBalanceNotifyWindow(skipped []PriceSnapshot) []PriceSnapshot {

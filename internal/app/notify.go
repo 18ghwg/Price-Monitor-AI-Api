@@ -169,7 +169,11 @@ func (s *Server) notifyLowBalanceSkip(ctx context.Context, rule Rule, skipped []
 
 	subject := fmt.Sprintf("[低价上游余额不足] %s / %s", skipped[0].SiteName, skipped[0].ModelName)
 	var body strings.Builder
-	body.WriteString("最低价上游账号余额不足，已跳过该低价渠道同步。\n\n")
+	if candidate.ID > 0 && !snapshotBalanceInsufficient(candidate) {
+		body.WriteString("存在比当前可同步候选更低价的上游账号余额不足，已跳过这些低价渠道。\n\n")
+	} else {
+		body.WriteString("最低价上游账号余额不足，已跳过该低价渠道同步。\n\n")
+	}
 	body.WriteString(fmt.Sprintf("规则: #%d %s\n", rule.ID, rule.ModelKeyword))
 	body.WriteString("分类: " + firstNonEmpty(rule.CategoryName, rule.Category) + "\n")
 	body.WriteString("模型: " + skipped[0].ModelName + "\n\n")

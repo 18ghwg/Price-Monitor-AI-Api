@@ -182,3 +182,34 @@ func TestLowBalanceNotifyWindowKeepsOnlyFirstFive(t *testing.T) {
 		t.Fatalf("lowBalanceNotifyWindow() IDs = %d..%d, want 1..5", window[0].ID, window[4].ID)
 	}
 }
+
+func TestLowBalanceSkippedBelowCandidateExcludesPricierSkippedRows(t *testing.T) {
+	candidate := PriceSnapshot{
+		ID:         10,
+		InputPrice: ptr(0.2),
+		GroupRatio: ptr(0.04),
+		GroupName:  "gpt 最后狂欢日",
+	}
+	skipped := []PriceSnapshot{
+		{
+			ID:         1,
+			InputPrice: ptr(0.4),
+			GroupRatio: ptr(0.08),
+			GroupName:  "OpenAi",
+		},
+		{
+			ID:         2,
+			InputPrice: ptr(0.1),
+			GroupRatio: ptr(0.02),
+			GroupName:  "Free",
+		},
+	}
+
+	filtered := lowBalanceSkippedBelowCandidate(skipped, candidate)
+	if len(filtered) != 1 {
+		t.Fatalf("len(filtered) = %d, want 1", len(filtered))
+	}
+	if filtered[0].ID != 2 {
+		t.Fatalf("filtered[0].ID = %d, want 2", filtered[0].ID)
+	}
+}
