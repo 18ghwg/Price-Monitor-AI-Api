@@ -110,6 +110,27 @@ func (c *NewAPIClient) FetchPricing(ctx context.Context, userID int64, token str
 	return payload, raw, nil
 }
 
+func (c *NewAPIClient) FetchUserSelfGroups(ctx context.Context, userID int64, token string) (map[string]NewAPIUserGroupPricing, error) {
+	var raw map[string]struct {
+		Desc  any `json:"desc"`
+		Ratio any `json:"ratio"`
+	}
+	if err := c.request(ctx, http.MethodGet, "api/user/self/groups", newAPIAuthHeaders(userID, token), nil, &raw); err != nil {
+		return nil, err
+	}
+	groups := make(map[string]NewAPIUserGroupPricing, len(raw))
+	for name, item := range raw {
+		group := NewAPIUserGroupPricing{
+			Desc: strings.TrimSpace(stringValue(item.Desc)),
+		}
+		if ratio, ok := nullableFloat(item.Ratio); ok {
+			group.Ratio = ptr(ratio)
+		}
+		groups[name] = group
+	}
+	return groups, nil
+}
+
 func (c *NewAPIClient) FetchBalance(ctx context.Context, userID int64, token string) (UpstreamBalance, error) {
 	var self map[string]any
 	if err := c.request(ctx, http.MethodGet, "api/user/self", newAPIAuthHeaders(userID, token), nil, &self); err != nil {

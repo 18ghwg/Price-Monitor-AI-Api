@@ -4,8 +4,38 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 )
+
+func ApplyNewAPIUserGroupPricing(pricing map[string]any, groups map[string]NewAPIUserGroupPricing) {
+	if pricing == nil || len(groups) == 0 {
+		return
+	}
+	groupRatio := asMap(pricing["group_ratio"])
+	if len(groupRatio) == 0 {
+		groupRatio = map[string]any{}
+		pricing["group_ratio"] = groupRatio
+	}
+	usableGroup := asMap(pricing["usable_group"])
+	if len(usableGroup) == 0 {
+		usableGroup = map[string]any{}
+		pricing["usable_group"] = usableGroup
+	}
+
+	for name, group := range groups {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if group.Ratio != nil {
+			setGroupMapValue(groupRatio, name, *group.Ratio)
+		}
+		if strings.TrimSpace(group.Desc) != "" {
+			setGroupMapValue(usableGroup, name, strings.TrimSpace(group.Desc))
+		}
+	}
+}
 
 func BuildPricingRows(pricing map[string]any, wantedModel, wantedGroup string) ([]PricingRow, error) {
 	groupRatio := asMap(pricing["group_ratio"])
@@ -249,6 +279,21 @@ func asMap(value any) map[string]any {
 	return map[string]any{}
 }
 
+func setGroupMapValue(values map[string]any, name string, value any) {
+	if _, ok := values[name]; ok {
+		values[name] = value
+		return
+	}
+	normalized := strings.ToLower(name)
+	for key := range values {
+		if strings.ToLower(strings.TrimSpace(key)) == normalized {
+			values[key] = value
+			return
+		}
+	}
+	values[name] = value
+}
+
 func stringValue(value any) string {
 	if value == nil {
 		return ""
@@ -284,6 +329,11 @@ func floatValue(value any, fallback float64) float64 {
 		if err == nil {
 			return value
 		}
+	case string:
+		value, err := strconv.ParseFloat(strings.TrimSpace(typed), 64)
+		if err == nil {
+			return value
+		}
 	}
 	return fallback
 }
@@ -295,6 +345,9 @@ func hasFloat(value any) bool {
 	switch value.(type) {
 	case float64, float32, int, int64, json.Number:
 		return true
+	case string:
+		_, err := strconv.ParseFloat(strings.TrimSpace(value.(string)), 64)
+		return err == nil
 	default:
 		return false
 	}

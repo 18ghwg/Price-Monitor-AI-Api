@@ -1380,6 +1380,11 @@ func (s *Server) runNewAPIRule(ctx context.Context, rule Rule, site Site) ([]Pri
 		s.saveNewAPISession(ctx, site, client, userID, token, err.Error())
 		return nil, err
 	}
+	if groupPricing, groupErr := client.FetchUserSelfGroups(ctx, userID, token); groupErr == nil {
+		ApplyNewAPIUserGroupPricing(pricing, groupPricing)
+	} else {
+		log.Printf("fetch newapi user groups for site %d: %v", site.ID, groupErr)
+	}
 	s.recordNewAPIRuleCheckin(ctx, rule.ID, site.ID, client, userID, token)
 	balance, balanceErr := client.FetchBalance(ctx, userID, token)
 	if balanceErr != nil {

@@ -156,6 +156,7 @@ const indexHTML = `<!doctype html>
         </div>
         <div id="ruleControls" class="table-controls" hidden>
           <span id="ruleSummary" class="summary-line muted"></span>
+          <label class="table-search">关键词搜索<input id="ruleSearch" type="search" placeholder="搜索站点、账号、模型、分组、状态"></label>
           <button id="refreshRulesBtn" class="secondary table-refresh" type="button">刷新规则</button>
           <label class="table-page-size">每页<select id="rulePageSize"><option value="10" selected>10</option><option value="20">20</option><option value="50">50</option><option value="100">100</option></select></label>
         </div>
@@ -193,6 +194,7 @@ const indexHTML = `<!doctype html>
         </div>
         <div id="snapshotControls" class="table-controls" hidden>
           <span id="snapshotSummary" class="summary-line muted"></span>
+          <label class="table-search">关键词搜索<input id="snapshotSearch" type="search" placeholder="搜索站点、账号、模型、分组"></label>
           <button id="refreshSnapshotsBtn" class="secondary table-refresh" type="button">刷新快照</button>
           <label class="table-page-size">每页<select id="snapshotPageSize"><option value="10" selected>10</option><option value="20">20</option><option value="50">50</option><option value="100">100</option></select></label>
         </div>
@@ -2186,9 +2188,11 @@ const appJS = `const state = {
   rules: [],
   rulePage: 1,
   rulePageSize: 10,
+  ruleSearch: "",
   snapshots: [],
   snapshotPage: 1,
   snapshotPageSize: 10,
+  snapshotSearch: "",
   sub2Upstreams: [],
   sub2Accounts: [],
   sub2Groups: [],
@@ -2905,6 +2909,7 @@ function renderRules() {
   const controls = $("#ruleControls");
   const summary = $("#ruleSummary");
   const pageSizeSelect = $("#rulePageSize");
+  const searchInput = $("#ruleSearch");
   if (!body) return;
   const allRows = state.rules || [];
   const rows = filteredRules();
@@ -2915,6 +2920,7 @@ function renderRules() {
   const pageRows = rows.slice(start, start + state.rulePageSize);
   if (controls) controls.hidden = false;
   if (pageSizeSelect && String(pageSizeSelect.value) !== String(state.rulePageSize)) pageSizeSelect.value = String(state.rulePageSize);
+  if (searchInput && searchInput.value !== state.ruleSearch) searchInput.value = state.ruleSearch;
   if (summary) {
     summary.textContent = rows.length
       ? "显示 " + (start + 1) + "-" + Math.min(start + pageRows.length, rows.length) + " / " + rows.length + " 条监控规则" + (rows.length !== allRows.length ? "，总计 " + allRows.length + " 条" : "")
@@ -2949,14 +2955,15 @@ function renderRules() {
       + "<button class=\"secondary\" data-run=\"" + id + "\" type=\"button\">运行一次</button>"
       + "</div></td>"
       + "</tr>";
-  }).join("") : "<tr><td class=\"empty-state\" colspan=\"10\">暂无监控规则，添加站点后创建第一条关键词监控。</td></tr>";
+  }).join("") : "<tr><td class=\"empty-state\" colspan=\"10\">" + (state.ruleSearch ? "没有匹配的监控规则。" : "暂无监控规则，添加站点后创建第一条关键词监控。") + "</td></tr>";
   renderRulePager(rows.length, totalPages);
 }
 
 function filteredRules() {
   const filter = state.ruleCategoryFilter || "all";
   const rows = state.rules || [];
-  const filtered = filter === "all" ? rows : rows.filter((rule) => String(rule.category || "other") === filter);
+  const categoryRows = filter === "all" ? rows : rows.filter((rule) => String(rule.category || "other") === filter);
+  const filtered = categoryRows.filter((rule) => matchesKeywords(ruleSearchFields(rule), state.ruleSearch));
   return filtered.map((rule, index) => ({ rule, index }))
     .sort(compareRuleCategoryOrder)
     .map((item) => item.rule);
@@ -3001,6 +3008,7 @@ function renderSnapshots() {
   const controls = $("#snapshotControls");
   const summary = $("#snapshotSummary");
   const pageSizeSelect = $("#snapshotPageSize");
+  const searchInput = $("#snapshotSearch");
   if (!body) return;
   const rows = sortedSnapshots();
   const totalPages = Math.max(1, Math.ceil(rows.length / state.snapshotPageSize));
@@ -3010,6 +3018,7 @@ function renderSnapshots() {
   const pageRows = rows.slice(start, start + state.snapshotPageSize);
   if (controls) controls.hidden = false;
   if (pageSizeSelect && String(pageSizeSelect.value) !== String(state.snapshotPageSize)) pageSizeSelect.value = String(state.snapshotPageSize);
+  if (searchInput && searchInput.value !== state.snapshotSearch) searchInput.value = state.snapshotSearch;
   if (summary) {
     const range = rows.length ? "显示 " + (start + 1) + "-" + Math.min(start + pageRows.length, rows.length) + " / " + rows.length + " 条价格快照" : "暂无价格快照";
     summary.textContent = range;
@@ -3036,7 +3045,7 @@ function renderSnapshots() {
       + "<td data-label=\"缓存写\">" + fmt(row.cache_write_price) + "</td>"
       + "<td data-label=\"请求\">" + fmt(row.request_price) + "</td>"
       + "</tr>";
-  }).join("") : "<tr><td class=\"empty-state\" colspan=\"15\">暂无价格快照，运行一次监控规则后会在这里展示最新结果。</td></tr>";
+  }).join("") : "<tr><td class=\"empty-state\" colspan=\"15\">" + (state.snapshotSearch ? "没有匹配的价格快照。" : "暂无价格快照，运行一次监控规则后会在这里展示最新结果。") + "</td></tr>";
   renderSnapshotPager(rows.length, totalPages);
 }
 
@@ -3052,6 +3061,57 @@ function renderSnapshotPager(totalRows, totalPages) {
   pager.innerHTML = "<span class=\"pager-info\">第 " + state.snapshotPage + " / " + totalPages + " 页，共 " + totalRows + " 条</span>"
     + "<button class=\"secondary\" type=\"button\" data-snapshot-page=\"prev\"" + (state.snapshotPage <= 1 ? " disabled" : "") + ">上一页</button>"
     + "<button class=\"secondary\" type=\"button\" data-snapshot-page=\"next\"" + (state.snapshotPage >= totalPages ? " disabled" : "") + ">下一页</button>";
+}
+
+function matchesKeywords(values, search) {
+  const terms = String(search || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length) return true;
+  const haystack = values.map((value) => String(value ?? "").toLowerCase()).join(" ");
+  return terms.every((term) => haystack.includes(term));
+}
+
+function ruleSearchFields(rule) {
+  return [
+    rule.id,
+    sourceTypeLabel(rule.source_type),
+    rule.site_name,
+    rule.source_name,
+    rule.source_base_url,
+    rule.source_account,
+    rule.category,
+    rule.category_name,
+    rule.model_keyword,
+    rule.model_name,
+    rule.group_name,
+    rule.sync_base_group,
+    rule.sync_status,
+    rule.sync_error,
+    rule.enabled ? "启用" : "停用",
+    rule.schedule_enabled ? "定时" : "手动",
+    rule.sync_enabled ? "同步" : "不同步",
+  ];
+}
+
+function snapshotSearchFields(row) {
+  return [
+    row.id,
+    sourceTypeLabel(row.source_type),
+    row.site_name,
+    row.site_base_url,
+    row.source_account,
+    row.category,
+    row.category_name,
+    row.model_keyword,
+    row.model_name,
+    row.group_name,
+    row.group_desc,
+    row.invalid ? "失效" : "有效",
+    row.invalid_reason,
+  ];
+}
+
+function sourceTypeLabel(sourceType) {
+  return String(sourceType || "").toLowerCase() === "sub2api" ? "sub2api" : "NewAPI";
 }
 
 function renderSites() {
@@ -3717,7 +3777,11 @@ function sourceBadge(sourceType) {
 }
 
 function sortedSnapshots() {
-  const rows = [...state.snapshots];
+  const filter = state.snapshotCategoryFilter || "all";
+  const rows = [...state.snapshots].filter((row) => {
+    const categoryMatch = filter === "all" || String(row.category || "other") === filter;
+    return categoryMatch && matchesKeywords(snapshotSearchFields(row), state.snapshotSearch);
+  });
   rows.sort((left, right) => compareSnapshot(left, right, state.sort.key, state.sort.dir));
   return rows;
 }
@@ -4260,10 +4324,28 @@ if (snapshotPageSize) {
   });
 }
 
+const snapshotSearch = $("#snapshotSearch");
+if (snapshotSearch) {
+  snapshotSearch.addEventListener("input", (event) => {
+    state.snapshotSearch = event.currentTarget.value || "";
+    state.snapshotPage = 1;
+    renderSnapshots();
+  });
+}
+
 const rulePageSize = $("#rulePageSize");
 if (rulePageSize) {
   rulePageSize.addEventListener("change", (event) => {
     state.rulePageSize = Number(event.currentTarget.value || 10);
+    state.rulePage = 1;
+    renderRules();
+  });
+}
+
+const ruleSearch = $("#ruleSearch");
+if (ruleSearch) {
+  ruleSearch.addEventListener("input", (event) => {
+    state.ruleSearch = event.currentTarget.value || "";
     state.rulePage = 1;
     renderRules();
   });

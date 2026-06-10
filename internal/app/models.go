@@ -150,6 +150,11 @@ type PricingRow struct {
 	RequestPrice    *float64 `json:"request_price"`
 }
 
+type NewAPIUserGroupPricing struct {
+	Desc  string
+	Ratio *float64
+}
+
 type UpstreamBalance struct {
 	Value *float64 `json:"value"`
 	Unit  string   `json:"unit"`
