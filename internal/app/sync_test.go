@@ -213,3 +213,45 @@ func TestLowBalanceSkippedBelowCandidateExcludesPricierSkippedRows(t *testing.T)
 		t.Fatalf("filtered[0].ID = %d, want 2", filtered[0].ID)
 	}
 }
+
+func TestLowerThanPreviousLowestRejectsPriceIncrease(t *testing.T) {
+	previous := PriceSnapshot{
+		ID:          1,
+		ModelName:   "gpt-5.5",
+		GroupName:   "default",
+		InputPrice:  ptr(0.13),
+		OutputPrice: ptr(0.39),
+	}
+	current := PriceSnapshot{
+		ID:          2,
+		ModelName:   "gpt-5.5",
+		GroupName:   "default",
+		InputPrice:  ptr(0.13),
+		OutputPrice: ptr(0.78),
+	}
+
+	if lowerThanPreviousLowest(previous, current) {
+		t.Fatal("lowerThanPreviousLowest() = true, want false when output price increases")
+	}
+}
+
+func TestLowerThanPreviousLowestAcceptsRealPriceDrop(t *testing.T) {
+	previous := PriceSnapshot{
+		ID:          1,
+		ModelName:   "gpt-5.5",
+		GroupName:   "default",
+		InputPrice:  ptr(0.13),
+		OutputPrice: ptr(0.78),
+	}
+	current := PriceSnapshot{
+		ID:          2,
+		ModelName:   "gpt-5.5",
+		GroupName:   "default",
+		InputPrice:  ptr(0.13),
+		OutputPrice: ptr(0.39),
+	}
+
+	if !lowerThanPreviousLowest(previous, current) {
+		t.Fatal("lowerThanPreviousLowest() = false, want true when output price decreases")
+	}
+}

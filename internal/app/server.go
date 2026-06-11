@@ -1832,6 +1832,9 @@ func (s *Server) lowestSnapshotEvent(ctx context.Context, rule Rule, inserted Pr
 	if sameLowestSnapshot(previous, current) {
 		return current, false, true
 	}
+	if !lowerThanPreviousLowest(previous, current) {
+		return current, false, true
+	}
 	return current, true, false
 }
 

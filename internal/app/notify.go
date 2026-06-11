@@ -245,6 +245,13 @@ func sameLowestSnapshot(previous PriceSnapshot, current PriceSnapshot) bool {
 	return len(lowestSnapshotChanges(previous, current)) == 0
 }
 
+func lowerThanPreviousLowest(previous PriceSnapshot, current PriceSnapshot) bool {
+	if previous.ID == 0 {
+		return true
+	}
+	return pricingRowLess(pricingRowFromSnapshot(current), pricingRowFromSnapshot(previous))
+}
+
 func sameLowestSnapshotSource(previous PriceSnapshot, current PriceSnapshot) bool {
 	if !strings.EqualFold(strings.TrimSpace(previous.SourceType), strings.TrimSpace(current.SourceType)) {
 		return false
