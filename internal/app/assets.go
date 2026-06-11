@@ -254,6 +254,7 @@ const indexHTML = `<!doctype html>
             <button class="segment active" data-site-list-tab="newapi" type="button" role="tab" aria-selected="true">NewAPI</button>
             <button class="segment" data-site-list-tab="sub2api" type="button" role="tab" aria-selected="false">sub2api</button>
           </div>
+          <label class="table-search">关键词搜索<input id="siteSearch" type="search" placeholder="搜索站点、地址、用户名、状态"></label>
         </div>
         <div class="table-wrap compact-table">
           <table class="upstream-table">
@@ -2247,6 +2248,7 @@ const appJS = `const state = {
   rulePage: 1,
   rulePageSize: 10,
   ruleSearch: "",
+  siteSearch: "",
   selectedRuleIds: new Set(),
   snapshots: [],
   snapshotPage: 1,
@@ -3194,6 +3196,19 @@ function snapshotSearchFields(row) {
   ];
 }
 
+function siteSearchFields(site) {
+  return [
+    site.id,
+    sourceTypeLabel(site.source_type),
+    site.name,
+    site.base_url,
+    site.username,
+    site.email,
+    site.last_error,
+    site.has_access_token ? "系统访问令牌 token" : "",
+  ];
+}
+
 function sourceTypeLabel(sourceType) {
   return String(sourceType || "").toLowerCase() === "sub2api" ? "sub2api" : "NewAPI";
 }
@@ -3205,7 +3220,7 @@ function renderSites() {
   const activeType = state.activeSiteListType === "sub2api" ? "sub2api" : "newapi";
   const rows = state.sites.filter((site) => {
     const sourceType = String(site.source_type || "newapi").toLowerCase() === "sub2api" ? "sub2api" : "newapi";
-    return sourceType === activeType;
+    return sourceType === activeType && matchesKeywords(siteSearchFields(site), state.siteSearch);
   });
   body.innerHTML = rows.length ? rows.map((site) => {
     const error = site.last_error ? "<div class=\"error\">" + escapeHTML(displaySyncText(site.last_error)) + "</div>" : "";
@@ -3223,7 +3238,7 @@ function renderSites() {
       + "<button class=\"danger\" " + deleteAttr + "=\"" + site.id + "\" type=\"button\">删除</button>"
       + "</div></td>"
       + "</tr>";
-  }).join("") : "<tr><td class=\"empty-state\" colspan=\"6\">暂无" + (activeType === "sub2api" ? " sub2api " : " NewAPI ") + "上游站点。</td></tr>";
+  }).join("") : "<tr><td class=\"empty-state\" colspan=\"6\">" + (state.siteSearch ? "没有匹配的上游站点。" : "暂无" + (activeType === "sub2api" ? " sub2api " : " NewAPI ") + "上游站点。") + "</td></tr>";
 }
 
 function renderSiteSourceTabs() {
@@ -4459,6 +4474,14 @@ if (ruleSearch) {
     state.ruleSearch = event.currentTarget.value || "";
     state.rulePage = 1;
     renderRules();
+  });
+}
+
+const siteSearch = $("#siteSearch");
+if (siteSearch) {
+  siteSearch.addEventListener("input", (event) => {
+    state.siteSearch = event.currentTarget.value || "";
+    renderSites();
   });
 }
 
