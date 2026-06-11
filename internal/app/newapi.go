@@ -91,6 +91,35 @@ func (c *NewAPIClient) GenerateSystemAccessToken(ctx context.Context, userID int
 	return token, nil
 }
 
+func (c *NewAPIClient) VerifySystemAccessToken(ctx context.Context, userID int64, token string) (int64, string, error) {
+	userIDCandidates := []int64{}
+	if userID > 0 {
+		userIDCandidates = append(userIDCandidates, userID)
+	} else {
+		userIDCandidates = append(userIDCandidates, commonNewAPIUserIDCandidates()...)
+	}
+
+	var lastErr error
+	for _, candidateID := range userIDCandidates {
+		var self map[string]any
+		if err := c.request(ctx, http.MethodGet, "api/user/self", newAPIAuthHeaders(candidateID, token), nil, &self); err != nil {
+			lastErr = err
+			continue
+		}
+		username := firstNonEmpty(stringValue(self["username"]), stringValue(self["email"]), fmt.Sprintf("user-%d", candidateID))
+		if id, ok := int64FromAny(self["id"]); ok && id > 0 {
+			return id, username, nil
+		}
+		if candidateID > 0 {
+			return candidateID, username, nil
+		}
+	}
+	if lastErr != nil {
+		return 0, "", lastErr
+	}
+	return 0, "", fmt.Errorf("系统访问令牌验证失败：无法获取用户 ID")
+}
+
 func (c *NewAPIClient) FetchPricing(ctx context.Context, userID int64, token string) (map[string]any, []byte, error) {
 	if !strings.HasPrefix(strings.ToLower(token), "bearer ") {
 		token = "Bearer " + token
@@ -628,4 +657,33 @@ func normalizeBaseURL(value string) string {
 		return ""
 	}
 	return strings.TrimRight(value, "/") + "/"
+}
+
+func int64FromAny(value any) (int64, bool) {
+	switch typed := value.(type) {
+	case int64:
+		return typed, true
+	case int:
+		return int64(typed), true
+	case float64:
+		return int64(typed), typed > 0
+	case float32:
+		return int64(typed), typed > 0
+	case json.Number:
+		parsed, err := typed.Int64()
+		return parsed, err == nil
+	case string:
+		parsed, err := strconv.ParseInt(strings.TrimSpace(typed), 10, 64)
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
+}
+
+func commonNewAPIUserIDCandidates() []int64 {
+	candidates := make([]int64, 0, 100)
+	for id := int64(1); id <= 100; id++ {
+		candidates = append(candidates, id)
+	}
+	return candidates
 }

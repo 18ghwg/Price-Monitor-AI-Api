@@ -368,20 +368,22 @@ func (s *Server) listSites(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type siteDTO struct {
-		ID         int64      `json:"id"`
-		SourceType string     `json:"source_type"`
-		Name       string     `json:"name"`
-		BaseURL    string     `json:"base_url"`
-		Username   string     `json:"username"`
-		Email      string     `json:"email,omitempty"`
-		LastError  string     `json:"last_error"`
-		LastRunAt  *time.Time `json:"last_run_at"`
+		ID             int64      `json:"id"`
+		SourceType     string     `json:"source_type"`
+		Name           string     `json:"name"`
+		BaseURL        string     `json:"base_url"`
+		Username       string     `json:"username"`
+		UserID         int64      `json:"user_id,omitempty"`
+		Email          string     `json:"email,omitempty"`
+		HasAccessToken bool       `json:"has_access_token,omitempty"`
+		LastError      string     `json:"last_error"`
+		LastRunAt      *time.Time `json:"last_run_at"`
 	}
 	out := make([]siteDTO, 0, len(sites)+len(upstreams))
 	for _, site := range sites {
 		out = append(out, siteDTO{
-			ID: site.ID, SourceType: RuleSourceNewAPI, Name: site.Name, BaseURL: site.BaseURL, Username: site.Username,
-			LastError: site.LastError, LastRunAt: site.LastRunAt,
+			ID: site.ID, SourceType: RuleSourceNewAPI, Name: site.Name, BaseURL: site.BaseURL, Username: site.Username, UserID: site.UserID,
+			HasAccessToken: strings.TrimSpace(site.AccessToken) != "", LastError: site.LastError, LastRunAt: site.LastRunAt,
 		})
 	}
 	for _, upstream := range upstreams {
@@ -811,24 +813,31 @@ func (s *Server) sub2GroupFromRequest(ctx context.Context, client *Sub2APIClient
 	return client.EnsureGroupByIDOrName(ctx, groupID, groupName)
 }
 
-func (s *Server) verifyNewAPISiteInput(ctx context.Context, input SiteInput) (int64, string, string, error) {
+func (s *Server) verifyNewAPISiteInput(ctx context.Context, input SiteInput, existing Site) (int64, string, string, string, error) {
 	input = normalizeSiteInput(input)
-	if input.Name == "" || input.BaseURL == "" || input.Username == "" || input.Password == "" {
-		return 0, "", "", fmt.Errorf("site name, base url, username and password are required")
+	if input.Name == "" || input.BaseURL == "" || (input.AccessToken == "" && input.Username == "") || (input.AccessToken == "" && input.Password == "" && existing.Password == "") {
+		return 0, "", "", "", fmt.Errorf("站点名称、地址必填，并且需要填写系统访问令牌，或填写用户名和密码")
 	}
 	client, err := NewNewAPIClient(input.BaseURL)
 	if err != nil {
-		return 0, "", "", err
+		return 0, "", "", "", err
+	}
+	if token := strings.TrimSpace(input.AccessToken); token != "" {
+		userID, username, err := client.VerifySystemAccessToken(ctx, firstPositiveInt64(input.UserID, existing.UserID), token)
+		if err != nil {
+			return 0, "", "", client.DumpCookies(), fmt.Errorf("验证 NewAPI 系统访问令牌失败：%w", err)
+		}
+		return userID, token, firstNonEmpty(input.Username, username), client.DumpCookies(), nil
 	}
 	userID, err := client.Login(ctx, input.Username, input.Password, input.TOTPCode)
 	if err != nil {
-		return 0, "", client.DumpCookies(), fmt.Errorf("login NewAPI upstream: %w", err)
+		return 0, "", "", client.DumpCookies(), fmt.Errorf("login NewAPI upstream: %w", err)
 	}
 	token, err := client.GenerateSystemAccessToken(ctx, userID)
 	if err != nil {
-		return userID, "", client.DumpCookies(), fmt.Errorf("generate NewAPI system access token: %w", err)
+		return userID, "", input.Username, client.DumpCookies(), fmt.Errorf("generate NewAPI system access token: %w", err)
 	}
-	return userID, token, client.DumpCookies(), nil
+	return userID, token, input.Username, client.DumpCookies(), nil
 }
 
 func (s *Server) createSite(w http.ResponseWriter, r *http.Request) {
@@ -842,11 +851,12 @@ func (s *Server) createSite(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
-	userID, token, cookieJar, err := s.verifyNewAPISiteInput(r.Context(), input)
+	userID, token, username, cookieJar, err := s.verifyNewAPISiteInput(r.Context(), input, Site{})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	input.Username = username
 	site, err := s.store.CreateSite(r.Context(), input)
 	if err != nil {
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
@@ -889,19 +899,24 @@ func (s *Server) updateSite(w http.ResponseWriter, r *http.Request) {
 	credentialsChanged := input.BaseURL != existing.BaseURL ||
 		input.Username != existing.Username ||
 		strings.TrimSpace(input.Password) != "" ||
+		strings.TrimSpace(input.AccessToken) != "" ||
 		input.TOTPCode != ""
 	var userID int64
 	var token string
+	var username string
 	var cookieJar string
 	if credentialsChanged {
 		verifyInput := input
 		if strings.TrimSpace(verifyInput.Password) == "" {
 			verifyInput.Password = existing.Password
 		}
-		userID, token, cookieJar, err = s.verifyNewAPISiteInput(r.Context(), verifyInput)
+		userID, token, username, cookieJar, err = s.verifyNewAPISiteInput(r.Context(), verifyInput, existing)
 		if err != nil {
 			writeError(w, http.StatusBadGateway, err.Error())
 			return
+		}
+		if strings.TrimSpace(input.Username) == "" {
+			input.Username = username
 		}
 	}
 	site, err := s.store.UpdateSite(r.Context(), id, input)
@@ -1248,6 +1263,15 @@ func isDuplicateRuleErr(err error) bool {
 
 func boolPtr(value bool) *bool {
 	return &value
+}
+
+func firstPositiveInt64(values ...int64) int64 {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 func (s *Server) bulkUpdateRules(w http.ResponseWriter, r *http.Request) {

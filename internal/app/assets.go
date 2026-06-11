@@ -87,6 +87,10 @@ const indexHTML = `<!doctype html>
             <label>用户名<input name="username" required autocomplete="username" placeholder="用户名或邮箱"></label>
             <label>密码<input name="password" type="password" required autocomplete="current-password"></label>
           </div>
+          <div class="form-grid" data-site-source-field="newapi">
+            <label>系统访问令牌<input name="access_token" type="password" placeholder="可选，填写后优先使用令牌，不触发登录限流"></label>
+            <label>用户ID<input name="user_id" type="number" min="1" step="1" placeholder="可选，令牌模式建议填写"></label>
+          </div>
           <label data-site-source-field="sub2api" hidden>Auth Token<input name="auth_token" type="password" disabled placeholder="可选，填写后不使用密码登录"></label>
           <label>2FA 当前验证码<input name="totp_code" autocomplete="one-time-code" placeholder="仅账号启用 2FA 时填写"></label>
           <div class="actions">
@@ -4017,11 +4021,16 @@ function syncSiteSourceFields() {
   }
   if (form?.elements.username) {
     form.elements.username.placeholder = sourceType === "sub2api" ? "sub2api 登录邮箱或用户名" : "用户名或邮箱";
-    form.elements.username.required = true;
+    const hasToken = sourceType === "newapi" && !!String(form.elements.access_token?.value || "").trim();
+    form.elements.username.required = sourceType === "newapi" ? !hasToken : true;
   }
   if (form?.elements.password) {
     const editing = sourceType === "sub2api" ? !!state.editingSub2UpstreamId : !!state.editingSiteId;
-    form.elements.password.required = !editing;
+    const hasToken = sourceType === "newapi" && !!String(form.elements.access_token?.value || "").trim();
+    form.elements.password.required = sourceType === "newapi" ? (!editing && !hasToken) : !editing;
+  }
+  if (form?.elements.access_token) {
+    form.elements.access_token.disabled = sourceType !== "newapi";
   }
 }
 
@@ -4037,7 +4046,12 @@ function editSite(site) {
   form.elements.name.value = site.name || "";
   form.elements.base_url.value = site.base_url || "";
   form.elements.username.value = site.username || "";
+  if (form.elements.user_id) form.elements.user_id.value = site.user_id || "";
   if (form.elements.auth_token) form.elements.auth_token.value = "";
+  if (form.elements.access_token) {
+    form.elements.access_token.value = "";
+    form.elements.access_token.placeholder = site.has_access_token ? "已保存系统访问令牌，留空表示不修改" : "可选，填写后优先使用令牌，不触发登录限流";
+  }
   form.elements.password.value = "";
   form.elements.password.required = false;
   form.elements.password.placeholder = "留空表示不修改密码";
@@ -4063,6 +4077,7 @@ function editSub2Site(upstream) {
   form.elements.name.value = upstream.name || "";
   form.elements.base_url.value = upstream.base_url || "";
   form.elements.username.value = upstream.email || upstream.username || "";
+  if (form.elements.user_id) form.elements.user_id.value = "";
   form.elements.password.value = "";
   form.elements.password.placeholder = "留空表示不修改密码";
   form.elements.auth_token.value = "";
@@ -4089,6 +4104,11 @@ function resetSiteForm() {
   form.elements.password.required = true;
   form.elements.password.placeholder = "";
   if (form.elements.auth_token) form.elements.auth_token.placeholder = "可选，填写后不使用密码登录";
+  if (form.elements.access_token) {
+    form.elements.access_token.value = "";
+    form.elements.access_token.placeholder = "可选，填写后优先使用令牌，不触发登录限流";
+  }
+  if (form.elements.user_id) form.elements.user_id.value = "";
   syncSiteSourceFields();
   setText("#siteFormTitle", "添加上游站点账号");
   setText("#siteFormHelp", "用上方切换选择 NewAPI 或 sub2api，账号保存后会进入对应列表。");
@@ -4194,6 +4214,7 @@ function escapeAttr(value) {
 const siteForm = $("#siteForm");
 if (siteForm) {
   syncSiteSourceFields();
+  siteForm.elements.access_token?.addEventListener("input", syncSiteSourceFields);
   siteForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
@@ -4230,7 +4251,17 @@ if (siteForm) {
         }
       } else {
         delete payload.auth_token;
+        if (!payload.access_token) delete payload.access_token;
+        if (payload.user_id) {
+          payload.user_id = Number(payload.user_id);
+        } else {
+          delete payload.user_id;
+        }
         if (!payload.password) delete payload.password;
+        if (!id && !payload.access_token && (!payload.username || !payload.password)) {
+          toast("请填写 NewAPI 系统访问令牌，或填写用户名和密码登录验证");
+          return;
+        }
         const duplicateMessage = duplicateSiteMessage("newapi", payload, id);
         if (duplicateMessage) {
           toast(duplicateMessage);

@@ -26,11 +26,13 @@ const (
 )
 
 type SiteInput struct {
-	Name     string `json:"name"`
-	BaseURL  string `json:"base_url"`
-	Username string `json:"username"`
-	Password string `json:"password"`
-	TOTPCode string `json:"totp_code"`
+	Name        string `json:"name"`
+	BaseURL     string `json:"base_url"`
+	Username    string `json:"username"`
+	UserID      int64  `json:"user_id"`
+	Password    string `json:"password"`
+	AccessToken string `json:"access_token"`
+	TOTPCode    string `json:"totp_code"`
 }
 
 type CategoryInput struct {
@@ -115,8 +117,8 @@ type AdminCredentialInput struct {
 
 func (s Store) CreateSite(ctx context.Context, input SiteInput) (Site, error) {
 	input = normalizeSiteInput(input)
-	if input.Name == "" || input.BaseURL == "" || input.Username == "" || input.Password == "" {
-		return Site{}, fmt.Errorf("site name, base url, username and password are required")
+	if input.Name == "" || input.BaseURL == "" || (input.AccessToken == "" && (input.Username == "" || input.Password == "")) {
+		return Site{}, fmt.Errorf("site name, base url, system access token or username and password are required")
 	}
 	if err := s.ensureUniqueSite(ctx, input, 0); err != nil {
 		return Site{}, err
@@ -124,10 +126,10 @@ func (s Store) CreateSite(ctx context.Context, input SiteInput) (Site, error) {
 
 	var site Site
 	err := s.db.QueryRow(ctx, `
-		INSERT INTO sites (name, base_url, username, password, totp_code)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO sites (name, base_url, username, password, access_token, totp_code)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING id, name, base_url, username, password, totp_code, user_id, access_token, cookie_jar, last_error, last_run_at, created_at, updated_at
-	`, input.Name, input.BaseURL, input.Username, input.Password, input.TOTPCode).Scan(
+	`, input.Name, input.BaseURL, input.Username, input.Password, input.AccessToken, input.TOTPCode).Scan(
 		&site.ID, &site.Name, &site.BaseURL, &site.Username, &site.Password, &site.TOTPCode,
 		&site.UserID, &site.AccessToken, &site.CookieJar, &site.LastError, &site.LastRunAt, &site.CreatedAt, &site.UpdatedAt,
 	)
@@ -135,6 +137,9 @@ func (s Store) CreateSite(ctx context.Context, input SiteInput) (Site, error) {
 }
 
 func (s Store) ensureUniqueSite(ctx context.Context, input SiteInput, excludeID int64) error {
+	if strings.TrimSpace(input.Username) == "" {
+		return nil
+	}
 	var existingID int64
 	err := s.db.QueryRow(ctx, `
 		SELECT id
@@ -194,8 +199,8 @@ func (s Store) GetSite(ctx context.Context, siteID int64) (Site, error) {
 
 func (s Store) UpdateSite(ctx context.Context, siteID int64, input SiteInput) (Site, error) {
 	input = normalizeSiteInput(input)
-	if siteID <= 0 || input.Name == "" || input.BaseURL == "" || input.Username == "" {
-		return Site{}, fmt.Errorf("site id, name, base url and username are required")
+	if siteID <= 0 || input.Name == "" || input.BaseURL == "" || (input.AccessToken == "" && input.Username == "") {
+		return Site{}, fmt.Errorf("site id, name, base url and username or system access token are required")
 	}
 	if err := s.ensureUniqueSite(ctx, input, siteID); err != nil {
 		return Site{}, err
@@ -209,13 +214,13 @@ func (s Store) UpdateSite(ctx context.Context, siteID int64, input SiteInput) (S
 		    username = $4,
 		    password = CASE WHEN $5 = '' THEN password ELSE $5 END,
 		    totp_code = $6,
-		    access_token = CASE WHEN base_url <> $3 OR username <> $4 OR ($5 <> '' AND password <> $5) THEN '' ELSE access_token END,
-		    cookie_jar = CASE WHEN base_url <> $3 OR username <> $4 OR ($5 <> '' AND password <> $5) THEN '' ELSE cookie_jar END,
+		    access_token = CASE WHEN $7 <> '' THEN $7 WHEN base_url <> $3 OR username <> $4 OR ($5 <> '' AND password <> $5) THEN '' ELSE access_token END,
+		    cookie_jar = CASE WHEN $7 <> '' THEN '' WHEN base_url <> $3 OR username <> $4 OR ($5 <> '' AND password <> $5) THEN '' ELSE cookie_jar END,
 		    last_error = '',
 		    updated_at = now()
 		WHERE id = $1
 		RETURNING id, name, base_url, username, password, totp_code, user_id, access_token, cookie_jar, last_error, last_run_at, created_at, updated_at
-	`, siteID, input.Name, input.BaseURL, input.Username, input.Password, input.TOTPCode).Scan(
+	`, siteID, input.Name, input.BaseURL, input.Username, input.Password, input.TOTPCode, input.AccessToken).Scan(
 		&site.ID, &site.Name, &site.BaseURL, &site.Username, &site.Password, &site.TOTPCode,
 		&site.UserID, &site.AccessToken, &site.CookieJar, &site.LastError, &site.LastRunAt, &site.CreatedAt, &site.UpdatedAt,
 	)
@@ -2316,6 +2321,7 @@ func normalizeSiteInput(input SiteInput) SiteInput {
 	input.Name = strings.TrimSpace(input.Name)
 	input.BaseURL = normalizeBaseURL(input.BaseURL)
 	input.Username = strings.TrimSpace(input.Username)
+	input.AccessToken = strings.TrimSpace(input.AccessToken)
 	input.TOTPCode = strings.TrimSpace(input.TOTPCode)
 	return input
 }

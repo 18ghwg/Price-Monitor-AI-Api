@@ -75,6 +75,42 @@ func TestNewAPIClientCreateAPIKeyForGroup(t *testing.T) {
 	}
 }
 
+func TestNewAPIClientVerifySystemAccessTokenUsesProvidedUserID(t *testing.T) {
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if r.URL.Path != "/api/user/self" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer system-token" {
+			t.Fatalf("Authorization = %q, want Bearer system-token", r.Header.Get("Authorization"))
+		}
+		if r.Header.Get("New-Api-User") != "88" {
+			t.Fatalf("New-Api-User = %q, want 88", r.Header.Get("New-Api-User"))
+		}
+		writeNewAPITestJSON(w, map[string]any{
+			"id":       88,
+			"username": "ghwg",
+		})
+	}))
+	defer server.Close()
+
+	client, err := NewNewAPIClient(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userID, username, err := client.VerifySystemAccessToken(context.Background(), 88, "system-token")
+	if err != nil {
+		t.Fatalf("VerifySystemAccessToken() error = %v", err)
+	}
+	if userID != 88 || username != "ghwg" {
+		t.Fatalf("userID=%d username=%q, want 88 ghwg", userID, username)
+	}
+	if requestCount != 1 {
+		t.Fatalf("requestCount = %d, want 1", requestCount)
+	}
+}
+
 func TestNewAPIClientEnsureAPIKeyForGroupReusesExistingToken(t *testing.T) {
 	var sawUpdate bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -63,6 +63,12 @@ func (s *Server) newAPIClientForSite(ctx context.Context, site Site, forceLogin 
 			}
 		}
 	}
+	if strings.TrimSpace(site.Password) == "" {
+		if token != "" {
+			return client, userID, token, fmt.Errorf("NewAPI 系统访问令牌已失效，请在站点编辑中更新令牌")
+		}
+		return client, userID, token, fmt.Errorf("NewAPI 上游未保存密码，无法重新登录，请填写系统访问令牌或密码")
+	}
 	userID, err = client.Login(ctx, site.Username, site.Password, site.TOTPCode)
 	if err != nil {
 		return client, site.UserID, token, fmt.Errorf("login NewAPI upstream: %w", err)
