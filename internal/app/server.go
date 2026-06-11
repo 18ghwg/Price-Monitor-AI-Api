@@ -29,7 +29,10 @@ type Server struct {
 	secret []byte
 }
 
-const syncFailurePauseThreshold = 3
+const (
+	syncFailurePauseThreshold = 3
+	syncCandidateTimeout      = 75 * time.Second
+)
 
 func NewServer(ctx context.Context, cfg Config) (*Server, error) {
 	db, err := openDB(ctx, cfg.DatabaseURL)
@@ -1861,17 +1864,28 @@ func (s *Server) syncBestAvailableCandidate(ctx context.Context, rule Rule, mode
 
 		refreshedThisPass := false
 		for _, candidate := range candidates {
-			candidateRule, _, _, err := s.store.GetRuleWithSource(ctx, candidate.RuleID)
+			candidateCtx, cancelCandidate := context.WithTimeout(context.WithoutCancel(ctx), syncCandidateTimeout)
+			candidateLabelText := candidateLabel(candidate)
+			s.updateRuleSyncStatus(candidateCtx, rule.ID, fmt.Sprintf("正在尝试同步低价候选：%s", candidateLabelText), "")
+			candidateRule, _, _, err := s.store.GetRuleWithSource(candidateCtx, candidate.RuleID)
 			if err != nil {
 				log.Printf("load candidate rule %d for sync: %v", candidate.RuleID, err)
+				reason := fmt.Sprintf("读取候选规则失败：%s", localizeSyncError(err))
+				fallbackErrors = append(fallbackErrors, fmt.Sprintf("%s: %s", candidateLabelText, reason))
+				s.updateRuleSyncStatus(candidateCtx, rule.ID, fmt.Sprintf("跳过低价候选：%s；原因：%s", candidateLabelText, reason), "")
+				cancelCandidate()
 				continue
 			}
-			if reason, ok := s.syncThresholdSkipReason(ctx, candidateRule, candidate); !ok {
-				_ = s.store.UpdateRuleSyncStatus(ctx, candidateRule.ID, reason, "")
+			if reason, ok := s.syncThresholdSkipReason(candidateCtx, candidateRule, candidate); !ok {
+				s.updateRuleSyncStatus(candidateCtx, candidateRule.ID, reason, "")
+				if candidateRule.ID != rule.ID {
+					s.updateRuleSyncStatus(candidateCtx, rule.ID, fmt.Sprintf("跳过低价候选：%s；原因：%s", candidateLabelText, reason), "")
+				}
+				cancelCandidate()
 				continue
 			}
 			signature := syncCandidateSignature(candidate)
-			lastSignature, signatureErr := s.store.RuleSyncSignature(ctx, candidateRule.ID)
+			lastSignature, signatureErr := s.store.RuleSyncSignature(candidateCtx, candidateRule.ID)
 			if signatureErr != nil && !notFound(signatureErr) {
 				log.Printf("load sync signature for candidate rule %d: %v", candidateRule.ID, signatureErr)
 			}
@@ -1879,36 +1893,46 @@ func (s *Server) syncBestAvailableCandidate(ctx context.Context, rule Rule, mode
 			if signature != "" && signature == lastSignature {
 				notifySync = false
 			}
-			attempted, err := s.syncCandidateSnapshotToMain(ctx, candidateRule, candidate, signature, notifySync)
+			attempted, err := s.syncCandidateSnapshotToMain(candidateCtx, candidateRule, candidate, signature, notifySync)
 			if err == nil {
 				if candidateRule.ID != rule.ID {
-					_ = s.store.UpdateRuleSyncStatus(ctx, rule.ID, fmt.Sprintf("不是当前可同步最低价：%s", candidateLabel(candidate)), "")
+					s.updateRuleSyncStatus(candidateCtx, rule.ID, fmt.Sprintf("不是当前可同步最低价，已切换同步：%s", candidateLabelText), "")
 				}
+				cancelCandidate()
 				return attempted, true, nil
 			}
 			if isStaleGroupSyncError(err) {
 				status := "检测到上游低价分组已失效，已立即刷新该上游规则并重新参与排名"
-				_ = s.store.UpdateRuleSyncStatus(ctx, candidateRule.ID, status, "")
-				_ = s.store.MarkMissingSnapshotGroupsInvalid(ctx, candidateRule.ID, candidate.ModelName, nil, "同步测试失败：上游低价分组已失效，已触发重新监控")
+				s.updateRuleSyncStatus(candidateCtx, candidateRule.ID, status, "")
+				_ = s.store.MarkMissingSnapshotGroupsInvalid(candidateCtx, candidateRule.ID, candidate.ModelName, nil, "同步测试失败：上游低价分组已失效，已触发重新监控")
 				if refreshedRules[candidateRule.ID] {
 					fallbackErrors = append(fallbackErrors, fmt.Sprintf("%s/%s: %v", candidate.SiteName, candidate.GroupName, err))
+					cancelCandidate()
 					continue
 				}
 				refreshedRules[candidateRule.ID] = true
-				if _, refreshErr := s.runRuleWithoutSync(ctx, candidateRule.ID); refreshErr != nil {
+				if _, refreshErr := s.runRuleWithoutSync(candidateCtx, candidateRule.ID); refreshErr != nil {
 					fallbackErrors = append(fallbackErrors, fmt.Sprintf("%s/%s: 刷新上游规则失败：%v", candidate.SiteName, candidate.GroupName, refreshErr))
+					cancelCandidate()
 					continue
 				}
 				fallbackErrors = append(fallbackErrors, fmt.Sprintf("%s/%s: %v", candidate.SiteName, candidate.GroupName, err))
 				refreshedThisPass = true
+				cancelCandidate()
 				break
 			}
 			if isFallbackSyncError(err) {
 				fallbackErrors = append(fallbackErrors, fmt.Sprintf("%s/%s: %v", candidate.SiteName, candidate.GroupName, err))
-				_ = s.store.UpdateRuleSyncStatus(ctx, candidateRule.ID, fallbackSyncStatus(err), "")
+				status := fallbackSyncStatus(err)
+				s.updateRuleSyncStatus(candidateCtx, candidateRule.ID, status, "")
+				if candidateRule.ID != rule.ID {
+					s.updateRuleSyncStatus(candidateCtx, rule.ID, fmt.Sprintf("低价候选同步失败，继续尝试下一个：%s；原因：%s", candidateLabelText, strings.TrimPrefix(status, "跳过该低价候选：")), "")
+				}
+				cancelCandidate()
 				continue
 			}
-			s.recordSyncFailure(ctx, candidateRule, candidate, err)
+			s.recordSyncFailure(candidateCtx, candidateRule, candidate, err)
+			cancelCandidate()
 			return attempted, true, err
 		}
 		if !refreshedThisPass || pass > 0 {
@@ -1924,6 +1948,18 @@ func (s *Server) syncBestAvailableCandidate(ctx context.Context, rule Rule, mode
 		_ = s.store.UpdateRuleSyncStatus(ctx, rule.ID, fmt.Sprintf("不是当前可同步最低价：%s %s", lastCandidates[0].SiteName, lastCandidates[0].GroupName), "")
 	}
 	return false, true, nil
+}
+
+func (s *Server) updateRuleSyncStatus(ctx context.Context, ruleID int64, status string, errText string) {
+	writeCtx := ctx
+	var cancel context.CancelFunc
+	if writeCtx == nil || writeCtx.Err() != nil {
+		writeCtx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+	}
+	if err := s.store.UpdateRuleSyncStatus(writeCtx, ruleID, status, errText); err != nil {
+		log.Printf("update rule %d sync status: %v", ruleID, err)
+	}
 }
 
 func (s *Server) recordLowBalanceSkips(ctx context.Context, skipped []PriceSnapshot) []PriceSnapshot {
