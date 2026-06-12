@@ -93,6 +93,9 @@ func syncUpdateEmailBody(rule Rule, site Site, snapshot PriceSnapshot, action st
 }
 
 func (s *Server) notifySyncFailure(ctx context.Context, rule Rule, site Site, row PricingRow, err error) {
+	if isSub2APISyncDisabledError(err) {
+		return
+	}
 	settings, loadErr := s.store.GetIntegrationSettings(ctx)
 	if loadErr != nil {
 		log.Printf("load email settings for sync failure notification: %v", loadErr)

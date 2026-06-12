@@ -28,6 +28,17 @@ func TestIsFallbackSyncErrorMatchesUnsupportedGroup(t *testing.T) {
 	}
 }
 
+func TestIsSub2APISyncDisabledError(t *testing.T) {
+	for _, err := range []error{
+		errors.New("sub2api sync is disabled"),
+		errors.New("主站 sub2api 同步开关未开启"),
+	} {
+		if !isSub2APISyncDisabledError(err) {
+			t.Fatalf("isSub2APISyncDisabledError(%q) = false, want true", err.Error())
+		}
+	}
+}
+
 func TestIsFallbackSyncErrorMatchesNewAPITokenKeyRoute(t *testing.T) {
 	err := errors.New("candidate newapi create NewAPI key: get newapi token key: upstream https://doro.lol/api/token/4173/key returned HTTP 404: Invalid URL")
 	if !isFallbackSyncError(err) {

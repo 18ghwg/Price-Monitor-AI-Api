@@ -1928,6 +1928,15 @@ func (s *Server) syncBestAvailableCandidate(ctx context.Context, rule Rule, mode
 				cancelCandidate()
 				return attempted, true, nil
 			}
+			if isSub2APISyncDisabledError(err) {
+				status := "主站 sub2api 同步开关未开启，已跳过同步"
+				s.updateRuleSyncStatus(candidateCtx, candidateRule.ID, status, "")
+				if candidateRule.ID != rule.ID {
+					s.updateRuleSyncStatus(candidateCtx, rule.ID, fmt.Sprintf("%s：%s", status, candidateLabelText), "")
+				}
+				cancelCandidate()
+				return attempted, true, nil
+			}
 			if isStaleGroupSyncError(err) {
 				status := "检测到上游低价分组已失效，已立即刷新该上游规则并重新参与排名"
 				s.updateRuleSyncStatus(candidateCtx, candidateRule.ID, status, "")
@@ -2065,6 +2074,10 @@ func fallbackSyncStatus(err error) string {
 
 func (s *Server) recordSyncFailure(ctx context.Context, rule Rule, candidate PriceSnapshot, err error) {
 	if err == nil {
+		return
+	}
+	if isSub2APISyncDisabledError(err) {
+		_ = s.store.UpdateRuleSyncStatus(ctx, rule.ID, "主站 sub2api 同步开关未开启，已跳过同步", "")
 		return
 	}
 	failureSignature := syncFailureSignature(candidate, err)
@@ -2326,6 +2339,15 @@ func isFallbackSyncError(err error) bool {
 		}
 	}
 	return false
+}
+
+func isSub2APISyncDisabledError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "sub2api sync is disabled") ||
+		strings.Contains(text, "主站 sub2api 同步开关未开启")
 }
 
 func isStaleGroupSyncError(err error) bool {
