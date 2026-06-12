@@ -538,7 +538,7 @@ const indexHTML = `<!doctype html>
     <button type="button" data-jump-view="settings" data-jump-section="settings">设置</button>
   </nav>
   <div id="toast" class="toast" hidden></div>
-  <script src="/static/app.js?v=20260612-rule-poll-filter"></script>
+  <script src="/static/app.js?v=20260612-cache-aware-price-sort"></script>
 </body>
 </html>`
 
@@ -3090,36 +3090,7 @@ function filteredRules() {
 }
 
 function ruleHasIssue(rule) {
-  const fields = [
-    rule?.sync_status,
-    rule?.sync_error,
-    rule?.checkin_status,
-    rule?.checkin_message,
-  ].map((value) => String(value || "").trim().toLowerCase()).filter(Boolean);
-  if (!fields.length) return false;
-  const text = fields.join(" ");
-  return [
-    "失败",
-    "错误",
-    "异常",
-    "待排查",
-    "余额不足",
-    "未授权",
-    "无权限",
-    "失效",
-    "未找到",
-    "超时",
-    "暂停",
-    "invalid",
-    "error",
-    "failed",
-    "timeout",
-    "quota",
-    "disabled",
-    "not found",
-    "not current",
-    "skip low balance",
-  ].some((keyword) => text.includes(keyword.toLowerCase()));
+  return !rule?.enabled;
 }
 
 function compareRuleCategoryOrder(left, right) {
@@ -3984,7 +3955,14 @@ function numberSort(left, right) {
 }
 
 function effectivePrice(row) {
-  return row.input_price ?? row.request_price ?? row.output_price ?? Number.POSITIVE_INFINITY;
+  const values = [
+    row.input_price,
+    row.request_price,
+    row.output_price,
+    row.cache_read_price,
+    row.cache_write_price,
+  ].map((value) => Number(value)).filter((value) => Number.isFinite(value));
+  return values.length ? Math.min(...values) : Number.POSITIVE_INFINITY;
 }
 
 function categoryBySlug(slug) {

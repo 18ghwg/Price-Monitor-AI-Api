@@ -8,6 +8,8 @@ import (
 	"strings"
 )
 
+const priceComparisonExpr = "LEAST(COALESCE(input_price, 1e308), COALESCE(request_price, 1e308), COALESCE(output_price, 1e308), COALESCE(cache_read_price, 1e308), COALESCE(cache_write_price, 1e308))"
+
 func ApplyNewAPIUserGroupPricing(pricing map[string]any, groups map[string]NewAPIUserGroupPricing) {
 	if pricing == nil || len(groups) == 0 {
 		return
@@ -217,16 +219,16 @@ func pricingRowLess(left, right PricingRow) bool {
 }
 
 func effectivePrice(row PricingRow) float64 {
-	if row.InputPrice != nil {
-		return *row.InputPrice
+	best := 1e308
+	for _, candidate := range []*float64{row.InputPrice, row.RequestPrice, row.OutputPrice, row.CacheReadPrice, row.CacheWritePrice} {
+		if candidate == nil {
+			continue
+		}
+		if value := *candidate; value < best {
+			best = value
+		}
 	}
-	if row.RequestPrice != nil {
-		return *row.RequestPrice
-	}
-	if row.OutputPrice != nil {
-		return *row.OutputPrice
-	}
-	return 1e308
+	return best
 }
 
 func PricingRowRaw(row PricingRow) []byte {

@@ -1769,7 +1769,7 @@ func (s Store) CheapestLatestSnapshot(ctx context.Context, category string, mode
 		       group_ratio, input_price, output_price, cache_read_price, cache_write_price,
 		       request_price, upstream_balance, balance_unit, online_topup_enabled, recharge_multiplier, invalid, invalid_reason, invalid_at, raw, created_at
 		FROM latest
-		ORDER BY COALESCE(input_price, request_price, output_price, 1e308) ASC,
+		ORDER BY `+priceComparisonExpr+` ASC,
 		         COALESCE(output_price, 1e308) ASC,
 		         group_ratio ASC NULLS LAST,
 		         id DESC
@@ -1843,7 +1843,7 @@ func (s Store) LatestSnapshots(ctx context.Context, limit int, category string) 
 		ORDER BY category,
 		         invalid ASC,
 		         model_name,
-		         COALESCE(input_price, request_price, 1e308) ASC,
+		         `+priceComparisonExpr+` ASC,
 		         COALESCE(output_price, 1e308) ASC,
 		         group_ratio ASC NULLS LAST,
 		         group_name
@@ -1941,7 +1941,7 @@ func (s Store) latestSnapshotsForModel(ctx context.Context, category string, mod
 		       group_ratio, input_price, output_price, cache_read_price, cache_write_price,
 		       request_price, upstream_balance, balance_unit, online_topup_enabled, recharge_multiplier, invalid, invalid_reason, invalid_at, raw, created_at
 		FROM latest
-		ORDER BY COALESCE(input_price, request_price, output_price, 1e308) ASC,
+		ORDER BY `+priceComparisonExpr+` ASC,
 		         COALESCE(output_price, 1e308) ASC,
 		         group_ratio ASC NULLS LAST,
 		         id DESC
