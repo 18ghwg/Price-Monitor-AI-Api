@@ -8,7 +8,13 @@ import (
 	"strings"
 )
 
-const priceComparisonExpr = "LEAST(COALESCE(input_price, 1e308), COALESCE(request_price, 1e308), COALESCE(output_price, 1e308), COALESCE(cache_read_price, 1e308), COALESCE(cache_write_price, 1e308))"
+func priceComparisonExpr(hitRatioPlaceholder string) string {
+	return "(CASE WHEN cache_write_price IS NULL AND cache_read_price IS NULL AND input_price IS NULL " +
+		"THEN COALESCE(request_price, output_price, 1e308) " +
+		"ELSE COALESCE(cache_write_price, input_price, request_price, output_price, 1e308) * (1 - " + hitRatioPlaceholder + ") + " +
+		"COALESCE(cache_read_price, cache_write_price, input_price, request_price, output_price, 1e308) * " + hitRatioPlaceholder + " + " +
+		"COALESCE(output_price, 0) END)"
+}
 
 func ApplyNewAPIUserGroupPricing(pricing map[string]any, groups map[string]NewAPIUserGroupPricing) {
 	if pricing == nil || len(groups) == 0 {
@@ -102,7 +108,49 @@ func BuildCheapestKeywordRows(pricing map[string]any, wantedModel string) ([]Pri
 	return CheapestPricingRows(rows), nil
 }
 
+func BuildCheapestKeywordRowsWithExpectedCacheHitRatio(pricing map[string]any, wantedModel string, expectedCacheHitRatio float64) ([]PricingRow, error) {
+	rows, err := BuildKeywordRowsWithExpectedCacheHitRatio(pricing, wantedModel, expectedCacheHitRatio)
+	if err != nil {
+		return nil, err
+	}
+	return CheapestPricingRowsWithExpectedCacheHitRatio(rows, expectedCacheHitRatio), nil
+}
+
 func BuildKeywordRows(pricing map[string]any, wantedModel string) ([]PricingRow, error) {
+	rows, err := BuildKeywordRowsRaw(pricing, wantedModel)
+	if err != nil {
+		return nil, err
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		if pricingRowLess(rows[i], rows[j]) {
+			return true
+		}
+		if pricingRowLess(rows[j], rows[i]) {
+			return false
+		}
+		return rows[i].ModelName < rows[j].ModelName
+	})
+	return rows, nil
+}
+
+func BuildKeywordRowsWithExpectedCacheHitRatio(pricing map[string]any, wantedModel string, expectedCacheHitRatio float64) ([]PricingRow, error) {
+	rows, err := BuildKeywordRowsRaw(pricing, wantedModel)
+	if err != nil {
+		return nil, err
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		if pricingRowLessWithExpectedCacheHitRatio(rows[i], rows[j], expectedCacheHitRatio) {
+			return true
+		}
+		if pricingRowLessWithExpectedCacheHitRatio(rows[j], rows[i], expectedCacheHitRatio) {
+			return false
+		}
+		return rows[i].ModelName < rows[j].ModelName
+	})
+	return rows, nil
+}
+
+func BuildKeywordRowsRaw(pricing map[string]any, wantedModel string) ([]PricingRow, error) {
 	wantedModel = strings.TrimSpace(wantedModel)
 	if wantedModel == "" {
 		return nil, fmt.Errorf("模型名称不能为空")
@@ -127,27 +175,21 @@ func BuildKeywordRows(pricing map[string]any, wantedModel string) ([]PricingRow,
 			rows = append(rows, row)
 		}
 	}
-
-	sort.SliceStable(rows, func(i, j int) bool {
-		if pricingRowLess(rows[i], rows[j]) {
-			return true
-		}
-		if pricingRowLess(rows[j], rows[i]) {
-			return false
-		}
-		return rows[i].ModelName < rows[j].ModelName
-	})
 	return rows, nil
 }
 
 func CheapestPricingRows(rows []PricingRow) []PricingRow {
+	return CheapestPricingRowsWithExpectedCacheHitRatio(rows, 0)
+}
+
+func CheapestPricingRowsWithExpectedCacheHitRatio(rows []PricingRow, expectedCacheHitRatio float64) []PricingRow {
 	cheapest := map[string]PricingRow{}
 	for _, row := range rows {
 		if strings.TrimSpace(row.ModelName) == "" {
 			continue
 		}
 		current, ok := cheapest[row.ModelName]
-		if !ok || pricingRowLess(row, current) {
+		if !ok || pricingRowLessWithExpectedCacheHitRatio(row, current, expectedCacheHitRatio) {
 			cheapest[row.ModelName] = row
 		}
 	}
@@ -161,10 +203,10 @@ func CheapestPricingRows(rows []PricingRow) []PricingRow {
 		out = append(out, cheapest[model])
 	}
 	sort.SliceStable(out, func(i, j int) bool {
-		if pricingRowLess(out[i], out[j]) {
+		if pricingRowLessWithExpectedCacheHitRatio(out[i], out[j], expectedCacheHitRatio) {
 			return true
 		}
-		if pricingRowLess(out[j], out[i]) {
+		if pricingRowLessWithExpectedCacheHitRatio(out[j], out[i], expectedCacheHitRatio) {
 			return false
 		}
 		return out[i].ModelName < out[j].ModelName
@@ -219,16 +261,69 @@ func pricingRowLess(left, right PricingRow) bool {
 }
 
 func effectivePrice(row PricingRow) float64 {
-	best := 1e308
-	for _, candidate := range []*float64{row.InputPrice, row.RequestPrice, row.OutputPrice, row.CacheReadPrice, row.CacheWritePrice} {
-		if candidate == nil {
-			continue
+	if row.InputPrice != nil {
+		return *row.InputPrice
+	}
+	if row.RequestPrice != nil {
+		return *row.RequestPrice
+	}
+	if row.OutputPrice != nil {
+		return *row.OutputPrice
+	}
+	return 1e308
+}
+
+func pricingRowLessWithExpectedCacheHitRatio(left, right PricingRow, expectedCacheHitRatio float64) bool {
+	leftPrice := pricingRowExpectedPrice(left, expectedCacheHitRatio)
+	rightPrice := pricingRowExpectedPrice(right, expectedCacheHitRatio)
+	if leftPrice != rightPrice {
+		return leftPrice < rightPrice
+	}
+	if left.OutputPrice != nil && right.OutputPrice != nil && *left.OutputPrice != *right.OutputPrice {
+		return *left.OutputPrice < *right.OutputPrice
+	}
+	if left.GroupRatio != right.GroupRatio {
+		return left.GroupRatio < right.GroupRatio
+	}
+	return left.GroupName < right.GroupName
+}
+
+func pricingRowExpectedPrice(row PricingRow, expectedCacheHitRatio float64) float64 {
+	hitRatio := normalizeExpectedCacheHitRatio(expectedCacheHitRatio)
+	if row.InputPrice == nil && row.CacheReadPrice == nil && row.CacheWritePrice == nil {
+		if row.RequestPrice != nil {
+			return *row.RequestPrice
 		}
-		if value := *candidate; value < best {
-			best = value
+		if row.OutputPrice != nil {
+			return *row.OutputPrice
+		}
+		return 1e308
+	}
+	missPrice := firstComparablePrice(row.CacheWritePrice, row.InputPrice, row.RequestPrice, row.OutputPrice)
+	hitPrice := firstComparablePrice(row.CacheReadPrice, row.CacheWritePrice, row.InputPrice, row.RequestPrice, row.OutputPrice)
+	if missPrice == 1e308 && hitPrice == 1e308 {
+		return 1e308
+	}
+	if missPrice == 1e308 {
+		missPrice = hitPrice
+	}
+	if hitPrice == 1e308 {
+		hitPrice = missPrice
+	}
+	expected := missPrice*(1-hitRatio) + hitPrice*hitRatio
+	if row.InputPrice != nil && row.OutputPrice != nil {
+		expected += *row.OutputPrice
+	}
+	return expected
+}
+
+func firstComparablePrice(values ...*float64) float64 {
+	for _, value := range values {
+		if value != nil {
+			return *value
 		}
 	}
-	return best
+	return 1e308
 }
 
 func PricingRowRaw(row PricingRow) []byte {

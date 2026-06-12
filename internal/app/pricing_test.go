@@ -112,3 +112,50 @@ func TestApplyNewAPIUserGroupPricingOverridesPricingRatio(t *testing.T) {
 		t.Fatalf("cache read price = %v, want 0.05", row.CacheReadPrice)
 	}
 }
+
+func TestPricingRowExpectedPriceUsesCacheHitRatioAndOutput(t *testing.T) {
+	row := PricingRow{
+		InputPrice:      ptr(1.0),
+		OutputPrice:     ptr(2.0),
+		CacheReadPrice:  ptr(0.1),
+		CacheWritePrice: ptr(1.2),
+	}
+
+	got := pricingRowExpectedPrice(row, 0.5)
+	want := 2.65
+	assertFloatClose(t, got, want)
+}
+
+func TestPricingRowExpectedPriceFallsBackWhenCacheMissing(t *testing.T) {
+	row := PricingRow{
+		InputPrice:  ptr(0.2),
+		OutputPrice: ptr(1.2),
+	}
+
+	got := pricingRowExpectedPrice(row, 0.8)
+	want := 1.4
+	assertFloatClose(t, got, want)
+}
+
+func TestPricingRowExpectedPriceClampsHitRatio(t *testing.T) {
+	row := PricingRow{
+		InputPrice:      ptr(1.0),
+		OutputPrice:     ptr(2.0),
+		CacheReadPrice:  ptr(0.1),
+		CacheWritePrice: ptr(1.2),
+	}
+
+	assertFloatClose(t, pricingRowExpectedPrice(row, -1), 3.2)
+	assertFloatClose(t, pricingRowExpectedPrice(row, 2), 2.1)
+}
+
+func assertFloatClose(t *testing.T, got float64, want float64) {
+	t.Helper()
+	diff := got - want
+	if diff < 0 {
+		diff = -diff
+	}
+	if diff > 1e-9 {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}

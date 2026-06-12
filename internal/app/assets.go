@@ -237,7 +237,7 @@ const indexHTML = `<!doctype html>
                 <th data-sort="group_ratio">分组倍率</th>
                 <th data-sort="upstream_balance">余额</th>
                 <th data-sort="recharge_multiplier">在线充值</th>
-                <th data-sort="effective_price">最低有效价</th>
+                <th data-sort="effective_price">预期成本</th>
                 <th data-sort="input_price">输入</th>
                 <th data-sort="output_price">输出</th>
                 <th data-sort="cache_read_price">缓存读</th>
@@ -336,6 +336,10 @@ const indexHTML = `<!doctype html>
                 <label>每轮定时间隔（分钟）<input name="monitor_interval_minutes" type="number" min="1" max="1440" step="1" value="15"></label>
                 <label>每条规则执行间隔（秒）<input name="monitor_rule_delay_seconds" type="number" min="1" max="3600" step="1" value="60"></label>
               </div>
+              <div class="form-grid">
+                <label>预期缓存命中率<input name="expected_cache_hit_ratio" type="number" min="0" max="1" step="0.01" value="0" placeholder="0.5 表示 50% 缓存命中"></label>
+              </div>
+              <p class="muted">用于价格快照排序和主站同步候选选择；命中时按缓存读价格估算，未命中时按缓存写价格或普通输入价格估算。</p>
               <input name="sync_threshold_ratio" type="hidden">
               <div class="threshold-editor">
                 <div class="threshold-editor-head">
@@ -3162,7 +3166,7 @@ function renderSnapshots() {
       + "<td data-label=\"分组倍率\">" + fmt(row.group_ratio) + "</td>"
       + "<td data-label=\"余额\">" + fmtBalance(row.upstream_balance, row.balance_unit) + "</td>"
       + "<td data-label=\"在线充值\">" + rechargeBadge(row) + "</td>"
-      + "<td data-label=\"最低有效价\">" + fmt(effectivePrice(row)) + "</td>"
+      + "<td data-label=\"预期成本\">" + fmt(effectivePrice(row)) + "</td>"
       + "<td data-label=\"输入\">" + fmt(row.input_price) + "</td>"
       + "<td data-label=\"输出\">" + fmt(row.output_price) + "</td>"
       + "<td data-label=\"缓存读\">" + fmt(row.cache_read_price) + "</td>"
@@ -3311,6 +3315,9 @@ function renderSettings() {
   form.elements.sub2api_admin_key.value = "";
   form.elements.monitor_interval_minutes.value = String(state.settings.monitor_interval_minutes || 15);
   form.elements.monitor_rule_delay_seconds.value = String(state.settings.monitor_rule_delay_seconds || 60);
+  form.elements.expected_cache_hit_ratio.value = state.settings.expected_cache_hit_ratio !== undefined && state.settings.expected_cache_hit_ratio !== null
+    ? String(state.settings.expected_cache_hit_ratio)
+    : "0";
   form.elements.sync_threshold_ratio.value = state.settings.sync_threshold_ratio ? String(state.settings.sync_threshold_ratio) : "";
   renderSyncThresholdRows();
   form.elements.email_notify_enabled.checked = !!state.settings.email_notify_enabled;
@@ -3955,14 +3962,36 @@ function numberSort(left, right) {
 }
 
 function effectivePrice(row) {
-  const values = [
-    row.input_price,
-    row.request_price,
-    row.output_price,
-    row.cache_read_price,
-    row.cache_write_price,
-  ].map((value) => Number(value)).filter((value) => Number.isFinite(value));
-  return values.length ? Math.min(...values) : Number.POSITIVE_INFINITY;
+  const hitRatio = expectedCacheHitRatio();
+  if (!Number.isFinite(Number(row.input_price)) && !Number.isFinite(Number(row.cache_read_price)) && !Number.isFinite(Number(row.cache_write_price))) {
+    if (Number.isFinite(Number(row.request_price))) return Number(row.request_price);
+    if (Number.isFinite(Number(row.output_price))) return Number(row.output_price);
+    return Number.POSITIVE_INFINITY;
+  }
+  const missPrice = firstComparablePrice(row.cache_write_price, row.input_price, row.request_price, row.output_price);
+  const hitPrice = firstComparablePrice(row.cache_read_price, row.cache_write_price, row.input_price, row.request_price, row.output_price);
+  if (!Number.isFinite(missPrice) && !Number.isFinite(hitPrice)) return Number.POSITIVE_INFINITY;
+  const normalizedMiss = Number.isFinite(missPrice) ? missPrice : hitPrice;
+  const normalizedHit = Number.isFinite(hitPrice) ? hitPrice : normalizedMiss;
+  const expected = normalizedMiss * (1 - hitRatio) + normalizedHit * hitRatio;
+  if (Number.isFinite(Number(row.input_price)) && Number.isFinite(Number(row.output_price))) {
+    return expected + Number(row.output_price);
+  }
+  return expected;
+}
+
+function expectedCacheHitRatio() {
+  const value = Number(state.settings && state.settings.expected_cache_hit_ratio);
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(1, Math.max(0, value));
+}
+
+function firstComparablePrice(...values) {
+  for (const value of values) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return numeric;
+  }
+  return Number.POSITIVE_INFINITY;
 }
 
 function categoryBySlug(slug) {
@@ -4387,6 +4416,7 @@ if (settingsForm) {
     const payload = formJSON(form);
     payload.monitor_interval_minutes = Number(payload.monitor_interval_minutes || 15);
     payload.monitor_rule_delay_seconds = Number(payload.monitor_rule_delay_seconds || 60);
+    payload.expected_cache_hit_ratio = Number(payload.expected_cache_hit_ratio || 0);
     payload.smtp_port = Number(payload.smtp_port || 587);
     payload.sync_threshold_ratio = Number(payload.sync_threshold_ratio || 0);
     payload.sync_threshold_ratios = collectSyncThresholdRatios();

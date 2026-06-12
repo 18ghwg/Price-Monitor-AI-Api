@@ -248,11 +248,11 @@ func sameLowestSnapshot(previous PriceSnapshot, current PriceSnapshot) bool {
 	return len(lowestSnapshotChanges(previous, current)) == 0
 }
 
-func lowerThanPreviousLowest(previous PriceSnapshot, current PriceSnapshot) bool {
+func lowerThanPreviousLowest(previous PriceSnapshot, current PriceSnapshot, expectedCacheHitRatio float64) bool {
 	if previous.ID == 0 {
 		return true
 	}
-	return pricingRowLess(pricingRowFromSnapshot(current), pricingRowFromSnapshot(previous))
+	return pricingRowLessWithExpectedCacheHitRatio(pricingRowFromSnapshot(current), pricingRowFromSnapshot(previous), expectedCacheHitRatio)
 }
 
 func sameLowestSnapshotSource(previous PriceSnapshot, current PriceSnapshot) bool {

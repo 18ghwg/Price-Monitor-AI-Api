@@ -214,6 +214,7 @@ type IntegrationSettings struct {
 	Sub2APIPassword         string                         `json:"sub2api_password,omitempty"`
 	MonitorIntervalMinutes  int                            `json:"monitor_interval_minutes"`
 	MonitorRuleDelaySeconds int                            `json:"monitor_rule_delay_seconds"`
+	ExpectedCacheHitRatio   float64                        `json:"expected_cache_hit_ratio"`
 	SyncThresholdRatio      *float64                       `json:"sync_threshold_ratio"`
 	SyncThresholdRatios     map[string]float64             `json:"sync_threshold_ratios"`
 	EmailNotifyEnabled      bool                           `json:"email_notify_enabled"`
