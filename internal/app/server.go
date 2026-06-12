@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -23,10 +24,12 @@ import (
 )
 
 type Server struct {
-	cfg    Config
-	db     *pgxpool.Pool
-	store  Store
-	secret []byte
+	cfg         Config
+	db          *pgxpool.Pool
+	store       Store
+	secret      []byte
+	pollMu      sync.Mutex
+	pollRunning bool
 }
 
 const (
@@ -105,6 +108,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/rules/bulk-create", s.bulkCreateRules)
 	mux.HandleFunc("POST /api/rules/bulk-create-claude", s.bulkCreateClaudeRules)
 	mux.HandleFunc("POST /api/rules/bulk-update", s.bulkUpdateRules)
+	mux.HandleFunc("POST /api/rules/run-poll", s.runRulePoll)
 	mux.HandleFunc("PUT /api/rules/{id}", s.updateRule)
 	mux.HandleFunc("DELETE /api/rules/{id}", s.deleteRule)
 	mux.HandleFunc("POST /api/rules/{id}/update", s.updateRule)
@@ -1126,6 +1130,10 @@ func (s *Server) bulkCreateRulesWithInput(w http.ResponseWriter, r *http.Request
 	if intervalMinutes <= 0 {
 		intervalMinutes = 15
 	}
+	roundIntervalMinutes, _ := normalizeMonitorScheduleSettings(settings.MonitorIntervalMinutes, settings.MonitorRuleDelaySeconds)
+	if roundIntervalMinutes <= 0 {
+		roundIntervalMinutes = intervalMinutes
+	}
 	scheduleEnabled := true
 	if input.ScheduleEnabled != nil {
 		scheduleEnabled = *input.ScheduleEnabled
@@ -1155,7 +1163,7 @@ func (s *Server) bulkCreateRulesWithInput(w http.ResponseWriter, r *http.Request
 		if !scheduleEnabled {
 			return nil
 		}
-		offset := staggerOffset(targetIndex, totalTargets, intervalMinutes)
+		offset := staggerOffset(targetIndex, totalTargets, roundIntervalMinutes)
 		targetIndex++
 		next := time.Now().Add(offset)
 		return &next
@@ -1215,7 +1223,7 @@ func (s *Server) bulkCreateRulesWithInput(w http.ResponseWriter, r *http.Request
 			}
 		}
 	}
-	staggered, err := s.store.StaggerRules(r.Context(), sourceType, categorySlug, modelKeyword, intervalMinutes, time.Now())
+	staggered, err := s.store.StaggerRules(r.Context(), sourceType, categorySlug, modelKeyword, roundIntervalMinutes, time.Now())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "stagger rules failed: "+err.Error())
 		return
@@ -1358,6 +1366,46 @@ func (s *Server) runRule(w http.ResponseWriter, r *http.Request) {
 		"count":     len(snapshots),
 		"snapshots": snapshots,
 	}})
+}
+
+func (s *Server) runRulePoll(w http.ResponseWriter, r *http.Request) {
+	if !s.startRulePoll() {
+		writeError(w, http.StatusConflict, "已有一轮全局轮询正在执行")
+		return
+	}
+	go func() {
+		defer s.finishRulePoll()
+		s.runEnabledRules(context.Background())
+	}()
+	writeJSON(w, http.StatusAccepted, map[string]any{"data": map[string]any{
+		"status":  "started",
+		"message": "已开始执行一轮全局轮询",
+	}})
+}
+
+func (s *Server) startRulePoll() bool {
+	s.pollMu.Lock()
+	defer s.pollMu.Unlock()
+	if s.pollRunning {
+		return false
+	}
+	s.pollRunning = true
+	return true
+}
+
+func (s *Server) finishRulePoll() {
+	s.pollMu.Lock()
+	s.pollRunning = false
+	s.pollMu.Unlock()
+}
+
+func (s *Server) runEnabledRulesIfIdle(ctx context.Context) bool {
+	if !s.startRulePoll() {
+		return false
+	}
+	defer s.finishRulePoll()
+	s.runEnabledRules(ctx)
+	return true
 }
 
 func (s *Server) listSnapshots(w http.ResponseWriter, r *http.Request) {
@@ -2676,7 +2724,9 @@ func (s *Server) startScheduler(ctx context.Context, fallbackInterval time.Durat
 	if fallbackInterval <= 0 {
 		fallbackInterval = time.Minute
 	}
-	s.runEnabledRules(ctx)
+	if !s.runEnabledRulesIfIdle(ctx) {
+		log.Printf("scheduler skipped because a polling round is already running")
+	}
 	for {
 		roundMinutes, _ := s.schedulerIntervals(ctx, fallbackInterval)
 		roundInterval := time.Duration(roundMinutes) * time.Minute
@@ -2686,7 +2736,10 @@ func (s *Server) startScheduler(ctx context.Context, fallbackInterval time.Durat
 		if !sleepContext(ctx, roundInterval) {
 			return
 		}
-		s.runEnabledRules(ctx)
+		if !s.runEnabledRulesIfIdle(ctx) {
+			log.Printf("scheduler skipped because a polling round is already running")
+			continue
+		}
 	}
 }
 

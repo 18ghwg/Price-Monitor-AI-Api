@@ -103,7 +103,7 @@ const indexHTML = `<!doctype html>
           <div class="panel-head">
             <span class="section-kicker">Step 02</span>
             <h2 id="ruleFormTitle">添加监控规则</h2>
-            <p id="ruleFormHelp">选择 NewAPI 或 sub2api 上游渠道，按完整模型名监控指定模型，按真实价格优先排序并写入价格快照。</p>
+            <p id="ruleFormHelp">选择 NewAPI 或 sub2api 上游渠道，按完整模型名监控指定模型；定时执行统一使用系统设置中的全局轮询间隔。</p>
           </div>
           <input name="id" type="hidden">
           <input name="source_type" id="ruleSourceTypeInput" type="hidden" value="newapi">
@@ -119,7 +119,7 @@ const indexHTML = `<!doctype html>
           <label>完整模型名<input name="model_keyword" required placeholder="gpt-4o / claude-3-5-sonnet-20241022"></label>
           <div class="form-grid">
             <label>低价判断基准分组<input name="sync_base_group" placeholder="NewAPI 可填原分组名；留空则只记录最低价"></label>
-            <label>定时快照间隔（分钟）<input name="interval_minutes" type="number" min="1" value="15"></label>
+            <label>保留字段：规则间隔（分钟）<input name="interval_minutes" type="number" min="1" value="15" placeholder="当前定时以系统设置为准"></label>
           </div>
           <div class="switch-row">
             <label class="checkbox-label"><input name="schedule_enabled" type="checkbox" checked>启用定时</label>
@@ -137,7 +137,7 @@ const indexHTML = `<!doctype html>
           <div>
             <span class="section-kicker">Rules</span>
             <h2>监控规则</h2>
-            <p>启用定时后会按规则间隔自动写入价格快照；点击运行会立即登录站点并手动写入一次。</p>
+            <p>启用定时后会按系统设置中的全局轮询间隔执行；点击运行会立即登录站点并手动写入一次。</p>
           </div>
         </div>
         <form id="bulkRuleForm" class="bulk-rule-bar">
@@ -150,7 +150,7 @@ const indexHTML = `<!doctype html>
           </label>
           <label>分类<select name="category" id="bulkRuleCategorySelect" required></select></label>
           <label>完整模型名<input name="model_keyword" required placeholder="claude-opus-4-8 / gpt-5.5"></label>
-          <label>间隔（分钟）<input name="interval_minutes" type="number" min="1" value="15"></label>
+          <label>保留字段：规则间隔（分钟）<input name="interval_minutes" type="number" min="1" value="15" placeholder="当前定时以系统设置为准"></label>
           <label class="checkbox-label"><input name="schedule_enabled" type="checkbox" checked>启用定时</label>
           <button id="bulkRuleSubmitBtn" class="secondary" type="submit">批量添加规则</button>
         </form>
@@ -158,9 +158,17 @@ const indexHTML = `<!doctype html>
           <span class="filter-label">规则分类</span>
           <div id="ruleCategoryFilters" class="filters-inner"></div>
         </div>
+        <div class="filters" aria-label="规则状态筛选">
+          <span class="filter-label">规则状态</span>
+          <div class="filters-inner">
+            <button class="filter active" data-rule-issue-filter="all" type="button">全部</button>
+            <button class="filter" data-rule-issue-filter="issues" type="button">待排查</button>
+          </div>
+        </div>
         <div id="ruleControls" class="table-controls" hidden>
           <span id="ruleSummary" class="summary-line muted"></span>
           <label class="table-search">关键词搜索<input id="ruleSearch" type="search" placeholder="搜索站点、账号、模型、分组、状态"></label>
+          <button id="runRulePollBtn" class="secondary table-refresh" type="button">执行一轮轮询</button>
           <button id="refreshRulesBtn" class="secondary table-refresh" type="button">刷新规则</button>
           <label class="table-page-size">每页<select id="rulePageSize"><option value="10" selected>10</option><option value="20">20</option><option value="50">50</option><option value="100">100</option></select></label>
         </div>
@@ -168,8 +176,8 @@ const indexHTML = `<!doctype html>
           <span id="bulkRuleEditSummary" class="summary-line">已选择 0 条规则</span>
           <label class="checkbox-label"><input name="update_model_keyword" type="checkbox">修改模型</label>
           <label>完整模型名<input name="model_keyword" placeholder="gpt-5.5 / claude-opus-4-8"></label>
-          <label class="checkbox-label"><input name="update_interval_minutes" type="checkbox">修改间隔</label>
-          <label>分钟<input name="interval_minutes" type="number" min="1" value="15"></label>
+          <label class="checkbox-label"><input name="update_interval_minutes" type="checkbox">修改保留间隔</label>
+          <label>分钟<input name="interval_minutes" type="number" min="1" value="15" placeholder="当前定时以系统设置为准"></label>
           <label class="checkbox-label"><input name="update_schedule_enabled" type="checkbox">修改定时</label>
           <label>定时<select name="schedule_enabled"><option value="true">启用</option><option value="false">停用</option></select></label>
           <label class="checkbox-label"><input name="update_sync_enabled" type="checkbox">修改同步</label>
@@ -530,7 +538,7 @@ const indexHTML = `<!doctype html>
     <button type="button" data-jump-view="settings" data-jump-section="settings">设置</button>
   </nav>
   <div id="toast" class="toast" hidden></div>
-  <script src="/static/app.js?v=20260608-async-mobile-nav"></script>
+  <script src="/static/app.js?v=20260612-rule-poll-filter"></script>
 </body>
 </html>`
 
@@ -2283,6 +2291,7 @@ const appJS = `const state = {
   activeRuleSourceType: "newapi",
   activeEmailTemplateType: "price_change",
   ruleCategoryFilter: "all",
+  ruleIssueFilter: "all",
   snapshotCategoryFilter: "all",
   sort: { key: "effective_price", dir: "asc" },
 };
@@ -2690,6 +2699,7 @@ function hideLogin() {
 
 function renderCategoryControls() {
   renderCategoryFilterButtons($("#ruleCategoryFilters"), state.ruleCategoryFilter, "rule");
+  renderRuleIssueFilterButtons();
   renderCategoryFilterButtons($("#snapshotCategoryFilters"), state.snapshotCategoryFilter, "snapshot");
 
   const list = $("#categoriesList");
@@ -2710,6 +2720,14 @@ function renderCategoryControls() {
       + "</span>"
       + "</span>";
   }).join("") : "<div class=\"empty-state\">暂无分类。</div>";
+}
+
+function renderRuleIssueFilterButtons() {
+  document.querySelectorAll("[data-rule-issue-filter]").forEach((button) => {
+    const active = button.getAttribute("data-rule-issue-filter") === state.ruleIssueFilter;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+  });
 }
 
 function renderCategoryFilterButtons(container, activeSlug, target) {
@@ -2980,6 +2998,7 @@ function renderRules() {
   const pageSizeSelect = $("#rulePageSize");
   const searchInput = $("#ruleSearch");
   if (!body) return;
+  renderRuleIssueFilterButtons();
   pruneSelectedRules();
   const allRows = state.rules || [];
   const rows = filteredRules();
@@ -2996,13 +3015,18 @@ function renderRules() {
       ? "显示 " + (start + 1) + "-" + Math.min(start + pageRows.length, rows.length) + " / " + rows.length + " 条监控规则" + (rows.length !== allRows.length ? "，总计 " + allRows.length + " 条" : "")
       : "暂无监控规则";
   }
+  const emptyRuleText = state.ruleIssueFilter === "issues"
+    ? "当前没有待排查的监控规则。"
+    : (state.ruleSearch ? "没有匹配的监控规则。" : "暂无监控规则，添加站点后创建第一条关键词监控。");
   body.innerHTML = pageRows.length ? pageRows.map((rule) => {
     const id = rule.id;
     const isEnabled = rule.enabled;
     const selected = state.selectedRuleIds.has(Number(id));
     const enabled = isEnabled ? "启用" : "停用";
     const statusClass = isEnabled ? "status" : "status disabled";
-    const schedule = rule.schedule_enabled ? ("每 " + (rule.interval_minutes || 15) + " 分钟") : "关闭";
+    const roundMinutes = Number(state.settings?.monitor_interval_minutes || 15);
+    const ruleDelaySeconds = Number(state.settings?.monitor_rule_delay_seconds || 60);
+    const schedule = rule.schedule_enabled ? "全局轮询" : "关闭";
     const sync = rule.sync_enabled
       ? ("<span class=\"status\">" + escapeHTML(displaySyncText(rule.sync_status) || "待同步") + "</span>" + (rule.sync_error ? "<div class=\"error\">" + escapeHTML(displaySyncText(rule.sync_error)) + "</div>" : ""))
       : "<span class=\"status disabled\">关闭</span>";
@@ -3017,8 +3041,8 @@ function renderRules() {
       + "<td data-label=\"分类\">" + categoryTag(rule.category, rule.category_name) + "</td>"
       + "<td data-label=\"关键词\">" + escapeHTML(rule.model_keyword || rule.model_name || "") + "<div class=\"muted\">基准：" + escapeHTML(rule.sync_base_group || rule.group_name || "未设置") + "</div></td>"
       + "<td data-label=\"定时\">" + escapeHTML(schedule)
-      + "<div class=\"muted\">上次：" + (fmtTime(rule.last_scheduled_run_at) || "尚未定时运行") + "</div>"
-      + "<div class=\"muted\">下次：" + (fmtTime(rule.next_run_at) || "未排期") + "</div></td>"
+      + "<div class=\"muted\">全局间隔：" + roundMinutes + " 分钟 · 轮询错峰：" + ruleDelaySeconds + " 秒</div>"
+      + "<div class=\"muted\">上次：" + (fmtTime(rule.last_scheduled_run_at) || "尚未定时运行") + "</div></td>"
       + "<td data-label=\"同步\">" + sync + "<div class=\"muted\">主站分组按分类绑定</div></td>"
       + "<td data-label=\"状态\"><span class=\"" + statusClass + "\">" + enabled + "</span></td>"
       + "<td data-label=\"操作\"><div class=\"table-actions\">"
@@ -3027,7 +3051,7 @@ function renderRules() {
       + "<button class=\"secondary\" data-run=\"" + id + "\" type=\"button\">运行一次</button>"
       + "</div></td>"
       + "</tr>";
-  }).join("") : "<tr><td class=\"empty-state\" colspan=\"11\">" + (state.ruleSearch ? "没有匹配的监控规则。" : "暂无监控规则，添加站点后创建第一条关键词监控。") + "</td></tr>";
+  }).join("") : "<tr><td class=\"empty-state\" colspan=\"11\">" + emptyRuleText + "</td></tr>";
   renderBulkRuleEditBar(pageRows);
   renderRulePager(rows.length, totalPages);
 }
@@ -3055,12 +3079,47 @@ function renderBulkRuleEditBar(pageRows) {
 
 function filteredRules() {
   const filter = state.ruleCategoryFilter || "all";
+  const issueFilter = state.ruleIssueFilter || "all";
   const rows = state.rules || [];
   const categoryRows = filter === "all" ? rows : rows.filter((rule) => String(rule.category || "other") === filter);
-  const filtered = categoryRows.filter((rule) => matchesKeywords(ruleSearchFields(rule), state.ruleSearch));
+  const issueRows = issueFilter === "issues" ? categoryRows.filter(ruleHasIssue) : categoryRows;
+  const filtered = issueRows.filter((rule) => matchesKeywords(ruleSearchFields(rule), state.ruleSearch));
   return filtered.map((rule, index) => ({ rule, index }))
     .sort(compareRuleCategoryOrder)
     .map((item) => item.rule);
+}
+
+function ruleHasIssue(rule) {
+  const fields = [
+    rule?.sync_status,
+    rule?.sync_error,
+    rule?.checkin_status,
+    rule?.checkin_message,
+  ].map((value) => String(value || "").trim().toLowerCase()).filter(Boolean);
+  if (!fields.length) return false;
+  const text = fields.join(" ");
+  return [
+    "失败",
+    "错误",
+    "异常",
+    "待排查",
+    "余额不足",
+    "未授权",
+    "无权限",
+    "失效",
+    "未找到",
+    "超时",
+    "暂停",
+    "invalid",
+    "error",
+    "failed",
+    "timeout",
+    "quota",
+    "disabled",
+    "not found",
+    "not current",
+    "skip low balance",
+  ].some((keyword) => text.includes(keyword.toLowerCase()));
 }
 
 function compareRuleCategoryOrder(left, right) {
@@ -4195,7 +4254,7 @@ function editRule(rule) {
   form.elements.sync_enabled.checked = !!rule.sync_enabled;
   syncRuleSourceFields();
   setText("#ruleFormTitle", "编辑监控规则");
-  setText("#ruleFormHelp", "修改后会影响后续监控采集；历史快照保留原记录。");
+  setText("#ruleFormHelp", "修改后会影响后续监控采集；历史快照保留原记录，定时执行仍由系统全局轮询控制。");
   setText("#ruleSubmitBtn", "更新规则");
   const cancel = $("#ruleCancelBtn");
   if (cancel) cancel.hidden = false;
@@ -4216,7 +4275,7 @@ function resetRuleForm() {
   form.elements.sync_enabled.checked = false;
   syncRuleSourceFields();
   setText("#ruleFormTitle", "添加监控规则");
-  setText("#ruleFormHelp", "选择 NewAPI 或 sub2api 上游渠道，按完整模型名监控指定模型，按真实价格优先排序并写入价格快照。");
+  setText("#ruleFormHelp", "选择 NewAPI 或 sub2api 上游渠道，按完整模型名监控指定模型；定时执行统一使用系统设置中的全局轮询间隔。");
   setText("#ruleSubmitBtn", "保存规则");
   const cancel = $("#ruleCancelBtn");
   if (cancel) cancel.hidden = true;
@@ -4636,6 +4695,27 @@ if (refreshRulesBtn) refreshRulesBtn.addEventListener("click", () => {
   refreshRules({ button: refreshRulesBtn }).catch((error) => toast(error.message));
 });
 
+const runRulePollBtn = $("#runRulePollBtn");
+if (runRulePollBtn) {
+  runRulePollBtn.addEventListener("click", async () => {
+    const originalText = runRulePollBtn.textContent;
+    runRulePollBtn.disabled = true;
+    runRulePollBtn.textContent = "轮询中";
+    try {
+      await api("/api/rules/run-poll", { method: "POST" });
+      toast("已开始执行一轮全局轮询");
+      window.setTimeout(() => {
+        refreshMonitorLists({ resetSnapshotPage: true }).catch((error) => toast(error.message));
+      }, 1200);
+    } catch (error) {
+      toast(error.message);
+    } finally {
+      runRulePollBtn.disabled = false;
+      runRulePollBtn.textContent = originalText || "执行一轮轮询";
+    }
+  });
+}
+
 const refreshSnapshotsBtn = $("#refreshSnapshotsBtn");
 if (refreshSnapshotsBtn) refreshSnapshotsBtn.addEventListener("click", () => {
   refreshSnapshots({ button: refreshSnapshotsBtn }).catch((error) => toast(error.message));
@@ -4862,6 +4942,15 @@ document.addEventListener("click", async (event) => {
     } catch (error) {
       toast(error.message);
     }
+    return;
+  }
+
+  const issueFilter = event.target.closest("[data-rule-issue-filter]");
+  if (issueFilter) {
+    state.ruleIssueFilter = issueFilter.getAttribute("data-rule-issue-filter") || "all";
+    state.rulePage = 1;
+    renderRuleIssueFilterButtons();
+    renderRules();
     return;
   }
 
