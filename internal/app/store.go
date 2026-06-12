@@ -84,29 +84,31 @@ type BulkRuleUpdateInput struct {
 }
 
 type SettingsInput struct {
-	Sub2APIEnabled         bool                           `json:"sub2api_enabled"`
-	Sub2APIMainBaseURL     string                         `json:"sub2api_main_base_url"`
-	Sub2APIAdminKey        string                         `json:"sub2api_admin_key"`
-	Sub2APIBaseURL         string                         `json:"sub2api_base_url"`
-	Sub2APIAccessToken     string                         `json:"sub2api_access_token"`
-	Sub2APIEmail           string                         `json:"sub2api_email"`
-	Sub2APIPassword        string                         `json:"sub2api_password"`
-	SyncThresholdRatio     float64                        `json:"sync_threshold_ratio"`
-	SyncThresholdRatios    map[string]float64             `json:"sync_threshold_ratios"`
-	EmailNotifyEnabled     bool                           `json:"email_notify_enabled"`
-	EmailNotifyPriceChange bool                           `json:"email_notify_price_change"`
-	EmailNotifySyncUpdate  bool                           `json:"email_notify_sync_update"`
-	SMTPHost               string                         `json:"smtp_host"`
-	SMTPPort               int                            `json:"smtp_port"`
-	SMTPEncryption         string                         `json:"smtp_encryption"`
-	SMTPUsername           string                         `json:"smtp_username"`
-	SMTPPassword           string                         `json:"smtp_password"`
-	SMTPFrom               string                         `json:"smtp_from"`
-	SMTPTo                 string                         `json:"smtp_to"`
-	EmailTemplateEnabled   bool                           `json:"email_template_enabled"`
-	EmailTemplateSubject   string                         `json:"email_template_subject"`
-	EmailTemplateBody      string                         `json:"email_template_body"`
-	EmailTemplateConfigs   map[string]EmailTemplateConfig `json:"email_template_configs"`
+	Sub2APIEnabled          bool                           `json:"sub2api_enabled"`
+	Sub2APIMainBaseURL      string                         `json:"sub2api_main_base_url"`
+	Sub2APIAdminKey         string                         `json:"sub2api_admin_key"`
+	Sub2APIBaseURL          string                         `json:"sub2api_base_url"`
+	Sub2APIAccessToken      string                         `json:"sub2api_access_token"`
+	Sub2APIEmail            string                         `json:"sub2api_email"`
+	Sub2APIPassword         string                         `json:"sub2api_password"`
+	MonitorIntervalMinutes  int                            `json:"monitor_interval_minutes"`
+	MonitorRuleDelaySeconds int                            `json:"monitor_rule_delay_seconds"`
+	SyncThresholdRatio      float64                        `json:"sync_threshold_ratio"`
+	SyncThresholdRatios     map[string]float64             `json:"sync_threshold_ratios"`
+	EmailNotifyEnabled      bool                           `json:"email_notify_enabled"`
+	EmailNotifyPriceChange  bool                           `json:"email_notify_price_change"`
+	EmailNotifySyncUpdate   bool                           `json:"email_notify_sync_update"`
+	SMTPHost                string                         `json:"smtp_host"`
+	SMTPPort                int                            `json:"smtp_port"`
+	SMTPEncryption          string                         `json:"smtp_encryption"`
+	SMTPUsername            string                         `json:"smtp_username"`
+	SMTPPassword            string                         `json:"smtp_password"`
+	SMTPFrom                string                         `json:"smtp_from"`
+	SMTPTo                  string                         `json:"smtp_to"`
+	EmailTemplateEnabled    bool                           `json:"email_template_enabled"`
+	EmailTemplateSubject    string                         `json:"email_template_subject"`
+	EmailTemplateBody       string                         `json:"email_template_body"`
+	EmailTemplateConfigs    map[string]EmailTemplateConfig `json:"email_template_configs"`
 }
 
 type AdminCredentialInput struct {
@@ -1307,6 +1309,34 @@ func (s Store) DueRuleIDs(ctx context.Context, now time.Time, limit int) ([]int6
 	return ids, rows.Err()
 }
 
+func (s Store) ScheduledRuleIDs(ctx context.Context, limit int) ([]int64, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT id
+		FROM monitor_rules
+		WHERE enabled = true
+		  AND schedule_enabled = true
+		ORDER BY id
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 func (s Store) MarkRuleScheduled(ctx context.Context, ruleID int64, runAt time.Time, intervalMinutes int) error {
 	if intervalMinutes <= 0 {
 		intervalMinutes = 15
@@ -1984,6 +2014,7 @@ func (s Store) GetIntegrationSettings(ctx context.Context) (IntegrationSettings,
 	err := s.db.QueryRow(ctx, `
 		SELECT sub2api_enabled, sub2api_main_base_url, sub2api_admin_key,
 		       sub2api_base_url, sub2api_access_token, sub2api_email, sub2api_password,
+		       monitor_interval_minutes, monitor_rule_delay_seconds,
 		       sync_threshold_ratio, sync_threshold_ratios,
 		       email_notify_enabled, email_notify_price_change, email_notify_sync_update,
 		       smtp_host, smtp_port, smtp_encryption, smtp_username, smtp_password, smtp_from, smtp_to,
@@ -1995,6 +2026,7 @@ func (s Store) GetIntegrationSettings(ctx context.Context) (IntegrationSettings,
 		&settings.Sub2APIEnabled, &settings.Sub2APIMainBaseURL, &settings.Sub2APIAdminKey,
 		&settings.Sub2APIBaseURL, &settings.Sub2APIAccessToken,
 		&settings.Sub2APIEmail, &settings.Sub2APIPassword,
+		&settings.MonitorIntervalMinutes, &settings.MonitorRuleDelaySeconds,
 		&syncThresholdRatio, &syncThresholdRatiosRaw,
 		&settings.EmailNotifyEnabled, &settings.EmailNotifyPriceChange, &settings.EmailNotifySyncUpdate,
 		&settings.SMTPHost, &settings.SMTPPort, &settings.SMTPEncryption, &settings.SMTPUsername, &settings.SMTPPassword,
@@ -2015,6 +2047,7 @@ func (s Store) GetIntegrationSettings(ctx context.Context) (IntegrationSettings,
 		settings.Sub2APIAdminKey = settings.Sub2APIAccessToken
 	}
 	settings.SMTPEncryption = normalizeSMTPEncryption(settings.SMTPEncryption)
+	settings.MonitorIntervalMinutes, settings.MonitorRuleDelaySeconds = normalizeMonitorScheduleSettings(settings.MonitorIntervalMinutes, settings.MonitorRuleDelaySeconds)
 	settings.Sub2APIBaseURL = settings.Sub2APIMainBaseURL
 	settings.Sub2APIAccessToken = settings.Sub2APIAdminKey
 	return settings, err
@@ -2032,6 +2065,7 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 	input.EmailTemplateSubject = strings.TrimSpace(input.EmailTemplateSubject)
 	input.EmailTemplateConfigs = normalizeEmailTemplateConfigs(input.EmailTemplateConfigs)
 	input.SyncThresholdRatios = normalizeSyncThresholdRatios(input.SyncThresholdRatios)
+	input.MonitorIntervalMinutes, input.MonitorRuleDelaySeconds = normalizeMonitorScheduleSettings(input.MonitorIntervalMinutes, input.MonitorRuleDelaySeconds)
 	if input.SMTPPort <= 0 {
 		input.SMTPPort = 587
 	}
@@ -2089,13 +2123,14 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 		INSERT INTO integration_settings (
 			id, sub2api_enabled, sub2api_main_base_url, sub2api_admin_key,
 			sub2api_base_url, sub2api_access_token, sub2api_email, sub2api_password,
+			monitor_interval_minutes, monitor_rule_delay_seconds,
 			sync_threshold_ratio, sync_threshold_ratios,
 			email_notify_enabled, email_notify_price_change, email_notify_sync_update,
 			smtp_host, smtp_port, smtp_encryption, smtp_username, smtp_password, smtp_from, smtp_to,
 			email_template_enabled, email_template_subject, email_template_body, email_template_configs,
 			updated_at
 		)
-		VALUES (true, $1, $2, $3, $2, $3, $4, $5, CASE WHEN $6::double precision > 0 THEN $6::double precision ELSE NULL END, $7::jsonb, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21::jsonb, now())
+		VALUES (true, $1, $2, $3, $2, $3, $4, $5, $6, $7, CASE WHEN $8::double precision > 0 THEN $8::double precision ELSE NULL END, $9::jsonb, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23::jsonb, now())
 		ON CONFLICT (id) DO UPDATE
 		SET sub2api_enabled = EXCLUDED.sub2api_enabled,
 		    sub2api_main_base_url = EXCLUDED.sub2api_main_base_url,
@@ -2104,6 +2139,8 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 		    sub2api_access_token = EXCLUDED.sub2api_access_token,
 		    sub2api_email = EXCLUDED.sub2api_email,
 		    sub2api_password = EXCLUDED.sub2api_password,
+		    monitor_interval_minutes = EXCLUDED.monitor_interval_minutes,
+		    monitor_rule_delay_seconds = EXCLUDED.monitor_rule_delay_seconds,
 		    sync_threshold_ratio = EXCLUDED.sync_threshold_ratio,
 		    sync_threshold_ratios = EXCLUDED.sync_threshold_ratios,
 		    email_notify_enabled = EXCLUDED.email_notify_enabled,
@@ -2123,6 +2160,7 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 		    updated_at = now()
 		RETURNING sub2api_enabled, sub2api_main_base_url, sub2api_admin_key,
 		          sub2api_base_url, sub2api_access_token, sub2api_email, sub2api_password,
+		          monitor_interval_minutes, monitor_rule_delay_seconds,
 		          sync_threshold_ratio, sync_threshold_ratios,
 		          email_notify_enabled, email_notify_price_change, email_notify_sync_update,
 		          smtp_host, smtp_port, smtp_encryption, smtp_username, smtp_password, smtp_from, smtp_to,
@@ -2130,6 +2168,7 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 		          updated_at
 	`,
 		input.Sub2APIEnabled, input.Sub2APIMainBaseURL, input.Sub2APIAdminKey, input.Sub2APIEmail, input.Sub2APIPassword,
+		input.MonitorIntervalMinutes, input.MonitorRuleDelaySeconds,
 		input.SyncThresholdRatio, string(syncThresholdRatiosRaw), input.EmailNotifyEnabled, input.EmailNotifyPriceChange, input.EmailNotifySyncUpdate,
 		input.SMTPHost, input.SMTPPort, input.SMTPEncryption, input.SMTPUsername, input.SMTPPassword, input.SMTPFrom, input.SMTPTo,
 		input.EmailTemplateEnabled, input.EmailTemplateSubject, input.EmailTemplateBody, string(templateConfigsRaw),
@@ -2137,6 +2176,7 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 		&settings.Sub2APIEnabled, &settings.Sub2APIMainBaseURL, &settings.Sub2APIAdminKey,
 		&settings.Sub2APIBaseURL, &settings.Sub2APIAccessToken,
 		&settings.Sub2APIEmail, &settings.Sub2APIPassword,
+		&settings.MonitorIntervalMinutes, &settings.MonitorRuleDelaySeconds,
 		&syncThresholdRatio, &savedSyncThresholdRatiosRaw,
 		&settings.EmailNotifyEnabled, &settings.EmailNotifyPriceChange, &settings.EmailNotifySyncUpdate,
 		&settings.SMTPHost, &settings.SMTPPort, &settings.SMTPEncryption, &settings.SMTPUsername, &settings.SMTPPassword,
@@ -2147,6 +2187,7 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 	settings.EmailTemplateConfigs = decodeEmailTemplateConfigs(savedTemplateConfigsRaw)
 	settings.SyncThresholdRatio = floatPtr(syncThresholdRatio)
 	settings.SyncThresholdRatios = decodeSyncThresholdRatios(savedSyncThresholdRatiosRaw)
+	settings.MonitorIntervalMinutes, settings.MonitorRuleDelaySeconds = normalizeMonitorScheduleSettings(settings.MonitorIntervalMinutes, settings.MonitorRuleDelaySeconds)
 	return settings, err
 }
 
@@ -2159,6 +2200,22 @@ func decodeSyncThresholdRatios(raw []byte) map[string]float64 {
 		return map[string]float64{}
 	}
 	return normalizeSyncThresholdRatios(values)
+}
+
+func normalizeMonitorScheduleSettings(roundMinutes int, ruleDelaySeconds int) (int, int) {
+	if roundMinutes <= 0 {
+		roundMinutes = 15
+	}
+	if roundMinutes > 1440 {
+		roundMinutes = 1440
+	}
+	if ruleDelaySeconds <= 0 {
+		ruleDelaySeconds = 60
+	}
+	if ruleDelaySeconds > 3600 {
+		ruleDelaySeconds = 3600
+	}
+	return roundMinutes, ruleDelaySeconds
 }
 
 func normalizeEmailTemplateConfigs(configs map[string]EmailTemplateConfig) map[string]EmailTemplateConfig {

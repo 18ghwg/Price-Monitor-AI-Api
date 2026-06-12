@@ -50,7 +50,7 @@ func NewServer(ctx context.Context, cfg Config) (*Server, error) {
 		return nil, err
 	}
 	if cfg.MonitorInterval > 0 {
-		log.Printf("price monitor scheduler enabled, scan interval %s", cfg.MonitorInterval)
+		log.Printf("price monitor scheduler enabled, fallback interval %s", cfg.MonitorInterval)
 		go server.startScheduler(context.Background(), cfg.MonitorInterval)
 	}
 	return server, nil
@@ -2672,18 +2672,21 @@ func fmtFloatPtr(value *float64) string {
 	return fmtFloat(*value)
 }
 
-func (s *Server) startScheduler(ctx context.Context, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
+func (s *Server) startScheduler(ctx context.Context, fallbackInterval time.Duration) {
+	if fallbackInterval <= 0 {
+		fallbackInterval = time.Minute
+	}
 	s.runEnabledRules(ctx)
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			s.runEnabledRules(ctx)
+		roundMinutes, _ := s.schedulerIntervals(ctx, fallbackInterval)
+		roundInterval := time.Duration(roundMinutes) * time.Minute
+		if roundMinutes <= 0 {
+			roundInterval = fallbackInterval
 		}
+		if !sleepContext(ctx, roundInterval) {
+			return
+		}
+		s.runEnabledRules(ctx)
 	}
 }
 
@@ -2698,16 +2701,22 @@ func (s *Server) runEnabledRules(ctx context.Context) {
 	} else if deleted > 0 {
 		log.Printf("pruned %d expired invalid snapshots", deleted)
 	}
-	now := time.Now()
-	ids, err := s.store.DueRuleIDs(ctx, now, 50)
+	roundInterval, ruleDelay := s.schedulerIntervals(ctx, s.cfg.MonitorInterval)
+	ids, err := s.store.ScheduledRuleIDs(ctx, 500)
 	if err != nil {
 		log.Printf("scheduler list rules: %v", err)
 		return
 	}
 	if len(ids) > 0 {
-		log.Printf("scheduler found %d due rule(s)", len(ids))
+		log.Printf("scheduler found %d scheduled rule(s)", len(ids))
 	}
-	for _, id := range ids {
+	for index, id := range ids {
+		if index > 0 {
+			_, ruleDelay = s.schedulerIntervals(ctx, s.cfg.MonitorInterval)
+			if !sleepContext(ctx, ruleDelay) {
+				return
+			}
+		}
 		runCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 		rule, _, _, ruleErr := s.store.GetRuleWithSource(runCtx, id)
 		if ruleErr != nil {
@@ -2721,15 +2730,50 @@ func (s *Server) runEnabledRules(ctx context.Context) {
 		}
 		runStartedAt := time.Now()
 		_, err := s.RunRule(runCtx, id)
-		if markErr := s.store.MarkRuleScheduled(context.Background(), id, runStartedAt, rule.IntervalMinutes); markErr != nil {
+		if markErr := s.store.MarkRuleScheduled(context.Background(), id, runStartedAt, roundInterval); markErr != nil {
 			log.Printf("scheduler mark rule %d scheduled: %v", id, markErr)
 		} else {
-			log.Printf("scheduler rule %d scheduled next run in %d minute(s)", id, rule.IntervalMinutes)
+			log.Printf("scheduler rule %d scheduled next run in %d minute(s)", id, roundInterval)
 		}
 		cancel()
 		if err != nil && !errors.Is(err, context.Canceled) {
 			log.Printf("scheduler rule %d: %v", id, err)
 		}
+	}
+}
+
+func (s *Server) schedulerIntervals(ctx context.Context, fallbackInterval time.Duration) (int, time.Duration) {
+	settings, err := s.store.GetIntegrationSettings(ctx)
+	if err != nil {
+		log.Printf("load scheduler settings: %v", err)
+		return durationMinutes(fallbackInterval), time.Minute
+	}
+	roundMinutes, ruleDelaySeconds := normalizeMonitorScheduleSettings(settings.MonitorIntervalMinutes, settings.MonitorRuleDelaySeconds)
+	return roundMinutes, time.Duration(ruleDelaySeconds) * time.Second
+}
+
+func durationMinutes(value time.Duration) int {
+	if value <= 0 {
+		return 15
+	}
+	minutes := int(value / time.Minute)
+	if minutes <= 0 {
+		minutes = 1
+	}
+	return minutes
+}
+
+func sleepContext(ctx context.Context, duration time.Duration) bool {
+	if duration <= 0 {
+		return true
+	}
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 

@@ -68,6 +68,8 @@ CREATE TABLE IF NOT EXISTS integration_settings (
   sub2api_access_token TEXT NOT NULL DEFAULT '',
   sub2api_email TEXT NOT NULL DEFAULT '',
   sub2api_password TEXT NOT NULL DEFAULT '',
+  monitor_interval_minutes INTEGER NOT NULL DEFAULT 15,
+  monitor_rule_delay_seconds INTEGER NOT NULL DEFAULT 60,
   sync_threshold_ratio DOUBLE PRECISION,
   sync_threshold_ratios JSONB NOT NULL DEFAULT '{}'::jsonb,
   email_notify_enabled BOOLEAN NOT NULL DEFAULT false,
@@ -130,6 +132,10 @@ ALTER TABLE IF EXISTS integration_settings
   ADD COLUMN IF NOT EXISTS email_notify_price_change BOOLEAN NOT NULL DEFAULT true;
 ALTER TABLE IF EXISTS integration_settings
   ADD COLUMN IF NOT EXISTS email_notify_sync_update BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE IF EXISTS integration_settings
+  ADD COLUMN IF NOT EXISTS monitor_interval_minutes INTEGER NOT NULL DEFAULT 15;
+ALTER TABLE IF EXISTS integration_settings
+  ADD COLUMN IF NOT EXISTS monitor_rule_delay_seconds INTEGER NOT NULL DEFAULT 60;
 ALTER TABLE IF EXISTS sites
   ADD COLUMN IF NOT EXISTS cookie_jar TEXT NOT NULL DEFAULT '';
 ALTER TABLE IF EXISTS sub2api_upstreams

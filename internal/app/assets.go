@@ -320,6 +320,14 @@ const indexHTML = `<!doctype html>
                 <label>主站 sub2api 地址<input name="sub2api_main_base_url" placeholder="https://sub2api.example.com"></label>
                 <label>管理员 API Key<input name="sub2api_admin_key" type="password" placeholder="主站后台生成的 admin-...，留空保留现有值"></label>
               </div>
+              <div class="settings-subhead">
+                <span class="section-kicker">Scheduler</span>
+                <h3>全局定时执行</h3>
+              </div>
+              <div class="form-grid">
+                <label>每轮定时间隔（分钟）<input name="monitor_interval_minutes" type="number" min="1" max="1440" step="1" value="15"></label>
+                <label>每条规则执行间隔（秒）<input name="monitor_rule_delay_seconds" type="number" min="1" max="3600" step="1" value="60"></label>
+              </div>
               <input name="sync_threshold_ratio" type="hidden">
               <div class="threshold-editor">
                 <div class="threshold-editor-head">
@@ -3271,6 +3279,8 @@ function renderSettings() {
   const savedKey = state.settings.sub2api_admin_key || state.settings.sub2api_access_token || "";
   form.elements.sub2api_admin_key.placeholder = savedKey ? "已保存：" + savedKey : "主站后台生成的 admin-...，留空保留现有值";
   form.elements.sub2api_admin_key.value = "";
+  form.elements.monitor_interval_minutes.value = String(state.settings.monitor_interval_minutes || 15);
+  form.elements.monitor_rule_delay_seconds.value = String(state.settings.monitor_rule_delay_seconds || 60);
   form.elements.sync_threshold_ratio.value = state.settings.sync_threshold_ratio ? String(state.settings.sync_threshold_ratio) : "";
   renderSyncThresholdRows();
   form.elements.email_notify_enabled.checked = !!state.settings.email_notify_enabled;
@@ -4338,6 +4348,8 @@ if (settingsForm) {
     const form = event.currentTarget;
     persistActiveEmailTemplateInputs();
     const payload = formJSON(form);
+    payload.monitor_interval_minutes = Number(payload.monitor_interval_minutes || 15);
+    payload.monitor_rule_delay_seconds = Number(payload.monitor_rule_delay_seconds || 60);
     payload.smtp_port = Number(payload.smtp_port || 587);
     payload.sync_threshold_ratio = Number(payload.sync_threshold_ratio || 0);
     payload.sync_threshold_ratios = collectSyncThresholdRatios();

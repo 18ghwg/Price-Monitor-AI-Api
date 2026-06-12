@@ -24,3 +24,15 @@ func TestNextScheduledRunAtDefaultsInvalidInterval(t *testing.T) {
 		t.Fatalf("nextScheduledRunAt() = %s, want %s", got, want)
 	}
 }
+
+func TestNormalizeMonitorScheduleSettings(t *testing.T) {
+	round, delay := normalizeMonitorScheduleSettings(0, 0)
+	if round != 15 || delay != 60 {
+		t.Fatalf("normalizeMonitorScheduleSettings(0,0) = %d,%d want 15,60", round, delay)
+	}
+
+	round, delay = normalizeMonitorScheduleSettings(2000, 4000)
+	if round != 1440 || delay != 3600 {
+		t.Fatalf("normalizeMonitorScheduleSettings(max) = %d,%d want 1440,3600", round, delay)
+	}
+}
