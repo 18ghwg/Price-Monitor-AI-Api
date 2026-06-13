@@ -2642,7 +2642,7 @@ async function refreshMonitorLists(options = {}) {
 }
 
 function render() {
-  const issueCount = state.sites.filter((site) => site.last_error).length;
+  const issueCount = (state.rules || []).filter(ruleHasIssue).length;
   setText("#siteCount", state.sites.length);
   setText("#ruleCount", state.rules.length);
   setText("#snapshotCount", state.snapshots.length);
