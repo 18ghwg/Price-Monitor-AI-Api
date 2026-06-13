@@ -6,7 +6,7 @@ const indexHTML = `<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NewAPI 价格监控</title>
-  <link rel="stylesheet" href="/static/app.css?v=20260608-async-mobile-nav">
+  <link rel="stylesheet" href="/static/app.css?v=20260613-rule-issue-count">
 </head>
 <body>
   <section id="loginScreen" class="login-screen" hidden>
@@ -544,7 +544,7 @@ const indexHTML = `<!doctype html>
     <button type="button" data-jump-view="settings" data-jump-section="settings">设置</button>
   </nav>
   <div id="toast" class="toast" hidden></div>
-  <script src="/static/app.js?v=20260612-cache-aware-price-sort"></script>
+  <script src="/static/app.js?v=20260613-rule-issue-count"></script>
 </body>
 </html>`
 
@@ -2601,7 +2601,7 @@ async function refreshRules(options = {}) {
   }
   try {
     state.rules = await api("/api/rules") || [];
-    setText("#ruleCount", state.rules.length);
+    renderTopMetrics();
     renderRules();
     if (!options.silent) toast("监控规则已刷新");
   } finally {
@@ -2642,11 +2642,7 @@ async function refreshMonitorLists(options = {}) {
 }
 
 function render() {
-  const issueCount = (state.rules || []).filter(ruleHasIssue).length;
-  setText("#siteCount", state.sites.length);
-  setText("#ruleCount", state.rules.length);
-  setText("#snapshotCount", state.snapshots.length);
-  setText("#issueCount", issueCount);
+  renderTopMetrics();
 
   renderCategoryControls();
   renderCategoryMainGroupOptions();
@@ -2661,6 +2657,14 @@ function render() {
   renderSub2UserFilterOptions();
   renderSortHeaders();
   renderView();
+}
+
+function renderTopMetrics() {
+  const issueCount = (state.rules || []).filter(ruleHasIssue).length;
+  setText("#siteCount", state.sites.length);
+  setText("#ruleCount", state.rules.length);
+  setText("#snapshotCount", state.snapshots.length);
+  setText("#issueCount", issueCount);
 }
 
 function newapiSites() {
@@ -2745,10 +2749,14 @@ function renderCategoryControls() {
 }
 
 function renderRuleIssueFilterButtons() {
+  const issueCount = (state.rules || []).filter(ruleHasIssue).length;
   document.querySelectorAll("[data-rule-issue-filter]").forEach((button) => {
-    const active = button.getAttribute("data-rule-issue-filter") === state.ruleIssueFilter;
+    const filter = button.getAttribute("data-rule-issue-filter") || "all";
+    const active = filter === state.ruleIssueFilter;
     button.classList.toggle("active", active);
     button.setAttribute("aria-selected", active ? "true" : "false");
+    if (filter === "all") button.textContent = "全部";
+    if (filter === "issues") button.textContent = "待排查 (" + issueCount + ")";
   });
 }
 
