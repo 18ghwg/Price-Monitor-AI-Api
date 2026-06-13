@@ -3979,6 +3979,7 @@ function basePrice(row) {
 
 function expectedPrice(row) {
   const hitRatio = expectedCacheHitRatio();
+  if (noCacheGroup(row.group_name, row.group_desc)) return basePrice(row);
   if (!Number.isFinite(Number(row.input_price)) && !Number.isFinite(Number(row.cache_read_price)) && !Number.isFinite(Number(row.cache_write_price))) {
     if (Number.isFinite(Number(row.request_price))) return Number(row.request_price);
     if (Number.isFinite(Number(row.output_price))) return Number(row.output_price);
@@ -4000,6 +4001,12 @@ function expectedCacheHitRatio() {
   const value = Number(state.settings && state.settings.expected_cache_hit_ratio);
   if (!Number.isFinite(value)) return 0;
   return Math.min(1, Math.max(0, value));
+}
+
+function noCacheGroup(...parts) {
+  const text = parts.map((part) => String(part || "")).join(" ").trim().toLowerCase();
+  if (!text) return false;
+  return text.includes("无缓存") || text.includes("no cache") || text.includes("no-cache") || text.includes("nocache");
 }
 
 function firstComparablePrice(...values) {

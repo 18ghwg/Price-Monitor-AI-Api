@@ -294,3 +294,18 @@ func TestLowerThanPreviousLowestUsesExpectedCacheHitRatio(t *testing.T) {
 		t.Fatal("lowerThanPreviousLowest() = false, want true when cache-hit cost is lower at hit ratio 1")
 	}
 }
+
+func TestSub2APIUserPriceRowExpectedPriceIgnoresCacheForNoCacheGroup(t *testing.T) {
+	row := Sub2APIUserPriceRow{
+		GroupName:                 "Claude",
+		GroupPlatform:             "no-cache",
+		FinalInputPerMillion:      ptr(1.0),
+		FinalOutputPerMillion:     ptr(2.0),
+		FinalCacheReadPerMillion:  ptr(0.1),
+		FinalCacheWritePerMillion: ptr(1.2),
+	}
+
+	got := sub2APIUserPriceRowExpectedPrice(row, 1)
+	want := 3.0
+	assertFloatClose(t, got, want)
+}

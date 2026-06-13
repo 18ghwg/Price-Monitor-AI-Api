@@ -1832,12 +1832,33 @@ func sub2APIUserPriceRowLessWithExpectedCacheHitRatio(left, right Sub2APIUserPri
 
 func sub2APIUserPriceRowExpectedPrice(row Sub2APIUserPriceRow, expectedCacheHitRatio float64) float64 {
 	hitRatio := normalizeExpectedCacheHitRatio(expectedCacheHitRatio)
+	if noCacheGroup(row.GroupName, row.GroupPlatform) {
+		return sub2APIUserPriceRowBasePrice(row)
+	}
 	missPrice := firstComparablePrice(row.FinalCacheWritePerMillion, row.FinalCacheWrite1hPerMillion, row.FinalInputPerMillion, row.FinalOutputPerMillion)
 	hitPrice := firstComparablePrice(row.FinalCacheReadPerMillion, row.FinalCacheWritePerMillion, row.FinalCacheWrite1hPerMillion, row.FinalInputPerMillion, row.FinalOutputPerMillion)
 	if missPrice == 1e308 && hitPrice == 1e308 {
 		return 1e308
 	}
-	return missPrice*(1-hitRatio) + hitPrice*hitRatio
+	expected := missPrice*(1-hitRatio) + hitPrice*hitRatio
+	if row.FinalInputPerMillion != nil && row.FinalOutputPerMillion != nil {
+		expected += *row.FinalOutputPerMillion
+	}
+	return expected
+}
+
+func sub2APIUserPriceRowBasePrice(row Sub2APIUserPriceRow) float64 {
+	if row.FinalInputPerMillion != nil {
+		price := *row.FinalInputPerMillion
+		if row.FinalOutputPerMillion != nil {
+			price += *row.FinalOutputPerMillion
+		}
+		return price
+	}
+	if row.FinalOutputPerMillion != nil {
+		return *row.FinalOutputPerMillion
+	}
+	return 1e308
 }
 
 type pricingCategoryKind int
