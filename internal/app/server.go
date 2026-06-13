@@ -87,6 +87,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/sub2api/user/inspect", s.inspectSub2APIUserHandler)
 	mux.HandleFunc("POST /api/sub2api/user-filter-options", s.fetchSub2APIUserFilterOptionsHandler)
 	mux.HandleFunc("POST /api/sub2api/user-prices", s.fetchSub2APIUserPricesHandler)
+	mux.HandleFunc("POST /api/model-probe", s.fetchModelProbeHandler)
 	mux.HandleFunc("POST /api/sub2api/accounts/upsert", s.upsertSub2APIAccount)
 	mux.HandleFunc("POST /api/sub2api/accounts/{id}/enable", s.enableSub2APIAccount)
 	mux.HandleFunc("POST /api/sub2api/accounts/{id}/disable", s.disableSub2APIAccount)
@@ -658,6 +659,20 @@ func (s *Server) fetchSub2APIUserFilterOptionsHandler(w http.ResponseWriter, r *
 		}
 	}
 	result, err := s.fetchSub2APIUserFilterOptions(r.Context(), input)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": result})
+}
+
+func (s *Server) fetchModelProbeHandler(w http.ResponseWriter, r *http.Request) {
+	var input ModelProbeInput
+	if err := decodeRequest(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	result, err := FetchModelProbe(r.Context(), input)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return

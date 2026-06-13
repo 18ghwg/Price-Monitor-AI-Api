@@ -6,7 +6,7 @@ const indexHTML = `<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NewAPI 价格监控</title>
-  <link rel="stylesheet" href="/static/app.css?v=20260613-rule-issue-count">
+  <link rel="stylesheet" href="/static/app.css?v=20260613-model-probe">
 </head>
 <body>
   <section id="loginScreen" class="login-screen" hidden>
@@ -501,6 +501,52 @@ const indexHTML = `<!doctype html>
           </section>
 
           <section class="settings-block wide">
+            <div class="settings-block-head">
+              <span class="section-kicker">API Probe</span>
+              <h3>API 模型探测</h3>
+            </div>
+            <form id="modelProbeForm" class="settings-form">
+              <div class="form-grid">
+                <label>已保存站点<select name="source_ref" id="modelProbeSourceSelect"></select></label>
+                <label>API 类型
+                  <select name="api_type">
+                    <option value="openai_compatible">OpenAI 兼容 /v1/models</option>
+                    <option value="anthropic">Anthropic /v1/models</option>
+                  </select>
+                </label>
+              </div>
+              <div class="form-grid">
+                <label>API Base URL<input name="base_url" required placeholder="https://api.example.com 或 https://api.example.com/v1"></label>
+                <label>API Key<input name="api_key" type="password" required placeholder="只用于本次探测，不会保存"></label>
+              </div>
+              <p class="muted">模型探测只验证当前 API Key 可见的模型列表，不等同于完整价格目录；价格比较仍以站点价格接口和官方价格源为准。</p>
+              <div class="actions">
+                <button id="modelProbeSubmitBtn" type="submit">获取 API 模型列表</button>
+              </div>
+            </form>
+            <div id="modelProbeSummary" class="summary-line muted">尚未探测 API 模型。</div>
+            <div id="modelProbeControls" class="table-controls" hidden>
+              <label class="table-search">关键词搜索<input id="modelProbeSearch" type="search" placeholder="搜索模型、厂商、类型"></label>
+              <label class="table-page-size">每页<select id="modelProbePageSize"><option value="10">10</option><option value="25" selected>25</option><option value="50">50</option><option value="100">100</option></select></label>
+            </div>
+            <div class="table-wrap compact-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>模型 ID</th>
+                    <th>厂商</th>
+                    <th>类型</th>
+                    <th>显示名</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="modelProbeBody"></tbody>
+              </table>
+            </div>
+            <div id="modelProbePager" class="pager" hidden></div>
+          </section>
+
+          <section class="settings-block wide">
             <div class="settings-block-head row">
               <div>
                 <span class="section-kicker">Categories</span>
@@ -544,7 +590,7 @@ const indexHTML = `<!doctype html>
     <button type="button" data-jump-view="settings" data-jump-section="settings">设置</button>
   </nav>
   <div id="toast" class="toast" hidden></div>
-  <script src="/static/app.js?v=20260613-rule-issue-count"></script>
+  <script src="/static/app.js?v=20260613-model-probe"></script>
 </body>
 </html>`
 
@@ -2294,6 +2340,10 @@ const appJS = `const state = {
   sub2UserPricePage: 1,
   sub2UserPricePageSize: 25,
   sub2UserPriceSearch: "",
+  modelProbeResult: null,
+  modelProbePage: 1,
+  modelProbePageSize: 25,
+  modelProbeSearch: "",
   sub2UserFilterOptions: null,
   sub2UserFilterLoading: false,
   sub2Inspect: null,
@@ -2655,6 +2705,8 @@ function render() {
   renderSub2Accounts();
   renderSub2UserPrices();
   renderSub2UserFilterOptions();
+  renderModelProbeSources();
+  renderModelProbe();
   renderSortHeaders();
   renderView();
 }
@@ -3734,6 +3786,101 @@ function renderSub2UserPricePager(totalRows, totalPages) {
     + "<button class=\"secondary\" type=\"button\" data-sub2-price-page=\"next\"" + (state.sub2UserPricePage >= totalPages ? " disabled" : "") + ">下一页</button>";
 }
 
+function renderModelProbeSources() {
+  const select = $("#modelProbeSourceSelect");
+  if (!select) return;
+  const selected = select.value || "manual";
+  const siteOptions = (state.sites || []).map((site) => {
+    const type = String(site.source_type || "newapi").toLowerCase() === "sub2api" ? "sub2api" : "newapi";
+    return "<option value=\"site:" + site.id + "\">" + escapeHTML((type === "sub2api" ? "sub2api" : "NewAPI") + " · " + site.name + " · " + site.base_url) + "</option>";
+  }).join("");
+  select.innerHTML = "<option value=\"manual\">手动填写 API Base URL</option>" + siteOptions;
+  select.value = Array.from(select.options).some((option) => option.value === selected) ? selected : "manual";
+}
+
+function renderModelProbe() {
+  const body = $("#modelProbeBody");
+  const summary = $("#modelProbeSummary");
+  const controls = $("#modelProbeControls");
+  const pager = $("#modelProbePager");
+  const searchInput = $("#modelProbeSearch");
+  const pageSizeSelect = $("#modelProbePageSize");
+  if (!body) return;
+  const result = state.modelProbeResult;
+  if (!result) {
+    body.innerHTML = "<tr><td class=\"empty-state\" colspan=\"5\">尚未探测 API 模型。填写 API Base URL 和 API Key 后点击获取。</td></tr>";
+    if (summary) summary.textContent = "尚未探测 API 模型。";
+    if (controls) controls.hidden = true;
+    if (pager) pager.hidden = true;
+    return;
+  }
+  if (controls) controls.hidden = false;
+  if (searchInput && searchInput.value !== state.modelProbeSearch) searchInput.value = state.modelProbeSearch;
+  if (pageSizeSelect && String(pageSizeSelect.value) !== String(state.modelProbePageSize)) pageSizeSelect.value = String(state.modelProbePageSize);
+  const rows = filteredModelProbeRows(result.models || []);
+  const totalPages = Math.max(1, Math.ceil(rows.length / state.modelProbePageSize));
+  if (state.modelProbePage > totalPages) state.modelProbePage = totalPages;
+  if (state.modelProbePage < 1) state.modelProbePage = 1;
+  const start = (state.modelProbePage - 1) * state.modelProbePageSize;
+  const pageRows = rows.slice(start, start + state.modelProbePageSize);
+  if (summary) {
+    const range = rows.length ? "，当前 " + (start + 1) + "-" + Math.min(start + pageRows.length, rows.length) : "";
+    summary.textContent = "已从 " + (result.endpoint || result.base_url || "模型接口") + " 获取 " + rows.length + " / " + (result.count || 0) + " 个模型" + range + "。 " + (result.source_note || "");
+  }
+  body.innerHTML = pageRows.length ? pageRows.map((row) => {
+    return "<tr>"
+      + "<td><code>" + escapeHTML(row.id || "") + "</code></td>"
+      + "<td>" + escapeHTML(row.owned_by || "") + "</td>"
+      + "<td>" + escapeHTML(row.object || "") + "</td>"
+      + "<td>" + escapeHTML(row.display_name || "") + "</td>"
+      + "<td><button class=\"secondary\" type=\"button\" data-copy-model-id=\"" + escapeAttr(row.id || "") + "\">复制</button></td>"
+      + "</tr>";
+  }).join("") : "<tr><td class=\"empty-state\" colspan=\"5\">没有匹配的模型。请调整关键词搜索。</td></tr>";
+  renderModelProbePager(rows.length, totalPages);
+}
+
+function filteredModelProbeRows(rows) {
+  const keyword = String(state.modelProbeSearch || "").trim().toLowerCase();
+  if (!keyword) return rows;
+  return rows.filter((row) => {
+    return [
+      row.id,
+      row.owned_by,
+      row.object,
+      row.display_name,
+    ].some((value) => String(value || "").toLowerCase().includes(keyword));
+  });
+}
+
+function renderModelProbePager(totalRows, totalPages) {
+  const pager = $("#modelProbePager");
+  if (!pager) return;
+  if (!state.modelProbeResult) {
+    pager.hidden = true;
+    pager.innerHTML = "";
+    return;
+  }
+  pager.hidden = false;
+  pager.innerHTML = "<span class=\"pager-info\">第 " + state.modelProbePage + " / " + totalPages + " 页，共 " + totalRows + " 个模型</span>"
+    + "<button class=\"secondary\" type=\"button\" data-model-probe-page=\"prev\"" + (state.modelProbePage <= 1 ? " disabled" : "") + ">上一页</button>"
+    + "<button class=\"secondary\" type=\"button\" data-model-probe-page=\"next\"" + (state.modelProbePage >= totalPages ? " disabled" : "") + ">下一页</button>";
+}
+
+function syncModelProbeSourceFields() {
+  const form = $("#modelProbeForm");
+  if (!form) return;
+  const value = form.elements.source_ref?.value || "manual";
+  const baseInput = form.elements.base_url;
+  if (value === "manual") return;
+  const [kind, rawID] = value.split(":");
+  const id = Number(rawID || 0);
+  let source = null;
+  if (kind === "site") source = (state.sites || []).find((item) => Number(item.id) === id);
+  if (source && baseInput) {
+    baseInput.value = source.base_url || "";
+  }
+}
+
 function renderSub2UserFilterOptions() {
   const status = $("#sub2UserFilterStatus");
   const panel = $("#sub2UserFilterOptions");
@@ -3811,6 +3958,17 @@ function sub2UserPricePayload() {
   payload.totp_code = payload.totp_code || credentials.totp_code || "";
   payload.platforms = payload.platforms || credentials.platforms || "";
   payload.limit = Number(payload.limit || 500);
+  return payload;
+}
+
+function modelProbePayload() {
+  const form = $("#modelProbeForm");
+  if (!form) return {};
+  const payload = formJSON(form);
+  delete payload.source_ref;
+  payload.api_type = payload.api_type || "openai_compatible";
+  payload.base_url = payload.base_url || "";
+  payload.api_key = payload.api_key || "";
   return payload;
 }
 
@@ -4577,6 +4735,59 @@ if (sub2UserPriceSearch) {
   });
 }
 
+const modelProbeForm = $("#modelProbeForm");
+if (modelProbeForm) {
+  modelProbeForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const payload = modelProbePayload();
+    if (!payload.base_url || !payload.api_key) {
+      toast("请填写 API Base URL 和 API Key");
+      return;
+    }
+    const button = $("#modelProbeSubmitBtn");
+    if (button) {
+      button.disabled = true;
+      button.textContent = "探测中";
+    }
+    try {
+      state.modelProbeResult = await api("/api/model-probe", { method: "POST", body: JSON.stringify(payload) });
+      state.modelProbePage = 1;
+      renderModelProbe();
+      toast("API 模型列表已获取");
+    } catch (error) {
+      toast(error.message);
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = "获取 API 模型列表";
+      }
+    }
+  });
+}
+
+const modelProbeSearch = $("#modelProbeSearch");
+if (modelProbeSearch) {
+  modelProbeSearch.addEventListener("input", (event) => {
+    state.modelProbeSearch = event.currentTarget.value || "";
+    state.modelProbePage = 1;
+    renderModelProbe();
+  });
+}
+
+const modelProbePageSize = $("#modelProbePageSize");
+if (modelProbePageSize) {
+  modelProbePageSize.addEventListener("change", (event) => {
+    state.modelProbePageSize = Number(event.currentTarget.value || 25);
+    state.modelProbePage = 1;
+    renderModelProbe();
+  });
+}
+
+const modelProbeSourceSelect = $("#modelProbeSourceSelect");
+if (modelProbeSourceSelect) {
+  modelProbeSourceSelect.addEventListener("change", syncModelProbeSourceFields);
+}
+
 const snapshotPageSize = $("#snapshotPageSize");
 if (snapshotPageSize) {
   snapshotPageSize.addEventListener("change", (event) => {
@@ -5056,6 +5267,26 @@ document.addEventListener("click", async (event) => {
     const direction = sub2PricePageButton.getAttribute("data-sub2-price-page");
     state.sub2UserPricePage += direction === "next" ? 1 : -1;
     renderSub2UserPrices();
+    return;
+  }
+
+  const modelProbePageButton = event.target.closest("[data-model-probe-page]");
+  if (modelProbePageButton) {
+    const direction = modelProbePageButton.getAttribute("data-model-probe-page");
+    state.modelProbePage += direction === "next" ? 1 : -1;
+    renderModelProbe();
+    return;
+  }
+
+  const copyModelButton = event.target.closest("[data-copy-model-id]");
+  if (copyModelButton) {
+    const modelID = copyModelButton.getAttribute("data-copy-model-id") || "";
+    try {
+      await navigator.clipboard.writeText(modelID);
+      toast("模型 ID 已复制");
+    } catch (error) {
+      toast("复制失败：" + modelID);
+    }
     return;
   }
 

@@ -8,6 +8,7 @@
 - NewAPI 上游站点和 sub2api 上游账号管理。
 - 按分类、模型关键词、站点类型创建监控规则。
 - 支持规则级定时监控间隔。
+- API 模型探测：可用临时 API Key 读取 OpenAI 兼容或 Anthropic `/v1/models`，支持搜索、分页和复制模型名。
 - 价格快照按模型精确匹配，保留同上游同分组最新数据。
 - 支持无效快照标记，失效数据不参与排名。
 - 规则执行时自动检测 NewAPI 今日签到状态，未签到会自动签到并在规则列表显示奖励；sub2api 上游不支持签到时显示“不支持签到功能”。
@@ -70,6 +71,17 @@ internal/app/resources/model-pricing/model_prices_and_context_window.json
 ```
 
 同步时不是只比较分组倍率，还会比较输入、输出、缓存读写、请求价格是否低于 `官方价格 × 全局阈值`。
+
+## API 模型探测
+
+系统设置中的“API 模型探测”用于验证某个 API Key 当前可见的模型列表：
+
+| API 类型 | 请求方式 | 说明 |
+| --- | --- | --- |
+| OpenAI 兼容 | `GET /v1/models`，使用 `Authorization: Bearer <key>` | 适合 NewAPI、sub2api 和大多数 OpenAI 兼容网关。 |
+| Anthropic | `GET /v1/models?limit=200`，使用 `x-api-key` 和 `anthropic-version` | 支持分页读取 Claude 官方兼容模型接口。 |
+
+这个探测结果只代表当前 API Key 的可见模型，不作为完整价格目录。价格比较仍以站点价格接口、分组倍率和官方价格源综合计算。
 
 ## 自动签到
 
