@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS categories (
   sub2api_main_group_id BIGINT NOT NULL DEFAULT 0,
   sub2api_main_group_name TEXT NOT NULL DEFAULT '',
   sub2api_main_groups JSONB NOT NULL DEFAULT '[]'::jsonb,
+  blocked_group_keywords JSONB NOT NULL DEFAULT '[]'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -185,6 +186,9 @@ ALTER TABLE IF EXISTS categories
 
 ALTER TABLE IF EXISTS categories
   ADD COLUMN IF NOT EXISTS sub2api_main_groups JSONB NOT NULL DEFAULT '[]'::jsonb;
+
+ALTER TABLE IF EXISTS categories
+  ADD COLUMN IF NOT EXISTS blocked_group_keywords JSONB NOT NULL DEFAULT '[]'::jsonb;
 
 UPDATE categories
 SET sub2api_main_groups = jsonb_build_array(jsonb_build_object('id', sub2api_main_group_id, 'name', sub2api_main_group_name))

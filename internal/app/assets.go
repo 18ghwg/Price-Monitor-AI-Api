@@ -510,6 +510,7 @@ const indexHTML = `<!doctype html>
                 <input name="id" type="hidden">
                 <input name="name" required placeholder="分类名称">
                 <input name="slug" placeholder="标识，可留空">
+                <textarea name="blocked_group_keywords" rows="2" placeholder="屏蔽分组关键词，逗号或换行分隔"></textarea>
                 <select id="categoryMainGroupSelect" aria-label="选择主站 sub2api 分组" multiple hidden>
                   <option value="">自动匹配或手动填写</option>
                 </select>
@@ -1532,6 +1533,11 @@ button.filter.active {
   font-weight: 850;
 }
 
+.group-badge.muted-badge {
+  background: #f2f4f7;
+  color: #475467;
+}
+
 .source-badge {
   display: inline-flex;
   align-items: center;
@@ -1597,6 +1603,12 @@ button.filter.active {
 .inline-form input,
 .inline-form select {
   height: 42px;
+  min-width: 0;
+}
+
+.inline-form textarea {
+  min-height: 42px;
+  resize: vertical;
   min-width: 0;
 }
 
@@ -2715,10 +2727,15 @@ function renderCategoryControls() {
     const mainGroup = mainGroups.length
       ? "<span class=\"category-main-group-tags\">" + mainGroups.map((group) => "<span class=\"group-badge\">" + escapeHTML((group.name || "未命名") + (group.id ? " #" + group.id : "")) + "</span>").join("") + "</span>"
       : "<span class=\"muted\">主站分组：按分类名称自动匹配</span>";
+    const blockedKeywords = Array.isArray(category.blocked_group_keywords) ? category.blocked_group_keywords : [];
+    const blocked = blockedKeywords.length
+      ? "<span class=\"category-main-group-tags\">" + blockedKeywords.map((keyword) => "<span class=\"group-badge muted-badge\">屏蔽：" + escapeHTML(keyword) + "</span>").join("") + "</span>"
+      : "";
     return "<span class=\"category-chip\">"
       + "<strong>" + escapeHTML(category.name) + "</strong>"
       + "<span class=\"muted\">" + escapeHTML(category.slug) + "</span>"
       + mainGroup
+      + blocked
       + "<span class=\"category-actions\">"
       + "<button class=\"secondary\" data-edit-category=\"" + category.id + "\" type=\"button\">编辑</button>"
       + "<button class=\"danger\" data-delete-category=\"" + category.id + "\" type=\"button\"" + protectedDelete + ">删除</button>"
@@ -4053,6 +4070,13 @@ function normalizeCompareText(value) {
   return String(value || "").trim().toLowerCase();
 }
 
+function splitKeywords(value) {
+  return String(value || "")
+    .split(/[\n\r,，\t]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 function normalizeCompareBaseURL(value) {
   const text = String(value || "").trim();
   if (!text) return "";
@@ -4240,6 +4264,7 @@ async function editCategory(category) {
   form.elements.id.value = category.id;
   form.elements.name.value = category.name || "";
   form.elements.slug.value = category.slug || "";
+  form.elements.blocked_group_keywords.value = Array.isArray(category.blocked_group_keywords) ? category.blocked_group_keywords.join("\n") : "";
   form.elements.sub2api_main_group_name.value = category.sub2api_main_group_name || "";
   form.elements.sub2api_main_group_id.value = String(category.sub2api_main_group_id || 0);
   form.dataset.mainGroupIds = groups.map((group) => String(group.id || "")).filter(Boolean).join(",");
@@ -4257,6 +4282,7 @@ function resetCategoryForm() {
   state.editingCategoryId = null;
   form.reset();
   form.elements.id.value = "";
+  form.elements.blocked_group_keywords.value = "";
   form.elements.sub2api_main_group_id.value = "0";
   form.dataset.mainGroupIds = "";
   form.dataset.mainGroupsJson = "";
@@ -4643,6 +4669,7 @@ if (categoryForm) {
     const id = Number(payload.id || state.editingCategoryId || 0);
     delete payload.id;
     payload.sub2api_main_groups = selectedCategoryMainGroups();
+    payload.blocked_group_keywords = splitKeywords(payload.blocked_group_keywords);
     payload.sub2api_main_group_id = Number(payload.sub2api_main_group_id || 0);
     payload.sub2api_main_group_name = payload.sub2api_main_group_name || "";
     try {

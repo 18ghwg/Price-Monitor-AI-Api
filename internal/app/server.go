@@ -1508,10 +1508,13 @@ func (s *Server) runNewAPIRule(ctx context.Context, rule Rule, site Site) ([]Pri
 		s.saveNewAPISession(ctx, site, client, userID, token, err.Error())
 		return nil, err
 	}
-	rows = CheapestPricingRowsWithExpectedCacheHitRatio(filterPricingRowsForRule(rule, rows), expectedCacheHitRatio)
+	rows = filterPricingRowsForRule(rule, rows)
+	beforeBlockedFilter := len(rows)
+	rows = filterPricingRowsByBlockedKeywords(rows, categoryBlockedGroupKeywords(ctx, s.store, rule.Category))
+	rows = CheapestPricingRowsWithExpectedCacheHitRatio(rows, expectedCacheHitRatio)
 	if len(rows) == 0 {
-		err := missingPricingRowsError(rule, false)
-		_ = s.store.MarkMissingSnapshotGroupsInvalid(ctx, rule.ID, rule.ModelKeyword, nil, "上游分组不匹配当前规则分类，或模型/分组已不存在")
+		err := missingPricingRowsError(rule, false, beforeBlockedFilter > 0)
+		_ = s.store.MarkMissingSnapshotGroupsInvalid(ctx, rule.ID, rule.ModelKeyword, nil, missingSnapshotInvalidReason(beforeBlockedFilter > 0))
 		s.saveNewAPISession(ctx, site, client, userID, token, err.Error())
 		return nil, err
 	}
@@ -1623,10 +1626,13 @@ func (s *Server) runSub2APIRule(ctx context.Context, rule Rule, upstream Sub2API
 			Limit:             5000,
 		}),
 	}
-	rows := cheapestSub2PriceRowsWithExpectedCacheHitRatio(filterSub2APIPriceRowsForRule(rule, result.Rows), expectedCacheHitRatio)
+	rows := filterSub2APIPriceRowsForRule(rule, result.Rows)
+	beforeBlockedFilter := len(rows)
+	rows = filterSub2APIPriceRowsByBlockedKeywords(rows, categoryBlockedGroupKeywords(ctx, s.store, rule.Category))
+	rows = cheapestSub2PriceRowsWithExpectedCacheHitRatio(rows, expectedCacheHitRatio)
 	if len(rows) == 0 {
-		_ = s.store.MarkMissingSnapshotGroupsInvalid(ctx, rule.ID, rule.ModelKeyword, nil, "上游分组不匹配当前规则分类，或模型/分组已不存在")
-		return nil, missingPricingRowsError(rule, true)
+		_ = s.store.MarkMissingSnapshotGroupsInvalid(ctx, rule.ID, rule.ModelKeyword, nil, missingSnapshotInvalidReason(beforeBlockedFilter > 0))
+		return nil, missingPricingRowsError(rule, true, beforeBlockedFilter > 0)
 	}
 
 	snapshots := make([]PriceSnapshot, 0, len(rows))
@@ -1748,16 +1754,29 @@ func pricingRowFromSub2APIUserPriceRow(row Sub2APIUserPriceRow) PricingRow {
 	}
 }
 
-func missingPricingRowsError(rule Rule, sub2api bool) error {
+func missingPricingRowsError(rule Rule, sub2api bool, blockedOnly bool) error {
 	source := "上游价格接口"
 	if sub2api {
 		source = "sub2api 上游价格接口"
+	}
+	if blockedOnly {
+		return fmt.Errorf("未找到可用低价分组：模型 %q，分类 %q。已抓取到候选分组，但全部命中该分类设置的屏蔽关键词",
+			rule.ModelKeyword,
+			firstNonEmpty(rule.CategoryName, rule.Category),
+		)
 	}
 	return fmt.Errorf("未找到模型价格：模型 %q，分类 %q。可能原因：%s 没有返回该模型，或该模型不属于当前分类分组",
 		rule.ModelKeyword,
 		firstNonEmpty(rule.CategoryName, rule.Category),
 		source,
 	)
+}
+
+func missingSnapshotInvalidReason(blockedOnly bool) string {
+	if blockedOnly {
+		return "分组命中当前分类屏蔽关键词，已排除低价候选"
+	}
+	return "上游分组不匹配当前规则分类，或模型/分组已不存在"
 }
 
 func cheapestSub2PriceRows(rows []Sub2APIUserPriceRow) []Sub2APIUserPriceRow {
@@ -1903,6 +1922,59 @@ func filterSub2APIPriceRowsForRule(rule Rule, rows []Sub2APIUserPriceRow) []Sub2
 		}
 	}
 	return filtered
+}
+
+func categoryBlockedGroupKeywords(ctx context.Context, store Store, categorySlug string) []string {
+	category, err := store.GetCategoryBySlug(ctx, categorySlug)
+	if err != nil {
+		if !notFound(err) {
+			log.Printf("load category blocked keywords %q: %v", categorySlug, err)
+		}
+		return nil
+	}
+	return category.BlockedGroupKeywords
+}
+
+func filterPricingRowsByBlockedKeywords(rows []PricingRow, keywords []string) []PricingRow {
+	if len(keywords) == 0 || len(rows) == 0 {
+		return rows
+	}
+	filtered := make([]PricingRow, 0, len(rows))
+	for _, row := range rows {
+		if groupMatchesBlockedKeywords(row.GroupName, row.GroupDesc, keywords) {
+			continue
+		}
+		filtered = append(filtered, row)
+	}
+	return filtered
+}
+
+func filterSub2APIPriceRowsByBlockedKeywords(rows []Sub2APIUserPriceRow, keywords []string) []Sub2APIUserPriceRow {
+	if len(keywords) == 0 || len(rows) == 0 {
+		return rows
+	}
+	filtered := make([]Sub2APIUserPriceRow, 0, len(rows))
+	for _, row := range rows {
+		if groupMatchesBlockedKeywords(row.GroupName, row.GroupPlatform, keywords) {
+			continue
+		}
+		filtered = append(filtered, row)
+	}
+	return filtered
+}
+
+func groupMatchesBlockedKeywords(groupName string, groupDesc string, keywords []string) bool {
+	text := strings.ToLower(strings.TrimSpace(groupName + " " + groupDesc))
+	if text == "" {
+		return false
+	}
+	for _, keyword := range keywords {
+		keyword = strings.ToLower(strings.TrimSpace(keyword))
+		if keyword != "" && strings.Contains(text, keyword) {
+			return true
+		}
+	}
+	return false
 }
 
 func pricingCategoryKindForRule(rule Rule) pricingCategoryKind {
