@@ -237,7 +237,8 @@ const indexHTML = `<!doctype html>
                 <th data-sort="group_ratio">分组倍率</th>
                 <th data-sort="upstream_balance">余额</th>
                 <th data-sort="recharge_multiplier">在线充值</th>
-                <th data-sort="effective_price">预期成本</th>
+                <th data-sort="base_price">基础成本</th>
+                <th data-sort="expected_price">预期成本</th>
                 <th data-sort="input_price">输入</th>
                 <th data-sort="output_price">输出</th>
                 <th data-sort="cache_read_price">缓存读</th>
@@ -2297,7 +2298,7 @@ const appJS = `const state = {
   ruleCategoryFilter: "all",
   ruleIssueFilter: "all",
   snapshotCategoryFilter: "all",
-  sort: { key: "effective_price", dir: "asc" },
+  sort: { key: "expected_price", dir: "asc" },
 };
 
 let sub2UserFilterTimer = null;
@@ -3166,14 +3167,15 @@ function renderSnapshots() {
       + "<td data-label=\"分组倍率\">" + fmt(row.group_ratio) + "</td>"
       + "<td data-label=\"余额\">" + fmtBalance(row.upstream_balance, row.balance_unit) + "</td>"
       + "<td data-label=\"在线充值\">" + rechargeBadge(row) + "</td>"
-      + "<td data-label=\"预期成本\">" + fmt(effectivePrice(row)) + "</td>"
+      + "<td data-label=\"基础成本\">" + fmt(basePrice(row)) + "</td>"
+      + "<td data-label=\"预期成本\">" + fmt(expectedPrice(row)) + "</td>"
       + "<td data-label=\"输入\">" + fmt(row.input_price) + "</td>"
       + "<td data-label=\"输出\">" + fmt(row.output_price) + "</td>"
       + "<td data-label=\"缓存读\">" + fmt(row.cache_read_price) + "</td>"
       + "<td data-label=\"缓存写\">" + fmt(row.cache_write_price) + "</td>"
       + "<td data-label=\"请求\">" + fmt(row.request_price) + "</td>"
       + "</tr>";
-  }).join("") : "<tr><td class=\"empty-state\" colspan=\"15\">" + (state.snapshotSearch ? "没有匹配的价格快照。" : "暂无价格快照，运行一次监控规则后会在这里展示最新结果。") + "</td></tr>";
+  }).join("") : "<tr><td class=\"empty-state\" colspan=\"16\">" + (state.snapshotSearch ? "没有匹配的价格快照。" : "暂无价格快照，运行一次监控规则后会在这里展示最新结果。") + "</td></tr>";
   renderSnapshotPager(rows.length, totalPages);
 }
 
@@ -3935,12 +3937,14 @@ function sortedSnapshots() {
 function compareSnapshot(left, right, key, dir) {
   if (!!left.invalid !== !!right.invalid) return left.invalid ? 1 : -1;
   const factor = dir === "desc" ? -1 : 1;
-  const numericKeys = new Set(["group_ratio", "upstream_balance", "recharge_multiplier", "effective_price", "input_price", "output_price", "cache_read_price", "cache_write_price", "request_price"]);
+  const numericKeys = new Set(["group_ratio", "upstream_balance", "recharge_multiplier", "base_price", "expected_price", "effective_price", "input_price", "output_price", "cache_read_price", "cache_write_price", "request_price"]);
   let result;
   if (key === "created_at") {
     result = new Date(left.created_at || 0).getTime() - new Date(right.created_at || 0).getTime();
-  } else if (key === "effective_price") {
-    result = numberSort(effectivePrice(left), effectivePrice(right));
+  } else if (key === "base_price") {
+    result = numberSort(basePrice(left), basePrice(right));
+  } else if (key === "expected_price" || key === "effective_price") {
+    result = numberSort(expectedPrice(left), expectedPrice(right));
   } else if (numericKeys.has(key)) {
     result = numberSort(left[key], right[key]);
   } else {
@@ -3950,7 +3954,7 @@ function compareSnapshot(left, right, key, dir) {
     result = String(left.model_name || "").localeCompare(String(right.model_name || ""), "zh-Hans-CN", { numeric: true, sensitivity: "base" });
   }
   if (result === 0) {
-    result = numberSort(effectivePrice(left), effectivePrice(right));
+    result = numberSort(expectedPrice(left), expectedPrice(right));
   }
   return result * factor;
 }
@@ -3961,7 +3965,19 @@ function numberSort(left, right) {
   return a - b;
 }
 
-function effectivePrice(row) {
+function basePrice(row) {
+  const input = Number(row.input_price);
+  const output = Number(row.output_price);
+  const request = Number(row.request_price);
+  if (Number.isFinite(input)) {
+    return input + (Number.isFinite(output) ? output : 0);
+  }
+  if (Number.isFinite(request)) return request;
+  if (Number.isFinite(output)) return output;
+  return Number.POSITIVE_INFINITY;
+}
+
+function expectedPrice(row) {
   const hitRatio = expectedCacheHitRatio();
   if (!Number.isFinite(Number(row.input_price)) && !Number.isFinite(Number(row.cache_read_price)) && !Number.isFinite(Number(row.cache_write_price))) {
     if (Number.isFinite(Number(row.request_price))) return Number(row.request_price);
