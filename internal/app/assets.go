@@ -3828,12 +3828,16 @@ function renderModelProbe() {
     summary.textContent = "已从 " + (result.endpoint || result.base_url || "模型接口") + " 获取 " + rows.length + " / " + (result.count || 0) + " 个模型" + range + "。 " + (result.source_note || "");
   }
   body.innerHTML = pageRows.length ? pageRows.map((row) => {
+    const modelID = row.id || "";
     return "<tr>"
-      + "<td><code>" + escapeHTML(row.id || "") + "</code></td>"
+      + "<td><code>" + escapeHTML(modelID) + "</code></td>"
       + "<td>" + escapeHTML(row.owned_by || "") + "</td>"
       + "<td>" + escapeHTML(row.object || "") + "</td>"
       + "<td>" + escapeHTML(row.display_name || "") + "</td>"
-      + "<td><button class=\"secondary\" type=\"button\" data-copy-model-id=\"" + escapeAttr(row.id || "") + "\">复制</button></td>"
+      + "<td><div class=\"table-actions\">"
+      + "<button class=\"secondary\" type=\"button\" data-use-probe-model=\"" + escapeAttr(modelID) + "\">使用此模型</button>"
+      + "<button class=\"secondary\" type=\"button\" data-copy-model-id=\"" + escapeAttr(modelID) + "\">复制</button>"
+      + "</div></td>"
       + "</tr>";
   }).join("") : "<tr><td class=\"empty-state\" colspan=\"5\">没有匹配的模型。请调整关键词搜索。</td></tr>";
   renderModelProbePager(rows.length, totalPages);
@@ -3879,6 +3883,65 @@ function syncModelProbeSourceFields() {
   if (source && baseInput) {
     baseInput.value = source.base_url || "";
   }
+}
+
+function useModelProbeRowForRule(modelID) {
+  modelID = String(modelID || "").trim();
+  if (!modelID) {
+    toast("模型 ID 为空，不能填入规则表单");
+    return;
+  }
+  const ruleForm = $("#ruleForm");
+  const probeForm = $("#modelProbeForm");
+  if (!ruleForm || !probeForm) return;
+
+  const sourceRef = probeForm.elements.source_ref?.value || "manual";
+  let source = null;
+  if (sourceRef.startsWith("site:")) {
+    const id = Number(sourceRef.split(":")[1] || 0);
+    source = (state.sites || []).find((item) => Number(item.id) === id);
+  }
+  if (source) {
+    const sourceType = String(source.source_type || "newapi").toLowerCase() === "sub2api" ? "sub2api" : "newapi";
+    setRuleSourceType(sourceType);
+    if (sourceType === "sub2api") {
+      if (ruleForm.elements.sub2api_upstream_id) ruleForm.elements.sub2api_upstream_id.value = String(source.id || 0);
+    } else if (ruleForm.elements.site_id) {
+      ruleForm.elements.site_id.value = String(source.id || 0);
+    }
+  }
+
+  const suggestedCategory = suggestedCategoryForProbe();
+  if (suggestedCategory && Array.from(ruleForm.elements.category.options).some((option) => option.value === suggestedCategory)) {
+    ruleForm.elements.category.value = suggestedCategory;
+  }
+
+  ruleForm.elements.model_keyword.value = modelID;
+  ruleForm.elements.id.value = "";
+  state.editingRuleId = null;
+  setText("#ruleFormTitle", "添加监控规则");
+  setText("#ruleFormHelp", "已从 API 模型探测填入模型名，请确认站点、分类和同步开关后保存。");
+  setText("#ruleSubmitBtn", "保存规则");
+  const cancel = $("#ruleCancelBtn");
+  if (cancel) cancel.hidden = true;
+  setActiveView("monitor");
+  ruleForm.scrollIntoView({ behavior: "smooth", block: "start" });
+  toast("已填入监控规则模型：" + modelID);
+}
+
+function suggestedCategoryForProbe() {
+  const resultType = String(state.modelProbeResult?.api_type || "").toLowerCase();
+  const formType = String($("#modelProbeForm")?.elements.api_type?.value || "").toLowerCase();
+  const value = resultType || formType;
+  if (value === "anthropic" || value === "claude") return firstExistingCategory(["claude", "claud"]);
+  return firstExistingCategory(["codex"]);
+}
+
+function firstExistingCategory(slugs) {
+  for (const slug of slugs) {
+    if ((state.categories || []).some((category) => category.slug === slug)) return slug;
+  }
+  return "";
 }
 
 function renderSub2UserFilterOptions() {
@@ -4788,6 +4851,14 @@ if (modelProbeSourceSelect) {
   modelProbeSourceSelect.addEventListener("change", syncModelProbeSourceFields);
 }
 
+const modelProbeTypeSelect = $("#modelProbeForm")?.elements.api_type;
+if (modelProbeTypeSelect) {
+  modelProbeTypeSelect.addEventListener("change", () => {
+    if (!state.modelProbeResult) return;
+    state.modelProbeResult.api_type = modelProbeTypeSelect.value || "openai_compatible";
+  });
+}
+
 const snapshotPageSize = $("#snapshotPageSize");
 if (snapshotPageSize) {
   snapshotPageSize.addEventListener("change", (event) => {
@@ -5287,6 +5358,12 @@ document.addEventListener("click", async (event) => {
     } catch (error) {
       toast("复制失败：" + modelID);
     }
+    return;
+  }
+
+  const useProbeModelButton = event.target.closest("[data-use-probe-model]");
+  if (useProbeModelButton) {
+    useModelProbeRowForRule(useProbeModelButton.getAttribute("data-use-probe-model") || "");
     return;
   }
 
