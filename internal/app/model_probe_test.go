@@ -43,6 +43,43 @@ func TestFetchModelProbeOpenAICompatible(t *testing.T) {
 	}
 }
 
+func TestFetchModelProbeOpenAICompatibleRetriesBareNewAPIKey(t *testing.T) {
+	var authHeaders []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		authHeaders = append(authHeaders, auth)
+		if auth != "Bearer sk-raw-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			writeModelProbeTestJSON(t, w, map[string]any{
+				"error": map[string]any{"message": "令牌无效"},
+			})
+			return
+		}
+		writeModelProbeTestJSON(t, w, map[string]any{
+			"data": []map[string]any{{"id": "gpt-5.5"}},
+		})
+	}))
+	defer server.Close()
+
+	result, err := FetchModelProbe(context.Background(), ModelProbeInput{
+		APIType: "openai_compatible",
+		BaseURL: server.URL,
+		APIKey:  "raw-token",
+	})
+	if err != nil {
+		t.Fatalf("FetchModelProbe() error = %v", err)
+	}
+	if result.Count != 1 || result.Models[0].ID != "gpt-5.5" {
+		t.Fatalf("result = %+v", result)
+	}
+	if len(authHeaders) != 2 {
+		t.Fatalf("auth headers = %+v, want 2 attempts", authHeaders)
+	}
+	if authHeaders[0] != "Bearer raw-token" || authHeaders[1] != "Bearer sk-raw-token" {
+		t.Fatalf("auth headers = %+v", authHeaders)
+	}
+}
+
 func TestJoinProbeURLAvoidsDoubleV1(t *testing.T) {
 	got, err := joinProbeURL("https://api.example.com/v1", "/v1/models")
 	if err != nil {

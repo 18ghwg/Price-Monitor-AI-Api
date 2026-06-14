@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -42,6 +43,22 @@ type ModelProbeRow struct {
 	OwnedBy     string `json:"owned_by,omitempty"`
 	DisplayName string `json:"display_name,omitempty"`
 	Created     int64  `json:"created,omitempty"`
+}
+
+type modelProbeHTTPError struct {
+	Status int
+	Err    error
+}
+
+func (e modelProbeHTTPError) Error() string {
+	if e.Err == nil {
+		return fmt.Sprintf("模型探测接口返回 HTTP %d", e.Status)
+	}
+	return e.Err.Error()
+}
+
+func (e modelProbeHTTPError) Unwrap() error {
+	return e.Err
 }
 
 func FetchModelProbe(ctx context.Context, input ModelProbeInput) (ModelProbeResult, error) {
@@ -116,9 +133,15 @@ func fetchOpenAICompatibleProbeModels(ctx context.Context, client *http.Client, 
 			Created int64  `json:"created"`
 		} `json:"data"`
 	}
-	if err := probeJSON(ctx, client, endpoint, map[string]string{
+	err = probeJSON(ctx, client, endpoint, map[string]string{
 		"Authorization": bearerTokenHeader(apiKey),
-	}, &payload); err != nil {
+	}, &payload)
+	if err != nil && shouldRetryOpenAIProbeWithSKPrefix(apiKey, err) {
+		err = probeJSON(ctx, client, endpoint, map[string]string{
+			"Authorization": bearerTokenHeader("sk-" + strings.TrimSpace(apiKey)),
+		}, &payload)
+	}
+	if err != nil {
 		return nil, endpoint, err
 	}
 	rows := make([]ModelProbeRow, 0, len(payload.Data))
@@ -135,6 +158,23 @@ func fetchOpenAICompatibleProbeModels(ctx context.Context, client *http.Client, 
 		})
 	}
 	return rows, endpoint, nil
+}
+
+func shouldRetryOpenAIProbeWithSKPrefix(apiKey string, err error) bool {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return false
+	}
+	lowered := strings.ToLower(apiKey)
+	if strings.HasPrefix(lowered, "bearer ") {
+		apiKey = strings.TrimSpace(apiKey[7:])
+		lowered = strings.ToLower(apiKey)
+	}
+	if strings.HasPrefix(lowered, "sk-") {
+		return false
+	}
+	var httpErr modelProbeHTTPError
+	return errors.As(err, &httpErr) && httpErr.Status == http.StatusUnauthorized
 }
 
 func bearerTokenHeader(apiKey string) string {
@@ -225,7 +265,10 @@ func probeJSON(ctx context.Context, client *http.Client, endpoint string, header
 		return err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return localizedHTTPError("模型探测接口", endpoint, resp.StatusCode, data)
+		return modelProbeHTTPError{
+			Status: resp.StatusCode,
+			Err:    localizedHTTPError("模型探测接口", endpoint, resp.StatusCode, data),
+		}
 	}
 	if err := json.Unmarshal(data, out); err != nil {
 		return fmt.Errorf("解析模型接口响应失败：%w", err)
