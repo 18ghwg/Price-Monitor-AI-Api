@@ -800,8 +800,8 @@ func (c *Sub2APIClient) DisableOtherAPIKeyAccountsForGroups(ctx context.Context,
 			if _, ok := disabled[account.ID]; ok {
 				continue
 			}
-			if _, err := c.SetAccountEnabled(ctx, account.ID, false); err != nil {
-				return fmt.Errorf("disable sub2api account %d in group %s: %w", account.ID, group.Name, err)
+			if err := c.SetAccountSchedulable(ctx, account.ID, false); err != nil {
+				return fmt.Errorf("disable sub2api account %d schedulable in group %s: %w", account.ID, group.Name, err)
 			}
 			disabled[account.ID] = struct{}{}
 		}
@@ -968,16 +968,23 @@ func (c *Sub2APIClient) setAccountPriorityWithRate(ctx context.Context, accountI
 	return nil
 }
 
+func (c *Sub2APIClient) SetAccountSchedulable(ctx context.Context, accountID int64, schedulable bool) error {
+	if accountID <= 0 {
+		return fmt.Errorf("sub2api account id is required")
+	}
+	if err := c.request(ctx, http.MethodPost, fmt.Sprintf("api/v1/admin/accounts/%d/schedulable", accountID), nil, map[string]bool{"schedulable": schedulable}, nil); err != nil {
+		return fmt.Errorf("set sub2api account %d schedulable: %w", accountID, err)
+	}
+	return nil
+}
+
 func (c *Sub2APIClient) disableDuplicateAPIKeyAccounts(ctx context.Context, platform string, keepID int64, apiBaseURL string, accounts []sub2Account) error {
 	platform = normalizeSub2Platform(platform)
 	for _, account := range accounts {
 		if account.ID <= 0 || account.ID == keepID || !accountMatchesPlatformAPIURL(account, platform, apiBaseURL) {
 			continue
 		}
-		if err := c.setAccountPriorityWithRate(ctx, account.ID, 100, "inactive", nil); err != nil {
-			return err
-		}
-		if err := c.request(ctx, http.MethodPost, fmt.Sprintf("api/v1/admin/accounts/%d/schedulable", account.ID), nil, map[string]bool{"schedulable": false}, nil); err != nil {
+		if err := c.SetAccountSchedulable(ctx, account.ID, false); err != nil {
 			return fmt.Errorf("disable duplicate sub2api account %d schedulable: %w", account.ID, err)
 		}
 	}

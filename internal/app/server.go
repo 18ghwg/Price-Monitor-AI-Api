@@ -425,6 +425,12 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
+	if !settings.Sub2APIEnabled {
+		if err := s.store.DisableAllRuleSync(r.Context()); err != nil {
+			writeError(w, http.StatusInternalServerError, "disable rule sync failed")
+			return
+		}
+	}
 	settings.Sub2APIPassword = ""
 	settings.Sub2APIAdminKey = maskSecret(settings.Sub2APIAdminKey)
 	settings.Sub2APIAccessToken = maskSecret(settings.Sub2APIAccessToken)
@@ -2177,6 +2183,10 @@ func (s *Server) syncBestAvailableCandidate(ctx context.Context, rule Rule, mode
 	settings, settingsErr := s.store.GetIntegrationSettings(ctx)
 	if settingsErr != nil {
 		log.Printf("load integration settings for sync candidates: %v", settingsErr)
+	}
+	if settingsErr == nil && !settings.Sub2APIEnabled {
+		_ = s.store.UpdateRuleSyncStatus(ctx, rule.ID, "主站 sub2api 同步开关未开启，已跳过同步", "")
+		return false, true, nil
 	}
 	balanceThreshold := settings.UpstreamBalanceThreshold
 	refreshedRules := map[int64]bool{}

@@ -930,6 +930,21 @@ func (s Store) BulkUpdateRules(ctx context.Context, input BulkRuleUpdateInput) (
 	return s.rulesByIDs(ctx, ruleIDs)
 }
 
+func (s Store) DisableAllRuleSync(ctx context.Context) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE monitor_rules
+		SET sync_enabled = false,
+		    sync_status = CASE
+		      WHEN sync_enabled THEN '主站 sub2api 同步开关未开启，已关闭规则同步'
+		      ELSE sync_status
+		    END,
+		    sync_error = '',
+		    updated_at = now()
+		WHERE sync_enabled = true
+	`)
+	return err
+}
+
 func normalizeRuleIDs(rawIDs []int64) ([]int64, error) {
 	seen := map[int64]bool{}
 	ids := make([]int64, 0, len(rawIDs))

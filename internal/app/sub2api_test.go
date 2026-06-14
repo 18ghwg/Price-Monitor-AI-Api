@@ -957,8 +957,8 @@ func TestSub2APITestAccountConnectionReportsSSEError(t *testing.T) {
 	}
 }
 
-func TestSub2APIDisableOtherAPIKeyAccountsForGroupsKeepsSyncedAccount(t *testing.T) {
-	disabled := map[int64]bool{}
+func TestSub2APIDisableOtherAPIKeyAccountsForGroupsOnlyClosesSchedulable(t *testing.T) {
+	statusUpdated := map[int64]string{}
 	schedulable := map[int64]bool{}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -982,8 +982,8 @@ func TestSub2APIDisableOtherAPIKeyAccountsForGroupsKeepsSyncedAccount(t *testing
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 				t.Fatalf("decode disable payload: %v", err)
 			}
-			if payload["status"] == "inactive" {
-				disabled[id] = true
+			if status, ok := payload["status"].(string); ok {
+				statusUpdated[id] = status
 			}
 			writeSub2TestJSON(w, map[string]any{"id": id, "status": payload["status"]})
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/schedulable"):
@@ -1007,15 +1007,21 @@ func TestSub2APIDisableOtherAPIKeyAccountsForGroupsKeepsSyncedAccount(t *testing
 	if err := client.DisableOtherAPIKeyAccountsForGroups(context.Background(), "openai", 42, []sub2Group{{ID: 7, Name: "Codex"}}); err != nil {
 		t.Fatalf("DisableOtherAPIKeyAccountsForGroups() error = %v", err)
 	}
-	if disabled[42] {
-		t.Fatalf("kept account was disabled")
+	if len(statusUpdated) > 0 {
+		t.Fatalf("account status/priority endpoint was called: %v; want only schedulable=false", statusUpdated)
+	}
+	if _, ok := schedulable[42]; ok {
+		t.Fatalf("kept account schedulable was changed")
 	}
 	for _, id := range []int64{43, 44} {
-		if !disabled[id] {
-			t.Fatalf("account %d was not disabled", id)
+		if statusUpdated[id] == "inactive" {
+			t.Fatalf("account %d status was set to inactive; want only schedulable=false", id)
 		}
 		if schedulable[id] {
 			t.Fatalf("account %d schedulable = true, want false", id)
+		}
+		if _, ok := schedulable[id]; !ok {
+			t.Fatalf("account %d schedulable was not changed", id)
 		}
 	}
 }
