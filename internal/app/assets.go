@@ -73,7 +73,7 @@ const indexHTML = `<!doctype html>
           <div class="panel-head">
             <span class="section-kicker">Step 01</span>
             <h2 id="siteFormTitle">添加上游站点账号</h2>
-            <p id="siteFormHelp">用上方切换选择 NewAPI 或 sub2api，账号保存后会进入对应列表。</p>
+            <p id="siteFormHelp">NewAPI 可填写系统访问令牌，或填写账号密码自动登录获取系统访问令牌并保存；sub2api 账号保存后会进入对应列表。</p>
           </div>
           <input name="id" type="hidden">
           <input name="source_type" id="siteSourceTypeInput" type="hidden" value="newapi">
@@ -310,6 +310,18 @@ const indexHTML = `<!doctype html>
           </section>
 
           <section class="settings-block wide">
+            <div class="settings-block-head row">
+              <div>
+                <span class="section-kicker">NewAPI Tokens</span>
+                <h3>NewAPI 系统访问令牌</h3>
+              </div>
+              <button id="refreshNewAPITokensBtn" class="secondary" type="button">批量账号密码登录获取令牌</button>
+            </div>
+            <p class="muted">对已保存的 NewAPI 站点使用数据库中的账号密码重新登录，自动获取系统访问令牌并保存；失败原因会写入站点状态。</p>
+            <div id="newapiTokenRefreshResult" class="summary-line muted">尚未执行批量获取。</div>
+          </section>
+
+          <section class="settings-block wide">
             <div class="settings-block-head">
               <span class="section-kicker">Sub2API System</span>
               <h3>主站 sub2api 同步</h3>
@@ -517,7 +529,7 @@ const indexHTML = `<!doctype html>
               </div>
               <div class="form-grid">
                 <label>API Base URL<input name="base_url" required placeholder="https://api.example.com 或 https://api.example.com/v1"></label>
-                <label>API Key<input name="api_key" type="password" required placeholder="只用于本次探测，不会保存"></label>
+                <label>API Key<input name="api_key" type="password" placeholder="手动探测时填写；选择已保存站点可留空"></label>
               </div>
               <p class="muted">模型探测只验证当前 API Key 可见的模型列表，不等同于完整价格目录；价格比较仍以站点价格接口和官方价格源为准。</p>
               <div class="actions">
@@ -1750,6 +1762,21 @@ button.filter.active {
 
 .summary-line {
   margin: 14px 0 10px;
+}
+
+.summary-line.success {
+  color: #166534;
+}
+
+.summary-line.warning {
+  color: #92400e;
+}
+
+.compact-list {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding-left: 18px;
 }
 
 .cheapest-grid {
@@ -3786,16 +3813,37 @@ function renderSub2UserPricePager(totalRows, totalPages) {
     + "<button class=\"secondary\" type=\"button\" data-sub2-price-page=\"next\"" + (state.sub2UserPricePage >= totalPages ? " disabled" : "") + ">下一页</button>";
 }
 
+function renderNewAPITokenRefreshResult(result) {
+  const box = $("#newapiTokenRefreshResult");
+  if (!box) return;
+  if (!result) {
+    box.className = "summary-line muted";
+    box.textContent = "尚未执行批量获取。";
+    return;
+  }
+  const failed = (result.items || []).filter((item) => !item.success);
+  const failedHTML = failed.length ? "<ul class=\"compact-list\">" + failed.slice(0, 20).map((item) => (
+    "<li><strong>" + escapeHTML(item.name || ("#" + item.id)) + "</strong>"
+    + " · " + escapeHTML(item.username || "未填写账号")
+    + " · " + escapeHTML(item.message || "未知错误") + "</li>"
+  )).join("") + "</ul>" : "";
+  box.className = "summary-line" + (failed.length ? " warning" : " success");
+  box.innerHTML = "已处理 " + (result.total || 0) + " 个 NewAPI 站点，成功 "
+    + (result.success || 0) + " 个，失败 " + (result.failed || 0) + " 个。"
+    + failedHTML;
+}
+
 function renderModelProbeSources() {
   const select = $("#modelProbeSourceSelect");
   if (!select) return;
   const selected = select.value || "manual";
-  const siteOptions = (state.sites || []).map((site) => {
+  const siteOptions = (state.sites || []).filter((site) => String(site.source_type || "newapi").toLowerCase() !== "sub2api").map((site) => {
     const type = String(site.source_type || "newapi").toLowerCase() === "sub2api" ? "sub2api" : "newapi";
     return "<option value=\"site:" + site.id + "\">" + escapeHTML((type === "sub2api" ? "sub2api" : "NewAPI") + " · " + site.name + " · " + site.base_url) + "</option>";
   }).join("");
   select.innerHTML = "<option value=\"manual\">手动填写 API Base URL</option>" + siteOptions;
   select.value = Array.from(select.options).some((option) => option.value === selected) ? selected : "manual";
+  syncModelProbeSourceFields();
 }
 
 function renderModelProbe() {
@@ -3875,13 +3923,28 @@ function syncModelProbeSourceFields() {
   if (!form) return;
   const value = form.elements.source_ref?.value || "manual";
   const baseInput = form.elements.base_url;
-  if (value === "manual") return;
+  const keyInput = form.elements.api_key;
+  if (value === "manual") {
+    if (baseInput) baseInput.disabled = false;
+    if (keyInput) {
+      keyInput.required = true;
+      keyInput.disabled = false;
+      keyInput.placeholder = "只用于本次探测，不会保存";
+    }
+    return;
+  }
   const [kind, rawID] = value.split(":");
   const id = Number(rawID || 0);
   let source = null;
   if (kind === "site") source = (state.sites || []).find((item) => Number(item.id) === id);
   if (source && baseInput) {
     baseInput.value = source.base_url || "";
+    baseInput.disabled = true;
+  }
+  if (keyInput) {
+    keyInput.required = false;
+    keyInput.disabled = false;
+    keyInput.placeholder = source?.has_access_token ? "将使用已保存站点令牌，可留空" : "该站点未保存令牌，请手动填写 API Key";
   }
 }
 
@@ -4028,7 +4091,11 @@ function modelProbePayload() {
   const form = $("#modelProbeForm");
   if (!form) return {};
   const payload = formJSON(form);
+  const sourceRef = payload.source_ref || "manual";
   delete payload.source_ref;
+  if (String(sourceRef).startsWith("site:")) {
+    payload.site_id = Number(String(sourceRef).split(":")[1] || 0);
+  }
   payload.api_type = payload.api_type || "openai_compatible";
   payload.base_url = payload.base_url || "";
   payload.api_key = payload.api_key || "";
@@ -4478,7 +4545,7 @@ function resetSiteForm() {
   if (form.elements.user_id) form.elements.user_id.value = "";
   syncSiteSourceFields();
   setText("#siteFormTitle", "添加上游站点账号");
-  setText("#siteFormHelp", "用上方切换选择 NewAPI 或 sub2api，账号保存后会进入对应列表。");
+  setText("#siteFormHelp", "NewAPI 可填写系统访问令牌，或填写账号密码自动登录获取系统访问令牌并保存；sub2api 账号保存后会进入对应列表。");
   setText("#siteSubmitBtn", "保存上游");
   const cancel = $("#siteCancelBtn");
   if (cancel) cancel.hidden = true;
@@ -4803,7 +4870,7 @@ if (modelProbeForm) {
   modelProbeForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const payload = modelProbePayload();
-    if (!payload.base_url || !payload.api_key) {
+    if (!payload.site_id && (!payload.base_url || !payload.api_key)) {
       toast("请填写 API Base URL 和 API Key");
       return;
     }
@@ -5068,6 +5135,27 @@ const refreshSnapshotsBtn = $("#refreshSnapshotsBtn");
 if (refreshSnapshotsBtn) refreshSnapshotsBtn.addEventListener("click", () => {
   refreshSnapshots({ button: refreshSnapshotsBtn }).catch((error) => toast(error.message));
 });
+
+const refreshNewAPITokensBtn = $("#refreshNewAPITokensBtn");
+if (refreshNewAPITokensBtn) {
+  refreshNewAPITokensBtn.addEventListener("click", async () => {
+    const originalText = refreshNewAPITokensBtn.textContent;
+    refreshNewAPITokensBtn.disabled = true;
+    refreshNewAPITokensBtn.textContent = "获取中";
+    try {
+      const result = await api("/api/sites/refresh-tokens", { method: "POST" });
+      renderNewAPITokenRefreshResult(result);
+      await loadAll();
+      renderNewAPITokenRefreshResult(result);
+      toast("NewAPI 系统访问令牌批量获取完成");
+    } catch (error) {
+      toast(error.message);
+    } finally {
+      refreshNewAPITokensBtn.disabled = false;
+      refreshNewAPITokensBtn.textContent = originalText || "批量账号密码登录获取令牌";
+    }
+  });
+}
 
 const bulkRuleForm = $("#bulkRuleForm");
 if (bulkRuleForm) {

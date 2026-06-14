@@ -20,6 +20,7 @@ const (
 )
 
 type ModelProbeInput struct {
+	SiteID  int64  `json:"site_id"`
 	APIType string `json:"api_type"`
 	BaseURL string `json:"base_url"`
 	APIKey  string `json:"api_key"`

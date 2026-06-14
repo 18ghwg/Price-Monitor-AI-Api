@@ -93,6 +93,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/sub2api/accounts/{id}/disable", s.disableSub2APIAccount)
 	mux.HandleFunc("POST /api/sub2api/accounts/{id}/apikey", s.updateSub2APIAccountKey)
 	mux.HandleFunc("GET /api/sites", s.listSites)
+	mux.HandleFunc("POST /api/sites/refresh-tokens", s.refreshNewAPISiteTokens)
 	mux.HandleFunc("POST /api/sites", s.createSite)
 	mux.HandleFunc("PUT /api/sites/{id}", s.updateSite)
 	mux.HandleFunc("DELETE /api/sites/{id}", s.deleteSite)
@@ -672,12 +673,61 @@ func (s *Server) fetchModelProbeHandler(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	input.APIKey = strings.TrimSpace(input.APIKey)
+	var site Site
+	var siteClient *NewAPIClient
+	var siteUserID int64
+	usingSavedSite := false
+	resolvedSavedSiteToken := false
+	if input.SiteID > 0 {
+		var err error
+		site, err = s.store.GetSite(r.Context(), input.SiteID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "未找到所选站点")
+			return
+		}
+		usingSavedSite = true
+		if input.APIKey == "" {
+			siteClient, siteUserID, input.APIKey, err = s.newAPIClientForSite(r.Context(), site, false)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "该站点没有可用于探测的有效令牌："+err.Error())
+				return
+			}
+			resolvedSavedSiteToken = true
+		}
+		if strings.TrimSpace(input.BaseURL) == "" {
+			input.BaseURL = site.BaseURL
+		}
+	}
+	if strings.TrimSpace(input.APIKey) == "" {
+		writeError(w, http.StatusBadRequest, "API Key 不能为空，或者选择一个已保存且已登录的站点")
+		return
+	}
 	result, err := FetchModelProbe(r.Context(), input)
+	if err != nil && usingSavedSite && isModelProbeAuthError(err) {
+		var refreshErr error
+		siteClient, siteUserID, input.APIKey, refreshErr = s.newAPIClientForSite(r.Context(), site, true)
+		if refreshErr == nil {
+			resolvedSavedSiteToken = true
+			s.saveNewAPISession(r.Context(), site, siteClient, siteUserID, input.APIKey, "")
+			result, err = FetchModelProbe(r.Context(), input)
+		} else {
+			err = fmt.Errorf("已保存站点令牌不可用，重新登录刷新令牌也失败：%w", refreshErr)
+		}
+	}
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	if usingSavedSite && resolvedSavedSiteToken {
+		s.saveNewAPISession(r.Context(), site, siteClient, siteUserID, input.APIKey, "")
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": result})
+}
+
+func isModelProbeAuthError(err error) bool {
+	var httpErr modelProbeHTTPError
+	return errors.As(err, &httpErr) && (httpErr.Status == http.StatusUnauthorized || httpErr.Status == http.StatusForbidden)
 }
 
 func (s *Server) upsertSub2APIAccount(w http.ResponseWriter, r *http.Request) {
@@ -977,6 +1027,65 @@ func (s *Server) deleteSite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) refreshNewAPISiteTokens(w http.ResponseWriter, r *http.Request) {
+	sites, err := s.store.ListSites(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取 NewAPI 站点列表失败")
+		return
+	}
+	type tokenRefreshItem struct {
+		ID       int64  `json:"id"`
+		Name     string `json:"name"`
+		BaseURL  string `json:"base_url"`
+		Username string `json:"username"`
+		UserID   int64  `json:"user_id,omitempty"`
+		Success  bool   `json:"success"`
+		Message  string `json:"message"`
+	}
+	result := struct {
+		Total   int                `json:"total"`
+		Success int                `json:"success"`
+		Failed  int                `json:"failed"`
+		Items   []tokenRefreshItem `json:"items"`
+	}{Items: make([]tokenRefreshItem, 0, len(sites))}
+
+	for _, site := range sites {
+		result.Total++
+		item := tokenRefreshItem{
+			ID: site.ID, Name: site.Name, BaseURL: site.BaseURL, Username: site.Username,
+		}
+		runAt := time.Now()
+		client, userID, token, refreshErr := s.newAPIClientForSite(r.Context(), site, true)
+		if refreshErr != nil {
+			message := localizeErrorText(refreshErr.Error())
+			item.Success = false
+			item.UserID = firstPositiveInt64(userID, site.UserID)
+			item.Message = message
+			result.Failed++
+			if err := s.store.UpdateSiteRunWithCookies(r.Context(), site.ID, item.UserID, site.AccessToken, "", runAt, message); err != nil {
+				item.Message = message + "；保存错误状态失败：" + localizeErrorText(err.Error())
+			}
+			result.Items = append(result.Items, item)
+			continue
+		}
+		if err := s.store.UpdateSiteRunWithCookies(r.Context(), site.ID, userID, token, client.DumpCookies(), runAt, ""); err != nil {
+			message := "系统访问令牌已获取，但写入数据库失败：" + localizeErrorText(err.Error())
+			item.Success = false
+			item.UserID = userID
+			item.Message = message
+			result.Failed++
+			result.Items = append(result.Items, item)
+			continue
+		}
+		item.Success = true
+		item.UserID = userID
+		item.Message = "系统访问令牌已获取并保存"
+		result.Success++
+		result.Items = append(result.Items, item)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": result})
 }
 
 func (s *Server) listCategories(w http.ResponseWriter, r *http.Request) {
