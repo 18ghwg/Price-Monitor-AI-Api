@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS integration_settings (
   monitor_interval_minutes INTEGER NOT NULL DEFAULT 15,
   monitor_rule_delay_seconds INTEGER NOT NULL DEFAULT 60,
   expected_cache_hit_ratio DOUBLE PRECISION NOT NULL DEFAULT 0,
+  upstream_balance_threshold DOUBLE PRECISION NOT NULL DEFAULT 0,
   sync_threshold_ratio DOUBLE PRECISION,
   sync_threshold_ratios JSONB NOT NULL DEFAULT '{}'::jsonb,
   email_notify_enabled BOOLEAN NOT NULL DEFAULT false,
@@ -166,6 +167,8 @@ ALTER TABLE IF EXISTS integration_settings
   ADD COLUMN IF NOT EXISTS email_template_body TEXT NOT NULL DEFAULT '';
 ALTER TABLE IF EXISTS integration_settings
   ADD COLUMN IF NOT EXISTS email_template_configs JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE IF EXISTS integration_settings
+  ADD COLUMN IF NOT EXISTS upstream_balance_threshold DOUBLE PRECISION NOT NULL DEFAULT 0;
 UPDATE integration_settings
 SET sub2api_main_base_url = COALESCE(NULLIF(sub2api_main_base_url, ''), sub2api_base_url),
     sub2api_admin_key = COALESCE(NULLIF(sub2api_admin_key, ''), sub2api_access_token)

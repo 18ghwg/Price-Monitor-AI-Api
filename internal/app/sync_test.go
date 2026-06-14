@@ -179,6 +179,17 @@ func TestLowBalanceStatusIncludesSourceGroupAndBalance(t *testing.T) {
 	}
 }
 
+func TestSnapshotBalanceInsufficientUsesThreshold(t *testing.T) {
+	balance := 0.03
+	snapshot := PriceSnapshot{UpstreamBalance: &balance}
+	if snapshotBalanceInsufficient(snapshot, 0) {
+		t.Fatal("snapshotBalanceInsufficient() = true, want false when balance is above zero threshold")
+	}
+	if !snapshotBalanceInsufficient(snapshot, 0.05) {
+		t.Fatal("snapshotBalanceInsufficient() = false, want true when balance is below configured threshold")
+	}
+}
+
 func TestLowBalanceNotifyWindowKeepsOnlyFirstFive(t *testing.T) {
 	var skipped []PriceSnapshot
 	for id := int64(1); id <= 7; id++ {

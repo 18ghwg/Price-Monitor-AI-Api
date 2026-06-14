@@ -85,32 +85,33 @@ type BulkRuleUpdateInput struct {
 }
 
 type SettingsInput struct {
-	Sub2APIEnabled          bool                           `json:"sub2api_enabled"`
-	Sub2APIMainBaseURL      string                         `json:"sub2api_main_base_url"`
-	Sub2APIAdminKey         string                         `json:"sub2api_admin_key"`
-	Sub2APIBaseURL          string                         `json:"sub2api_base_url"`
-	Sub2APIAccessToken      string                         `json:"sub2api_access_token"`
-	Sub2APIEmail            string                         `json:"sub2api_email"`
-	Sub2APIPassword         string                         `json:"sub2api_password"`
-	MonitorIntervalMinutes  int                            `json:"monitor_interval_minutes"`
-	MonitorRuleDelaySeconds int                            `json:"monitor_rule_delay_seconds"`
-	ExpectedCacheHitRatio   float64                        `json:"expected_cache_hit_ratio"`
-	SyncThresholdRatio      float64                        `json:"sync_threshold_ratio"`
-	SyncThresholdRatios     map[string]float64             `json:"sync_threshold_ratios"`
-	EmailNotifyEnabled      bool                           `json:"email_notify_enabled"`
-	EmailNotifyPriceChange  bool                           `json:"email_notify_price_change"`
-	EmailNotifySyncUpdate   bool                           `json:"email_notify_sync_update"`
-	SMTPHost                string                         `json:"smtp_host"`
-	SMTPPort                int                            `json:"smtp_port"`
-	SMTPEncryption          string                         `json:"smtp_encryption"`
-	SMTPUsername            string                         `json:"smtp_username"`
-	SMTPPassword            string                         `json:"smtp_password"`
-	SMTPFrom                string                         `json:"smtp_from"`
-	SMTPTo                  string                         `json:"smtp_to"`
-	EmailTemplateEnabled    bool                           `json:"email_template_enabled"`
-	EmailTemplateSubject    string                         `json:"email_template_subject"`
-	EmailTemplateBody       string                         `json:"email_template_body"`
-	EmailTemplateConfigs    map[string]EmailTemplateConfig `json:"email_template_configs"`
+	Sub2APIEnabled           bool                           `json:"sub2api_enabled"`
+	Sub2APIMainBaseURL       string                         `json:"sub2api_main_base_url"`
+	Sub2APIAdminKey          string                         `json:"sub2api_admin_key"`
+	Sub2APIBaseURL           string                         `json:"sub2api_base_url"`
+	Sub2APIAccessToken       string                         `json:"sub2api_access_token"`
+	Sub2APIEmail             string                         `json:"sub2api_email"`
+	Sub2APIPassword          string                         `json:"sub2api_password"`
+	MonitorIntervalMinutes   int                            `json:"monitor_interval_minutes"`
+	MonitorRuleDelaySeconds  int                            `json:"monitor_rule_delay_seconds"`
+	ExpectedCacheHitRatio    float64                        `json:"expected_cache_hit_ratio"`
+	UpstreamBalanceThreshold float64                        `json:"upstream_balance_threshold"`
+	SyncThresholdRatio       float64                        `json:"sync_threshold_ratio"`
+	SyncThresholdRatios      map[string]float64             `json:"sync_threshold_ratios"`
+	EmailNotifyEnabled       bool                           `json:"email_notify_enabled"`
+	EmailNotifyPriceChange   bool                           `json:"email_notify_price_change"`
+	EmailNotifySyncUpdate    bool                           `json:"email_notify_sync_update"`
+	SMTPHost                 string                         `json:"smtp_host"`
+	SMTPPort                 int                            `json:"smtp_port"`
+	SMTPEncryption           string                         `json:"smtp_encryption"`
+	SMTPUsername             string                         `json:"smtp_username"`
+	SMTPPassword             string                         `json:"smtp_password"`
+	SMTPFrom                 string                         `json:"smtp_from"`
+	SMTPTo                   string                         `json:"smtp_to"`
+	EmailTemplateEnabled     bool                           `json:"email_template_enabled"`
+	EmailTemplateSubject     string                         `json:"email_template_subject"`
+	EmailTemplateBody        string                         `json:"email_template_body"`
+	EmailTemplateConfigs     map[string]EmailTemplateConfig `json:"email_template_configs"`
 }
 
 type AdminCredentialInput struct {
@@ -1933,8 +1934,8 @@ func (s Store) LatestSnapshots(ctx context.Context, limit int, category string, 
 	return snapshots, rows.Err()
 }
 
-func (s Store) CheapestSyncCandidate(ctx context.Context, category string, modelName string, expectedCacheHitRatio float64) (PriceSnapshot, []PriceSnapshot, error) {
-	candidates, skipped, err := s.SyncCandidates(ctx, category, modelName, expectedCacheHitRatio)
+func (s Store) CheapestSyncCandidate(ctx context.Context, category string, modelName string, expectedCacheHitRatio float64, balanceThreshold float64) (PriceSnapshot, []PriceSnapshot, error) {
+	candidates, skipped, err := s.SyncCandidates(ctx, category, modelName, expectedCacheHitRatio, balanceThreshold)
 	if err != nil {
 		return PriceSnapshot{}, nil, err
 	}
@@ -1944,7 +1945,7 @@ func (s Store) CheapestSyncCandidate(ctx context.Context, category string, model
 	return candidates[0], skipped, nil
 }
 
-func (s Store) SyncCandidates(ctx context.Context, category string, modelName string, expectedCacheHitRatio float64) ([]PriceSnapshot, []PriceSnapshot, error) {
+func (s Store) SyncCandidates(ctx context.Context, category string, modelName string, expectedCacheHitRatio float64, balanceThreshold float64) ([]PriceSnapshot, []PriceSnapshot, error) {
 	snapshots, err := s.latestSnapshotsForModel(ctx, category, modelName, expectedCacheHitRatio)
 	if err != nil {
 		return nil, nil, err
@@ -1952,7 +1953,7 @@ func (s Store) SyncCandidates(ctx context.Context, category string, modelName st
 	candidates := make([]PriceSnapshot, 0, len(snapshots))
 	skipped := make([]PriceSnapshot, 0)
 	for _, snapshot := range snapshots {
-		if snapshotBalanceInsufficient(snapshot) {
+		if snapshotBalanceInsufficient(snapshot, balanceThreshold) {
 			skipped = append(skipped, snapshot)
 			continue
 		}
@@ -2037,8 +2038,9 @@ func (s Store) latestSnapshotsForModel(ctx context.Context, category string, mod
 	return snapshots, rows.Err()
 }
 
-func snapshotBalanceInsufficient(snapshot PriceSnapshot) bool {
-	return snapshot.UpstreamBalance != nil && *snapshot.UpstreamBalance <= 0
+func snapshotBalanceInsufficient(snapshot PriceSnapshot, threshold float64) bool {
+	threshold = normalizeUpstreamBalanceThreshold(threshold)
+	return snapshot.UpstreamBalance != nil && *snapshot.UpstreamBalance <= threshold
 }
 
 func normalizeSyncThresholdRatios(ratios map[string]float64) map[string]float64 {
@@ -2073,6 +2075,13 @@ func normalizeExpectedCacheHitRatio(value float64) float64 {
 	return value
 }
 
+func normalizeUpstreamBalanceThreshold(value float64) float64 {
+	if value < 0 {
+		return 0
+	}
+	return value
+}
+
 func (s Store) GetIntegrationSettings(ctx context.Context) (IntegrationSettings, error) {
 	var settings IntegrationSettings
 	var syncThresholdRatio sql.NullFloat64
@@ -2082,7 +2091,7 @@ func (s Store) GetIntegrationSettings(ctx context.Context) (IntegrationSettings,
 		SELECT sub2api_enabled, sub2api_main_base_url, sub2api_admin_key,
 		       sub2api_base_url, sub2api_access_token, sub2api_email, sub2api_password,
 		       monitor_interval_minutes, monitor_rule_delay_seconds,
-		       expected_cache_hit_ratio,
+		       expected_cache_hit_ratio, upstream_balance_threshold,
 		       sync_threshold_ratio, sync_threshold_ratios,
 		       email_notify_enabled, email_notify_price_change, email_notify_sync_update,
 		       smtp_host, smtp_port, smtp_encryption, smtp_username, smtp_password, smtp_from, smtp_to,
@@ -2095,7 +2104,7 @@ func (s Store) GetIntegrationSettings(ctx context.Context) (IntegrationSettings,
 		&settings.Sub2APIBaseURL, &settings.Sub2APIAccessToken,
 		&settings.Sub2APIEmail, &settings.Sub2APIPassword,
 		&settings.MonitorIntervalMinutes, &settings.MonitorRuleDelaySeconds,
-		&settings.ExpectedCacheHitRatio,
+		&settings.ExpectedCacheHitRatio, &settings.UpstreamBalanceThreshold,
 		&syncThresholdRatio, &syncThresholdRatiosRaw,
 		&settings.EmailNotifyEnabled, &settings.EmailNotifyPriceChange, &settings.EmailNotifySyncUpdate,
 		&settings.SMTPHost, &settings.SMTPPort, &settings.SMTPEncryption, &settings.SMTPUsername, &settings.SMTPPassword,
@@ -2118,6 +2127,7 @@ func (s Store) GetIntegrationSettings(ctx context.Context) (IntegrationSettings,
 	settings.SMTPEncryption = normalizeSMTPEncryption(settings.SMTPEncryption)
 	settings.MonitorIntervalMinutes, settings.MonitorRuleDelaySeconds = normalizeMonitorScheduleSettings(settings.MonitorIntervalMinutes, settings.MonitorRuleDelaySeconds)
 	settings.ExpectedCacheHitRatio = normalizeExpectedCacheHitRatio(settings.ExpectedCacheHitRatio)
+	settings.UpstreamBalanceThreshold = normalizeUpstreamBalanceThreshold(settings.UpstreamBalanceThreshold)
 	settings.Sub2APIBaseURL = settings.Sub2APIMainBaseURL
 	settings.Sub2APIAccessToken = settings.Sub2APIAdminKey
 	return settings, err
@@ -2137,6 +2147,7 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 	input.SyncThresholdRatios = normalizeSyncThresholdRatios(input.SyncThresholdRatios)
 	input.MonitorIntervalMinutes, input.MonitorRuleDelaySeconds = normalizeMonitorScheduleSettings(input.MonitorIntervalMinutes, input.MonitorRuleDelaySeconds)
 	input.ExpectedCacheHitRatio = normalizeExpectedCacheHitRatio(input.ExpectedCacheHitRatio)
+	input.UpstreamBalanceThreshold = normalizeUpstreamBalanceThreshold(input.UpstreamBalanceThreshold)
 	if input.SMTPPort <= 0 {
 		input.SMTPPort = 587
 	}
@@ -2195,14 +2206,14 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 			id, sub2api_enabled, sub2api_main_base_url, sub2api_admin_key,
 			sub2api_base_url, sub2api_access_token, sub2api_email, sub2api_password,
 			monitor_interval_minutes, monitor_rule_delay_seconds,
-			expected_cache_hit_ratio,
+			expected_cache_hit_ratio, upstream_balance_threshold,
 			sync_threshold_ratio, sync_threshold_ratios,
 			email_notify_enabled, email_notify_price_change, email_notify_sync_update,
 			smtp_host, smtp_port, smtp_encryption, smtp_username, smtp_password, smtp_from, smtp_to,
 			email_template_enabled, email_template_subject, email_template_body, email_template_configs,
 			updated_at
 		)
-		VALUES (true, $1, $2, $3, $2, $3, $4, $5, $6, $7, $8, CASE WHEN $9::double precision > 0 THEN $9::double precision ELSE NULL END, $10::jsonb, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24::jsonb, now())
+		VALUES (true, $1, $2, $3, $2, $3, $4, $5, $6, $7, $8, $9, CASE WHEN $10::double precision > 0 THEN $10::double precision ELSE NULL END, $11::jsonb, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25::jsonb, now())
 		ON CONFLICT (id) DO UPDATE
 		SET sub2api_enabled = EXCLUDED.sub2api_enabled,
 		    sub2api_main_base_url = EXCLUDED.sub2api_main_base_url,
@@ -2214,6 +2225,7 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 		    monitor_interval_minutes = EXCLUDED.monitor_interval_minutes,
 		    monitor_rule_delay_seconds = EXCLUDED.monitor_rule_delay_seconds,
 		    expected_cache_hit_ratio = EXCLUDED.expected_cache_hit_ratio,
+		    upstream_balance_threshold = EXCLUDED.upstream_balance_threshold,
 		    sync_threshold_ratio = EXCLUDED.sync_threshold_ratio,
 		    sync_threshold_ratios = EXCLUDED.sync_threshold_ratios,
 		    email_notify_enabled = EXCLUDED.email_notify_enabled,
@@ -2234,7 +2246,7 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 		RETURNING sub2api_enabled, sub2api_main_base_url, sub2api_admin_key,
 		          sub2api_base_url, sub2api_access_token, sub2api_email, sub2api_password,
 		          monitor_interval_minutes, monitor_rule_delay_seconds,
-		          expected_cache_hit_ratio,
+		          expected_cache_hit_ratio, upstream_balance_threshold,
 		          sync_threshold_ratio, sync_threshold_ratios,
 		          email_notify_enabled, email_notify_price_change, email_notify_sync_update,
 		          smtp_host, smtp_port, smtp_encryption, smtp_username, smtp_password, smtp_from, smtp_to,
@@ -2243,7 +2255,7 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 	`,
 		input.Sub2APIEnabled, input.Sub2APIMainBaseURL, input.Sub2APIAdminKey, input.Sub2APIEmail, input.Sub2APIPassword,
 		input.MonitorIntervalMinutes, input.MonitorRuleDelaySeconds,
-		input.ExpectedCacheHitRatio,
+		input.ExpectedCacheHitRatio, input.UpstreamBalanceThreshold,
 		input.SyncThresholdRatio, string(syncThresholdRatiosRaw), input.EmailNotifyEnabled, input.EmailNotifyPriceChange, input.EmailNotifySyncUpdate,
 		input.SMTPHost, input.SMTPPort, input.SMTPEncryption, input.SMTPUsername, input.SMTPPassword, input.SMTPFrom, input.SMTPTo,
 		input.EmailTemplateEnabled, input.EmailTemplateSubject, input.EmailTemplateBody, string(templateConfigsRaw),
@@ -2252,7 +2264,7 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 		&settings.Sub2APIBaseURL, &settings.Sub2APIAccessToken,
 		&settings.Sub2APIEmail, &settings.Sub2APIPassword,
 		&settings.MonitorIntervalMinutes, &settings.MonitorRuleDelaySeconds,
-		&settings.ExpectedCacheHitRatio,
+		&settings.ExpectedCacheHitRatio, &settings.UpstreamBalanceThreshold,
 		&syncThresholdRatio, &savedSyncThresholdRatiosRaw,
 		&settings.EmailNotifyEnabled, &settings.EmailNotifyPriceChange, &settings.EmailNotifySyncUpdate,
 		&settings.SMTPHost, &settings.SMTPPort, &settings.SMTPEncryption, &settings.SMTPUsername, &settings.SMTPPassword,
@@ -2264,6 +2276,7 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 	settings.SyncThresholdRatio = floatPtr(syncThresholdRatio)
 	settings.SyncThresholdRatios = decodeSyncThresholdRatios(savedSyncThresholdRatiosRaw)
 	settings.ExpectedCacheHitRatio = normalizeExpectedCacheHitRatio(settings.ExpectedCacheHitRatio)
+	settings.UpstreamBalanceThreshold = normalizeUpstreamBalanceThreshold(settings.UpstreamBalanceThreshold)
 	settings.MonitorIntervalMinutes, settings.MonitorRuleDelaySeconds = normalizeMonitorScheduleSettings(settings.MonitorIntervalMinutes, settings.MonitorRuleDelaySeconds)
 	return settings, err
 }

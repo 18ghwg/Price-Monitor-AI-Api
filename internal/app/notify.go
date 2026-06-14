@@ -172,7 +172,7 @@ func (s *Server) notifyLowBalanceSkip(ctx context.Context, rule Rule, skipped []
 
 	subject := fmt.Sprintf("[低价上游余额不足] %s / %s", skipped[0].SiteName, skipped[0].ModelName)
 	var body strings.Builder
-	if candidate.ID > 0 && !snapshotBalanceInsufficient(candidate) {
+	if candidate.ID > 0 && !snapshotBalanceInsufficient(candidate, 0) {
 		body.WriteString("存在比当前可同步候选更低价的上游账号余额不足，已跳过这些低价渠道。\n\n")
 	} else {
 		body.WriteString("最低价上游账号余额不足，已跳过该低价渠道同步。\n\n")
@@ -192,7 +192,7 @@ func (s *Server) notifyLowBalanceSkip(ctx context.Context, rule Rule, skipped []
 		body.WriteString(formatSnapshotPriceLines(snapshot, "  "))
 		body.WriteString(fmt.Sprintf("  余额: %s\n", formatBalance(snapshot.UpstreamBalance, snapshot.BalanceUnit)))
 	}
-	if candidate.ID > 0 && !snapshotBalanceInsufficient(candidate) {
+	if candidate.ID > 0 && !snapshotBalanceInsufficient(candidate, 0) {
 		body.WriteString("\n当前可同步候选:\n")
 		body.WriteString(fmt.Sprintf("站点: %s\n地址: %s\n", candidate.SiteName, candidate.SiteBaseURL))
 		if account := strings.TrimSpace(candidate.SourceAccount); account != "" {

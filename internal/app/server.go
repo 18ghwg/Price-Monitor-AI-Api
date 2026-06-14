@@ -2174,11 +2174,16 @@ func (s *Server) lowestSnapshotEvent(ctx context.Context, rule Rule, inserted Pr
 }
 
 func (s *Server) syncBestAvailableCandidate(ctx context.Context, rule Rule, modelName string, expectedCacheHitRatio float64) (bool, bool, error) {
+	settings, settingsErr := s.store.GetIntegrationSettings(ctx)
+	if settingsErr != nil {
+		log.Printf("load integration settings for sync candidates: %v", settingsErr)
+	}
+	balanceThreshold := settings.UpstreamBalanceThreshold
 	refreshedRules := map[int64]bool{}
 	var fallbackErrors []string
 	var lastCandidates []PriceSnapshot
 	for pass := 0; pass < 2; pass++ {
-		candidates, skippedLowBalance, err := s.store.SyncCandidates(ctx, rule.Category, modelName, expectedCacheHitRatio)
+		candidates, skippedLowBalance, err := s.store.SyncCandidates(ctx, rule.Category, modelName, expectedCacheHitRatio, balanceThreshold)
 		if err != nil {
 			log.Printf("load sync candidates for rule %d model %q: %v", rule.ID, modelName, err)
 			return false, false, nil
@@ -2691,7 +2696,7 @@ func (s *Server) shouldSyncGlobalCheapestWithBalance(ctx context.Context, rule R
 		log.Printf("load integration settings for sync candidate: %v", err)
 		return false, nil, false
 	}
-	candidate, skipped, err := s.store.CheapestSyncCandidate(ctx, rule.Category, snapshot.ModelName, settings.ExpectedCacheHitRatio)
+	candidate, skipped, err := s.store.CheapestSyncCandidate(ctx, rule.Category, snapshot.ModelName, settings.ExpectedCacheHitRatio, settings.UpstreamBalanceThreshold)
 	if err != nil {
 		log.Printf("load cheapest sync candidate for rule %d model %q: %v", rule.ID, snapshot.ModelName, err)
 		return false, skipped, false
@@ -2703,7 +2708,7 @@ func (s *Server) shouldSyncGlobalCheapestWithBalance(ctx context.Context, rule R
 	if candidate.ID == snapshot.ID {
 		return true, skipped, false
 	}
-	if snapshotBalanceInsufficient(snapshot) {
+	if snapshotBalanceInsufficient(snapshot, settings.UpstreamBalanceThreshold) {
 		_ = s.store.UpdateRuleSyncStatus(ctx, rule.ID, fmt.Sprintf("跳过余额不足：%s %s %s", snapshot.SiteName, snapshot.GroupName, formatBalance(snapshot.UpstreamBalance, snapshot.BalanceUnit)), "")
 		return false, skipped, true
 	}

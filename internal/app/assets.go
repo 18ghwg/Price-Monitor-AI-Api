@@ -351,8 +351,9 @@ const indexHTML = `<!doctype html>
               </div>
               <div class="form-grid">
                 <label>预期缓存命中率<input name="expected_cache_hit_ratio" type="number" min="0" max="1" step="0.01" value="0" placeholder="0.5 表示 50% 缓存命中"></label>
+                <label>上游账户余额阈值<input name="upstream_balance_threshold" type="number" min="0" step="0.01" value="0" placeholder="低于或等于该金额判定余额不足"></label>
               </div>
-              <p class="muted">用于价格快照排序和主站同步候选选择；命中时按缓存读价格估算，未命中时按缓存写价格或普通输入价格估算。</p>
+              <p class="muted">缓存命中率用于价格快照排序和主站同步候选选择；余额阈值用于判断上游渠道账号是否余额不足，低于或等于该金额会跳过同步。</p>
               <input name="sync_threshold_ratio" type="hidden">
               <div class="threshold-editor">
                 <div class="threshold-editor-head">
@@ -3424,6 +3425,9 @@ function renderSettings() {
   form.elements.expected_cache_hit_ratio.value = state.settings.expected_cache_hit_ratio !== undefined && state.settings.expected_cache_hit_ratio !== null
     ? String(state.settings.expected_cache_hit_ratio)
     : "0";
+  form.elements.upstream_balance_threshold.value = state.settings.upstream_balance_threshold !== undefined && state.settings.upstream_balance_threshold !== null
+    ? String(state.settings.upstream_balance_threshold)
+    : "0";
   form.elements.sync_threshold_ratio.value = state.settings.sync_threshold_ratio ? String(state.settings.sync_threshold_ratio) : "";
   renderSyncThresholdRows();
   form.elements.email_notify_enabled.checked = !!state.settings.email_notify_enabled;
@@ -4762,6 +4766,7 @@ if (settingsForm) {
     payload.monitor_interval_minutes = Number(payload.monitor_interval_minutes || 15);
     payload.monitor_rule_delay_seconds = Number(payload.monitor_rule_delay_seconds || 60);
     payload.expected_cache_hit_ratio = Number(payload.expected_cache_hit_ratio || 0);
+    payload.upstream_balance_threshold = Number(payload.upstream_balance_threshold || 0);
     payload.smtp_port = Number(payload.smtp_port || 587);
     payload.sync_threshold_ratio = Number(payload.sync_threshold_ratio || 0);
     payload.sync_threshold_ratios = collectSyncThresholdRatios();
