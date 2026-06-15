@@ -1026,7 +1026,7 @@ func TestSub2APIDisableOtherAPIKeyAccountsForGroupsOnlyClosesSchedulable(t *test
 	}
 }
 
-func TestSub2APIDisableOtherAPIKeyAccountsForGroupsCanDisableStatus(t *testing.T) {
+func TestSub2APIDisableOtherAPIKeyAccountsForGroupsIgnoresDisableStatusMode(t *testing.T) {
 	statusUpdated := map[int64]string{}
 	schedulable := map[int64]bool{}
 
@@ -1075,11 +1075,14 @@ func TestSub2APIDisableOtherAPIKeyAccountsForGroupsCanDisableStatus(t *testing.T
 	if _, ok := statusUpdated[42]; ok {
 		t.Fatalf("kept account status was changed")
 	}
-	if statusUpdated[43] != "inactive" {
-		t.Fatalf("account 43 status = %q, want inactive", statusUpdated[43])
+	if len(statusUpdated) > 0 {
+		t.Fatalf("account status endpoint was called: %v; want only schedulable=false", statusUpdated)
 	}
 	if schedulable[43] {
 		t.Fatalf("account 43 schedulable = true, want false")
+	}
+	if _, ok := schedulable[43]; !ok {
+		t.Fatalf("account 43 schedulable was not changed")
 	}
 }
 

@@ -584,7 +584,6 @@ func (c *Sub2APIClient) UpsertAPIKeyAccountGroupsWithRateAndMode(ctx context.Con
 	apiKey = strings.TrimSpace(apiKey)
 	groups = normalizeSub2Groups(groups)
 	accountRate = normalizeSub2AccountRate(accountRate)
-	syncAccountMode = normalizeSub2APISyncAccountMode(syncAccountMode)
 	primary := firstSub2Group(groups)
 	if accountName == "" {
 		accountName = "newapi " + apiBaseURL + " " + primary.Name
@@ -608,7 +607,7 @@ func (c *Sub2APIClient) UpsertAPIKeyAccountGroupsWithRateAndMode(ctx context.Con
 		if err != nil {
 			return updated, "updated", err
 		}
-		if err := c.disableDuplicateAPIKeyAccounts(ctx, platform, updated.ID, apiBaseURL, accounts, syncAccountMode); err != nil {
+		if err := c.disableDuplicateAPIKeyAccounts(ctx, platform, updated.ID, apiBaseURL, accounts); err != nil {
 			return updated, "updated", err
 		}
 		return updated, "updated", nil
@@ -792,7 +791,6 @@ func (c *Sub2APIClient) DisableOtherAPIKeyAccountsForGroups(ctx context.Context,
 	}
 	platform = normalizeSub2Platform(platform)
 	groups = normalizeSub2Groups(groups)
-	syncAccountMode = normalizeSub2APISyncAccountMode(syncAccountMode)
 	disabled := map[int64]struct{}{}
 	for _, group := range groups {
 		accounts, err := c.listAccountsFiltered(ctx, platform, "", group, "apikey")
@@ -806,7 +804,7 @@ func (c *Sub2APIClient) DisableOtherAPIKeyAccountsForGroups(ctx context.Context,
 			if _, ok := disabled[account.ID]; ok {
 				continue
 			}
-			if err := c.disableAccountForSyncMode(ctx, account.ID, syncAccountMode); err != nil {
+			if err := c.SetAccountSchedulable(ctx, account.ID, false); err != nil {
 				return fmt.Errorf("disable sub2api account %d schedulable in group %s: %w", account.ID, group.Name, err)
 			}
 			disabled[account.ID] = struct{}{}
@@ -984,22 +982,13 @@ func (c *Sub2APIClient) SetAccountSchedulable(ctx context.Context, accountID int
 	return nil
 }
 
-func (c *Sub2APIClient) disableAccountForSyncMode(ctx context.Context, accountID int64, syncAccountMode string) error {
-	if normalizeSub2APISyncAccountMode(syncAccountMode) == sub2APISyncAccountModeDisableStatus {
-		_, err := c.SetAccountEnabled(ctx, accountID, false)
-		return err
-	}
-	return c.SetAccountSchedulable(ctx, accountID, false)
-}
-
-func (c *Sub2APIClient) disableDuplicateAPIKeyAccounts(ctx context.Context, platform string, keepID int64, apiBaseURL string, accounts []sub2Account, syncAccountMode string) error {
+func (c *Sub2APIClient) disableDuplicateAPIKeyAccounts(ctx context.Context, platform string, keepID int64, apiBaseURL string, accounts []sub2Account) error {
 	platform = normalizeSub2Platform(platform)
-	syncAccountMode = normalizeSub2APISyncAccountMode(syncAccountMode)
 	for _, account := range accounts {
 		if account.ID <= 0 || account.ID == keepID || !accountMatchesPlatformAPIURL(account, platform, apiBaseURL) {
 			continue
 		}
-		if err := c.disableAccountForSyncMode(ctx, account.ID, syncAccountMode); err != nil {
+		if err := c.SetAccountSchedulable(ctx, account.ID, false); err != nil {
 			return fmt.Errorf("disable duplicate sub2api account %d schedulable: %w", account.ID, err)
 		}
 	}

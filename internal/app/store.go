@@ -2100,16 +2100,10 @@ func normalizeUpstreamBalanceThreshold(value float64) float64 {
 
 const (
 	sub2APISyncAccountModeSchedulableOnly = "schedulable_only"
-	sub2APISyncAccountModeDisableStatus   = "disable_status"
 )
 
 func normalizeSub2APISyncAccountMode(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case sub2APISyncAccountModeDisableStatus:
-		return sub2APISyncAccountModeDisableStatus
-	default:
-		return sub2APISyncAccountModeSchedulableOnly
-	}
+	return sub2APISyncAccountModeSchedulableOnly
 }
 
 func (s Store) GetIntegrationSettings(ctx context.Context) (IntegrationSettings, error) {

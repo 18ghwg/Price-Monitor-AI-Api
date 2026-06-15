@@ -340,10 +340,9 @@ const indexHTML = `<!doctype html>
               <label>同步其它账号处理方式
                 <select name="sub2api_sync_account_mode">
                   <option value="schedulable_only">仅关闭调度其它账号</option>
-                  <option value="disable_status">停用其它账号状态</option>
                 </select>
               </label>
-              <p class="muted">同步新的最低价账号后，对同主站分组内其它账号默认只关闭调用调度；如需恢复旧行为，可选择同时停用账号状态。</p>
+              <p class="muted">同步新的最低价账号后，对同主站分组内其它账号只关闭调用调度，不修改账号状态。</p>
               <div class="form-grid">
                 <label>主站 sub2api 地址<input name="sub2api_main_base_url" placeholder="https://sub2api.example.com"></label>
                 <label>管理员 API Key<input name="sub2api_admin_key" type="password" placeholder="主站后台生成的 admin-...，留空保留现有值"></label>
