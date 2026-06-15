@@ -92,6 +92,7 @@ type SettingsInput struct {
 	Sub2APIAccessToken       string                         `json:"sub2api_access_token"`
 	Sub2APIEmail             string                         `json:"sub2api_email"`
 	Sub2APIPassword          string                         `json:"sub2api_password"`
+	Sub2APISyncAccountMode   string                         `json:"sub2api_sync_account_mode"`
 	MonitorIntervalMinutes   int                            `json:"monitor_interval_minutes"`
 	MonitorRuleDelaySeconds  int                            `json:"monitor_rule_delay_seconds"`
 	ExpectedCacheHitRatio    float64                        `json:"expected_cache_hit_ratio"`
@@ -2097,6 +2098,20 @@ func normalizeUpstreamBalanceThreshold(value float64) float64 {
 	return value
 }
 
+const (
+	sub2APISyncAccountModeSchedulableOnly = "schedulable_only"
+	sub2APISyncAccountModeDisableStatus   = "disable_status"
+)
+
+func normalizeSub2APISyncAccountMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case sub2APISyncAccountModeDisableStatus:
+		return sub2APISyncAccountModeDisableStatus
+	default:
+		return sub2APISyncAccountModeSchedulableOnly
+	}
+}
+
 func (s Store) GetIntegrationSettings(ctx context.Context) (IntegrationSettings, error) {
 	var settings IntegrationSettings
 	var syncThresholdRatio sql.NullFloat64
@@ -2105,6 +2120,7 @@ func (s Store) GetIntegrationSettings(ctx context.Context) (IntegrationSettings,
 	err := s.db.QueryRow(ctx, `
 		SELECT sub2api_enabled, sub2api_main_base_url, sub2api_admin_key,
 		       sub2api_base_url, sub2api_access_token, sub2api_email, sub2api_password,
+		       sub2api_sync_account_mode,
 		       monitor_interval_minutes, monitor_rule_delay_seconds,
 		       expected_cache_hit_ratio, upstream_balance_threshold,
 		       sync_threshold_ratio, sync_threshold_ratios,
@@ -2118,6 +2134,7 @@ func (s Store) GetIntegrationSettings(ctx context.Context) (IntegrationSettings,
 		&settings.Sub2APIEnabled, &settings.Sub2APIMainBaseURL, &settings.Sub2APIAdminKey,
 		&settings.Sub2APIBaseURL, &settings.Sub2APIAccessToken,
 		&settings.Sub2APIEmail, &settings.Sub2APIPassword,
+		&settings.Sub2APISyncAccountMode,
 		&settings.MonitorIntervalMinutes, &settings.MonitorRuleDelaySeconds,
 		&settings.ExpectedCacheHitRatio, &settings.UpstreamBalanceThreshold,
 		&syncThresholdRatio, &syncThresholdRatiosRaw,
@@ -2128,7 +2145,7 @@ func (s Store) GetIntegrationSettings(ctx context.Context) (IntegrationSettings,
 		&settings.UpdatedAt,
 	)
 	if err == pgx.ErrNoRows {
-		return IntegrationSettings{}, nil
+		return IntegrationSettings{Sub2APISyncAccountMode: sub2APISyncAccountModeSchedulableOnly}, nil
 	}
 	settings.EmailTemplateConfigs = decodeEmailTemplateConfigs(templateConfigsRaw)
 	settings.SyncThresholdRatio = floatPtr(syncThresholdRatio)
@@ -2140,6 +2157,7 @@ func (s Store) GetIntegrationSettings(ctx context.Context) (IntegrationSettings,
 		settings.Sub2APIAdminKey = settings.Sub2APIAccessToken
 	}
 	settings.SMTPEncryption = normalizeSMTPEncryption(settings.SMTPEncryption)
+	settings.Sub2APISyncAccountMode = normalizeSub2APISyncAccountMode(settings.Sub2APISyncAccountMode)
 	settings.MonitorIntervalMinutes, settings.MonitorRuleDelaySeconds = normalizeMonitorScheduleSettings(settings.MonitorIntervalMinutes, settings.MonitorRuleDelaySeconds)
 	settings.ExpectedCacheHitRatio = normalizeExpectedCacheHitRatio(settings.ExpectedCacheHitRatio)
 	settings.UpstreamBalanceThreshold = normalizeUpstreamBalanceThreshold(settings.UpstreamBalanceThreshold)
@@ -2152,6 +2170,7 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 	input.Sub2APIMainBaseURL = normalizeBaseURL(firstNonEmpty(input.Sub2APIMainBaseURL, input.Sub2APIBaseURL))
 	input.Sub2APIAdminKey = strings.TrimSpace(firstNonEmpty(input.Sub2APIAdminKey, input.Sub2APIAccessToken))
 	input.Sub2APIEmail = strings.TrimSpace(input.Sub2APIEmail)
+	input.Sub2APISyncAccountMode = normalizeSub2APISyncAccountMode(input.Sub2APISyncAccountMode)
 	input.SMTPHost = strings.TrimSpace(input.SMTPHost)
 	input.SMTPEncryption = normalizeSMTPEncryption(input.SMTPEncryption)
 	input.SMTPUsername = strings.TrimSpace(input.SMTPUsername)
@@ -2220,6 +2239,7 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 		INSERT INTO integration_settings (
 			id, sub2api_enabled, sub2api_main_base_url, sub2api_admin_key,
 			sub2api_base_url, sub2api_access_token, sub2api_email, sub2api_password,
+			sub2api_sync_account_mode,
 			monitor_interval_minutes, monitor_rule_delay_seconds,
 			expected_cache_hit_ratio, upstream_balance_threshold,
 			sync_threshold_ratio, sync_threshold_ratios,
@@ -2228,7 +2248,7 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 			email_template_enabled, email_template_subject, email_template_body, email_template_configs,
 			updated_at
 		)
-		VALUES (true, $1, $2, $3, $2, $3, $4, $5, $6, $7, $8, $9, CASE WHEN $10::double precision > 0 THEN $10::double precision ELSE NULL END, $11::jsonb, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25::jsonb, now())
+		VALUES (true, $1, $2, $3, $2, $3, $4, $5, $6, $7, $8, $9, $10, CASE WHEN $11::double precision > 0 THEN $11::double precision ELSE NULL END, $12::jsonb, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26::jsonb, now())
 		ON CONFLICT (id) DO UPDATE
 		SET sub2api_enabled = EXCLUDED.sub2api_enabled,
 		    sub2api_main_base_url = EXCLUDED.sub2api_main_base_url,
@@ -2237,6 +2257,7 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 		    sub2api_access_token = EXCLUDED.sub2api_access_token,
 		    sub2api_email = EXCLUDED.sub2api_email,
 		    sub2api_password = EXCLUDED.sub2api_password,
+		    sub2api_sync_account_mode = EXCLUDED.sub2api_sync_account_mode,
 		    monitor_interval_minutes = EXCLUDED.monitor_interval_minutes,
 		    monitor_rule_delay_seconds = EXCLUDED.monitor_rule_delay_seconds,
 		    expected_cache_hit_ratio = EXCLUDED.expected_cache_hit_ratio,
@@ -2260,6 +2281,7 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 		    updated_at = now()
 		RETURNING sub2api_enabled, sub2api_main_base_url, sub2api_admin_key,
 		          sub2api_base_url, sub2api_access_token, sub2api_email, sub2api_password,
+		          sub2api_sync_account_mode,
 		          monitor_interval_minutes, monitor_rule_delay_seconds,
 		          expected_cache_hit_ratio, upstream_balance_threshold,
 		          sync_threshold_ratio, sync_threshold_ratios,
@@ -2268,7 +2290,7 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 		          email_template_enabled, email_template_subject, email_template_body, email_template_configs,
 		          updated_at
 	`,
-		input.Sub2APIEnabled, input.Sub2APIMainBaseURL, input.Sub2APIAdminKey, input.Sub2APIEmail, input.Sub2APIPassword,
+		input.Sub2APIEnabled, input.Sub2APIMainBaseURL, input.Sub2APIAdminKey, input.Sub2APIEmail, input.Sub2APIPassword, input.Sub2APISyncAccountMode,
 		input.MonitorIntervalMinutes, input.MonitorRuleDelaySeconds,
 		input.ExpectedCacheHitRatio, input.UpstreamBalanceThreshold,
 		input.SyncThresholdRatio, string(syncThresholdRatiosRaw), input.EmailNotifyEnabled, input.EmailNotifyPriceChange, input.EmailNotifySyncUpdate,
@@ -2278,6 +2300,7 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 		&settings.Sub2APIEnabled, &settings.Sub2APIMainBaseURL, &settings.Sub2APIAdminKey,
 		&settings.Sub2APIBaseURL, &settings.Sub2APIAccessToken,
 		&settings.Sub2APIEmail, &settings.Sub2APIPassword,
+		&settings.Sub2APISyncAccountMode,
 		&settings.MonitorIntervalMinutes, &settings.MonitorRuleDelaySeconds,
 		&settings.ExpectedCacheHitRatio, &settings.UpstreamBalanceThreshold,
 		&syncThresholdRatio, &savedSyncThresholdRatiosRaw,
@@ -2290,6 +2313,7 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 	settings.EmailTemplateConfigs = decodeEmailTemplateConfigs(savedTemplateConfigsRaw)
 	settings.SyncThresholdRatio = floatPtr(syncThresholdRatio)
 	settings.SyncThresholdRatios = decodeSyncThresholdRatios(savedSyncThresholdRatiosRaw)
+	settings.Sub2APISyncAccountMode = normalizeSub2APISyncAccountMode(settings.Sub2APISyncAccountMode)
 	settings.ExpectedCacheHitRatio = normalizeExpectedCacheHitRatio(settings.ExpectedCacheHitRatio)
 	settings.UpstreamBalanceThreshold = normalizeUpstreamBalanceThreshold(settings.UpstreamBalanceThreshold)
 	settings.MonitorIntervalMinutes, settings.MonitorRuleDelaySeconds = normalizeMonitorScheduleSettings(settings.MonitorIntervalMinutes, settings.MonitorRuleDelaySeconds)

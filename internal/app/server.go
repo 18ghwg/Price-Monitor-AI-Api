@@ -2896,7 +2896,7 @@ func (s *Server) syncUpstreamKeyToMainSub2APIWithSignature(ctx context.Context, 
 	platform := syncPlatformForRule(rule, category)
 	accountName := fmt.Sprintf("%s %s %s", sourceName, strings.Join(groupNames, "+"), row.GroupName)
 	accountRate := ptr(row.GroupRatio)
-	account, action, err := sub2.UpsertAPIKeyAccountGroupsWithRate(ctx, platform, accountName, sourceBaseURL, apiKey, groups, accountRate)
+	account, action, err := sub2.UpsertAPIKeyAccountGroupsWithRateAndMode(ctx, platform, accountName, sourceBaseURL, apiKey, groups, accountRate, settings.Sub2APISyncAccountMode)
 	if err != nil {
 		return err
 	}
@@ -2907,7 +2907,7 @@ func (s *Server) syncUpstreamKeyToMainSub2APIWithSignature(ctx context.Context, 
 		return fmt.Errorf("主站账号连接测试失败：账号 #%d，模型 %s，主站分组 %s，上游低价分组 %s，原因：%w",
 			account.ID, row.ModelName, strings.Join(groupNames, ", "), row.GroupName, err)
 	}
-	if err := sub2.DisableOtherAPIKeyAccountsForGroups(ctx, platform, account.ID, groups); err != nil {
+	if err := sub2.DisableOtherAPIKeyAccountsForGroups(ctx, platform, account.ID, groups, settings.Sub2APISyncAccountMode); err != nil {
 		return fmt.Errorf("关闭同分组其他主站账号失败：分组 %s，原因：%w", strings.Join(groupNames, ", "), err)
 	}
 	if snapshot.ID == 0 {

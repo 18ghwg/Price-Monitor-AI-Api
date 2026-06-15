@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS integration_settings (
   sub2api_access_token TEXT NOT NULL DEFAULT '',
   sub2api_email TEXT NOT NULL DEFAULT '',
   sub2api_password TEXT NOT NULL DEFAULT '',
+  sub2api_sync_account_mode TEXT NOT NULL DEFAULT 'schedulable_only',
   monitor_interval_minutes INTEGER NOT NULL DEFAULT 15,
   monitor_rule_delay_seconds INTEGER NOT NULL DEFAULT 60,
   expected_cache_hit_ratio DOUBLE PRECISION NOT NULL DEFAULT 0,
@@ -125,6 +126,9 @@ ALTER TABLE IF EXISTS integration_settings
   ADD COLUMN IF NOT EXISTS sub2api_main_base_url TEXT NOT NULL DEFAULT '';
 ALTER TABLE IF EXISTS integration_settings
   ADD COLUMN IF NOT EXISTS sub2api_admin_key TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE IF EXISTS integration_settings
+  ADD COLUMN IF NOT EXISTS sub2api_sync_account_mode TEXT NOT NULL DEFAULT 'schedulable_only';
 ALTER TABLE IF EXISTS integration_settings
   ADD COLUMN IF NOT EXISTS sync_threshold_ratio DOUBLE PRECISION;
 ALTER TABLE IF EXISTS integration_settings

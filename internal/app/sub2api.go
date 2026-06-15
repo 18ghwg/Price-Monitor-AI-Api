@@ -575,11 +575,16 @@ func (c *Sub2APIClient) UpsertAPIKeyAccountGroups(ctx context.Context, platform,
 }
 
 func (c *Sub2APIClient) UpsertAPIKeyAccountGroupsWithRate(ctx context.Context, platform, accountName, apiBaseURL, apiKey string, groups []sub2Group, accountRate *float64) (sub2Account, string, error) {
+	return c.UpsertAPIKeyAccountGroupsWithRateAndMode(ctx, platform, accountName, apiBaseURL, apiKey, groups, accountRate, sub2APISyncAccountModeSchedulableOnly)
+}
+
+func (c *Sub2APIClient) UpsertAPIKeyAccountGroupsWithRateAndMode(ctx context.Context, platform, accountName, apiBaseURL, apiKey string, groups []sub2Group, accountRate *float64, syncAccountMode string) (sub2Account, string, error) {
 	platform = normalizeSub2Platform(platform)
 	apiBaseURL = normalizeBaseURL(apiBaseURL)
 	apiKey = strings.TrimSpace(apiKey)
 	groups = normalizeSub2Groups(groups)
 	accountRate = normalizeSub2AccountRate(accountRate)
+	syncAccountMode = normalizeSub2APISyncAccountMode(syncAccountMode)
 	primary := firstSub2Group(groups)
 	if accountName == "" {
 		accountName = "newapi " + apiBaseURL + " " + primary.Name
@@ -603,7 +608,7 @@ func (c *Sub2APIClient) UpsertAPIKeyAccountGroupsWithRate(ctx context.Context, p
 		if err != nil {
 			return updated, "updated", err
 		}
-		if err := c.disableDuplicateAPIKeyAccounts(ctx, platform, updated.ID, apiBaseURL, accounts); err != nil {
+		if err := c.disableDuplicateAPIKeyAccounts(ctx, platform, updated.ID, apiBaseURL, accounts, syncAccountMode); err != nil {
 			return updated, "updated", err
 		}
 		return updated, "updated", nil
@@ -781,12 +786,13 @@ func parseSub2AccountTestSSE(body string) error {
 	return nil
 }
 
-func (c *Sub2APIClient) DisableOtherAPIKeyAccountsForGroups(ctx context.Context, platform string, keepID int64, groups []sub2Group) error {
+func (c *Sub2APIClient) DisableOtherAPIKeyAccountsForGroups(ctx context.Context, platform string, keepID int64, groups []sub2Group, syncAccountMode string) error {
 	if keepID <= 0 {
 		return fmt.Errorf("sub2api account id is required")
 	}
 	platform = normalizeSub2Platform(platform)
 	groups = normalizeSub2Groups(groups)
+	syncAccountMode = normalizeSub2APISyncAccountMode(syncAccountMode)
 	disabled := map[int64]struct{}{}
 	for _, group := range groups {
 		accounts, err := c.listAccountsFiltered(ctx, platform, "", group, "apikey")
@@ -800,7 +806,7 @@ func (c *Sub2APIClient) DisableOtherAPIKeyAccountsForGroups(ctx context.Context,
 			if _, ok := disabled[account.ID]; ok {
 				continue
 			}
-			if err := c.SetAccountSchedulable(ctx, account.ID, false); err != nil {
+			if err := c.disableAccountForSyncMode(ctx, account.ID, syncAccountMode); err != nil {
 				return fmt.Errorf("disable sub2api account %d schedulable in group %s: %w", account.ID, group.Name, err)
 			}
 			disabled[account.ID] = struct{}{}
@@ -978,13 +984,22 @@ func (c *Sub2APIClient) SetAccountSchedulable(ctx context.Context, accountID int
 	return nil
 }
 
-func (c *Sub2APIClient) disableDuplicateAPIKeyAccounts(ctx context.Context, platform string, keepID int64, apiBaseURL string, accounts []sub2Account) error {
+func (c *Sub2APIClient) disableAccountForSyncMode(ctx context.Context, accountID int64, syncAccountMode string) error {
+	if normalizeSub2APISyncAccountMode(syncAccountMode) == sub2APISyncAccountModeDisableStatus {
+		_, err := c.SetAccountEnabled(ctx, accountID, false)
+		return err
+	}
+	return c.SetAccountSchedulable(ctx, accountID, false)
+}
+
+func (c *Sub2APIClient) disableDuplicateAPIKeyAccounts(ctx context.Context, platform string, keepID int64, apiBaseURL string, accounts []sub2Account, syncAccountMode string) error {
 	platform = normalizeSub2Platform(platform)
+	syncAccountMode = normalizeSub2APISyncAccountMode(syncAccountMode)
 	for _, account := range accounts {
 		if account.ID <= 0 || account.ID == keepID || !accountMatchesPlatformAPIURL(account, platform, apiBaseURL) {
 			continue
 		}
-		if err := c.SetAccountSchedulable(ctx, account.ID, false); err != nil {
+		if err := c.disableAccountForSyncMode(ctx, account.ID, syncAccountMode); err != nil {
 			return fmt.Errorf("disable duplicate sub2api account %d schedulable: %w", account.ID, err)
 		}
 	}

@@ -337,6 +337,13 @@ const indexHTML = `<!doctype html>
               <div class="switch-row primary-switch">
                 <label class="checkbox-label"><input name="sub2api_enabled" type="checkbox">启用主站 sub2api 同步</label>
               </div>
+              <label>同步其它账号处理方式
+                <select name="sub2api_sync_account_mode">
+                  <option value="schedulable_only">仅关闭调度其它账号</option>
+                  <option value="disable_status">停用其它账号状态</option>
+                </select>
+              </label>
+              <p class="muted">同步新的最低价账号后，对同主站分组内其它账号默认只关闭调用调度；如需恢复旧行为，可选择同时停用账号状态。</p>
               <div class="form-grid">
                 <label>主站 sub2api 地址<input name="sub2api_main_base_url" placeholder="https://sub2api.example.com"></label>
                 <label>管理员 API Key<input name="sub2api_admin_key" type="password" placeholder="主站后台生成的 admin-...，留空保留现有值"></label>
@@ -3417,6 +3424,9 @@ function renderSettings() {
     syncStatus.className = "sync-status " + (enabled ? "on" : "off");
   }
   form.elements.sub2api_main_base_url.value = state.settings.sub2api_main_base_url || state.settings.sub2api_base_url || "";
+  if (form.elements.sub2api_sync_account_mode) {
+    form.elements.sub2api_sync_account_mode.value = state.settings.sub2api_sync_account_mode || "schedulable_only";
+  }
   const savedKey = state.settings.sub2api_admin_key || state.settings.sub2api_access_token || "";
   form.elements.sub2api_admin_key.placeholder = savedKey ? "已保存：" + savedKey : "主站后台生成的 admin-...，留空保留现有值";
   form.elements.sub2api_admin_key.value = "";

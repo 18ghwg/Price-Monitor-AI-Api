@@ -1004,7 +1004,7 @@ func TestSub2APIDisableOtherAPIKeyAccountsForGroupsOnlyClosesSchedulable(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := client.DisableOtherAPIKeyAccountsForGroups(context.Background(), "openai", 42, []sub2Group{{ID: 7, Name: "Codex"}}); err != nil {
+	if err := client.DisableOtherAPIKeyAccountsForGroups(context.Background(), "openai", 42, []sub2Group{{ID: 7, Name: "Codex"}}, "schedulable_only"); err != nil {
 		t.Fatalf("DisableOtherAPIKeyAccountsForGroups() error = %v", err)
 	}
 	if len(statusUpdated) > 0 {
@@ -1023,6 +1023,63 @@ func TestSub2APIDisableOtherAPIKeyAccountsForGroupsOnlyClosesSchedulable(t *test
 		if _, ok := schedulable[id]; !ok {
 			t.Fatalf("account %d schedulable was not changed", id)
 		}
+	}
+}
+
+func TestSub2APIDisableOtherAPIKeyAccountsForGroupsCanDisableStatus(t *testing.T) {
+	statusUpdated := map[int64]string{}
+	schedulable := map[int64]bool{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/admin/accounts":
+			writeSub2TestJSON(w, map[string]any{
+				"items": []map[string]any{
+					{"id": 42, "platform": "openai", "type": "apikey", "group_ids": []int64{7}, "status": "active", "schedulable": true},
+					{"id": 43, "platform": "openai", "type": "apikey", "group_ids": []int64{7}, "status": "active", "schedulable": true},
+				},
+				"total": 2,
+			})
+		case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/api/v1/admin/accounts/"):
+			id := pathAccountID(r.URL.Path)
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode status payload: %v", err)
+			}
+			if status, ok := payload["status"].(string); ok {
+				statusUpdated[id] = status
+			}
+			writeSub2TestJSON(w, map[string]any{"id": id, "status": payload["status"]})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/schedulable"):
+			id := pathAccountID(strings.TrimSuffix(r.URL.Path, "/schedulable"))
+			var payload map[string]bool
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode schedulable payload: %v", err)
+			}
+			schedulable[id] = payload["schedulable"]
+			writeSub2TestJSON(w, map[string]any{"id": id, "schedulable": payload["schedulable"]})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewSub2APIClient(server.URL, "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.DisableOtherAPIKeyAccountsForGroups(context.Background(), "openai", 42, []sub2Group{{ID: 7, Name: "Codex"}}, "disable_status"); err != nil {
+		t.Fatalf("DisableOtherAPIKeyAccountsForGroups() error = %v", err)
+	}
+	if _, ok := statusUpdated[42]; ok {
+		t.Fatalf("kept account status was changed")
+	}
+	if statusUpdated[43] != "inactive" {
+		t.Fatalf("account 43 status = %q, want inactive", statusUpdated[43])
+	}
+	if schedulable[43] {
+		t.Fatalf("account 43 schedulable = true, want false")
 	}
 }
 

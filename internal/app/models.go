@@ -213,6 +213,7 @@ type IntegrationSettings struct {
 	Sub2APIAccessToken       string                         `json:"sub2api_access_token,omitempty"`
 	Sub2APIEmail             string                         `json:"sub2api_email"`
 	Sub2APIPassword          string                         `json:"sub2api_password,omitempty"`
+	Sub2APISyncAccountMode   string                         `json:"sub2api_sync_account_mode"`
 	MonitorIntervalMinutes   int                            `json:"monitor_interval_minutes"`
 	MonitorRuleDelaySeconds  int                            `json:"monitor_rule_delay_seconds"`
 	ExpectedCacheHitRatio    float64                        `json:"expected_cache_hit_ratio"`
