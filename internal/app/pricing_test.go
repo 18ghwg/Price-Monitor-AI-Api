@@ -126,7 +126,7 @@ func TestPricingRowExpectedPriceUsesCacheHitRatioAndOutput(t *testing.T) {
 	assertFloatClose(t, got, want)
 }
 
-func TestPricingRowExpectedPriceIgnoresCacheForNoCacheGroup(t *testing.T) {
+func TestPricingRowExpectedPriceAppliesExpectedCacheHitRatioToNoCacheBasePrice(t *testing.T) {
 	row := PricingRow{
 		GroupName:       "Codex 无缓存",
 		InputPrice:      ptr(1.0),
@@ -136,8 +136,30 @@ func TestPricingRowExpectedPriceIgnoresCacheForNoCacheGroup(t *testing.T) {
 	}
 
 	got := pricingRowExpectedPrice(row, 1)
-	want := 3.0
+	want := 6.0
 	assertFloatClose(t, got, want)
+}
+
+func TestPricingRowExpectedPriceAppliesExpectedCacheHitRatioToNoCacheGroup(t *testing.T) {
+	noCache := PricingRow{
+		GroupName:   "Codex 无缓存",
+		InputPrice:  ptr(2.0),
+		OutputPrice: ptr(3.0),
+	}
+	cached := PricingRow{
+		GroupName:       "Codex",
+		InputPrice:      ptr(3.0),
+		OutputPrice:     ptr(3.0),
+		CacheReadPrice:  ptr(1.0),
+		CacheWritePrice: ptr(3.0),
+	}
+
+	got := pricingRowExpectedPrice(noCache, 0.4)
+	want := 7.0
+	assertFloatClose(t, got, want)
+	if pricingRowLessWithExpectedCacheHitRatio(noCache, cached, 0.4) {
+		t.Fatal("no-cache row sorted cheaper, want its base price multiplied by 1 + expected cache hit ratio")
+	}
 }
 
 func TestPricingRowExpectedPriceFallsBackWhenCacheMissing(t *testing.T) {

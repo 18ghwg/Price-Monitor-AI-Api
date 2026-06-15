@@ -11,7 +11,7 @@ import (
 func priceComparisonExpr(hitRatioPlaceholder string) string {
 	noCacheExpr := noCacheGroupSQLExpr()
 	return "(CASE WHEN " + noCacheExpr + " THEN " +
-		"(CASE WHEN input_price IS NOT NULL THEN input_price + COALESCE(output_price, 0) ELSE COALESCE(request_price, output_price, 1e308) END) " +
+		"((CASE WHEN input_price IS NOT NULL THEN input_price + COALESCE(output_price, 0) ELSE COALESCE(request_price, output_price, 1e308) END) * (1 + " + hitRatioPlaceholder + ")) " +
 		"WHEN cache_write_price IS NULL AND cache_read_price IS NULL AND input_price IS NULL THEN COALESCE(request_price, output_price, 1e308) " +
 		"ELSE COALESCE(cache_write_price, input_price, request_price, output_price, 1e308) * (1 - " + hitRatioPlaceholder + ") + " +
 		"COALESCE(cache_read_price, cache_write_price, input_price, request_price, output_price, 1e308) * " + hitRatioPlaceholder + " + " +
@@ -302,7 +302,7 @@ func pricingRowLessWithExpectedCacheHitRatio(left, right PricingRow, expectedCac
 func pricingRowExpectedPrice(row PricingRow, expectedCacheHitRatio float64) float64 {
 	hitRatio := normalizeExpectedCacheHitRatio(expectedCacheHitRatio)
 	if noCacheGroup(row.GroupName, row.GroupDesc) {
-		return pricingRowBasePrice(row)
+		return pricingRowBasePrice(row) * (1 + hitRatio)
 	}
 	if row.InputPrice == nil && row.CacheReadPrice == nil && row.CacheWritePrice == nil {
 		if row.RequestPrice != nil {

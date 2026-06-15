@@ -306,7 +306,7 @@ func TestLowerThanPreviousLowestUsesExpectedCacheHitRatio(t *testing.T) {
 	}
 }
 
-func TestSub2APIUserPriceRowExpectedPriceIgnoresCacheForNoCacheGroup(t *testing.T) {
+func TestSub2APIUserPriceRowExpectedPriceAppliesExpectedCacheHitRatioToNoCacheBasePrice(t *testing.T) {
 	row := Sub2APIUserPriceRow{
 		GroupName:                 "Claude",
 		GroupPlatform:             "no-cache",
@@ -317,6 +317,6 @@ func TestSub2APIUserPriceRowExpectedPriceIgnoresCacheForNoCacheGroup(t *testing.
 	}
 
 	got := sub2APIUserPriceRowExpectedPrice(row, 1)
-	want := 3.0
+	want := 6.0
 	assertFloatClose(t, got, want)
 }
