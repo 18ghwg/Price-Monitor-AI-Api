@@ -8,14 +8,15 @@ import (
 	"strings"
 )
 
-func priceComparisonExpr(hitRatioPlaceholder string) string {
+func priceComparisonExpr(hitRatioPlaceholder string, latencyWeightPlaceholder string) string {
 	noCacheExpr := noCacheGroupSQLExpr()
-	return "(CASE WHEN " + noCacheExpr + " THEN " +
+	baseExpr := "(CASE WHEN " + noCacheExpr + " THEN " +
 		"((CASE WHEN input_price IS NOT NULL THEN input_price + COALESCE(output_price, 0) ELSE COALESCE(request_price, output_price, 1e308) END) * (1 + " + hitRatioPlaceholder + ")) " +
 		"WHEN cache_write_price IS NULL AND cache_read_price IS NULL AND input_price IS NULL THEN COALESCE(request_price, output_price, 1e308) " +
 		"ELSE COALESCE(cache_write_price, input_price, request_price, output_price, 1e308) * (1 - " + hitRatioPlaceholder + ") + " +
 		"COALESCE(cache_read_price, cache_write_price, input_price, request_price, output_price, 1e308) * " + hitRatioPlaceholder + " + " +
 		"COALESCE(output_price, 0) END)"
+	return "(" + baseExpr + " + COALESCE(request_latency_ms, 0) / 1000.0 * " + latencyWeightPlaceholder + ")"
 }
 
 func noCacheGroupSQLExpr() string {
@@ -285,8 +286,12 @@ func effectivePrice(row PricingRow) float64 {
 }
 
 func pricingRowLessWithExpectedCacheHitRatio(left, right PricingRow, expectedCacheHitRatio float64) bool {
-	leftPrice := pricingRowExpectedPrice(left, expectedCacheHitRatio)
-	rightPrice := pricingRowExpectedPrice(right, expectedCacheHitRatio)
+	return pricingRowLessWithComparisonCost(left, right, expectedCacheHitRatio, 0)
+}
+
+func pricingRowLessWithComparisonCost(left, right PricingRow, expectedCacheHitRatio float64, latencyWeightPerSecond float64) bool {
+	leftPrice := pricingRowComparisonCost(left, expectedCacheHitRatio, latencyWeightPerSecond)
+	rightPrice := pricingRowComparisonCost(right, expectedCacheHitRatio, latencyWeightPerSecond)
 	if leftPrice != rightPrice {
 		return leftPrice < rightPrice
 	}
@@ -297,6 +302,15 @@ func pricingRowLessWithExpectedCacheHitRatio(left, right PricingRow, expectedCac
 		return left.GroupRatio < right.GroupRatio
 	}
 	return left.GroupName < right.GroupName
+}
+
+func pricingRowComparisonCost(row PricingRow, expectedCacheHitRatio float64, latencyWeightPerSecond float64) float64 {
+	cost := pricingRowExpectedPrice(row, expectedCacheHitRatio)
+	latencyWeight := normalizeLatencyWeightPerSecond(latencyWeightPerSecond)
+	if latencyWeight > 0 && row.RequestLatencyMS != nil && *row.RequestLatencyMS > 0 {
+		cost += (*row.RequestLatencyMS / 1000.0) * latencyWeight
+	}
+	return cost
 }
 
 func pricingRowExpectedPrice(row PricingRow, expectedCacheHitRatio float64) float64 {

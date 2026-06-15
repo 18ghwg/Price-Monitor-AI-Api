@@ -72,6 +72,8 @@ CREATE TABLE IF NOT EXISTS integration_settings (
   sub2api_sync_account_mode TEXT NOT NULL DEFAULT 'schedulable_only',
   monitor_interval_minutes INTEGER NOT NULL DEFAULT 15,
   monitor_rule_delay_seconds INTEGER NOT NULL DEFAULT 60,
+  latency_test_enabled BOOLEAN NOT NULL DEFAULT false,
+  latency_weight_per_second DOUBLE PRECISION NOT NULL DEFAULT 0.1,
   expected_cache_hit_ratio DOUBLE PRECISION NOT NULL DEFAULT 0,
   upstream_balance_threshold DOUBLE PRECISION NOT NULL DEFAULT 0,
   sync_threshold_ratio DOUBLE PRECISION,
@@ -143,6 +145,10 @@ ALTER TABLE IF EXISTS integration_settings
   ADD COLUMN IF NOT EXISTS monitor_interval_minutes INTEGER NOT NULL DEFAULT 15;
 ALTER TABLE IF EXISTS integration_settings
   ADD COLUMN IF NOT EXISTS monitor_rule_delay_seconds INTEGER NOT NULL DEFAULT 60;
+ALTER TABLE IF EXISTS integration_settings
+  ADD COLUMN IF NOT EXISTS latency_test_enabled BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE IF EXISTS integration_settings
+  ADD COLUMN IF NOT EXISTS latency_weight_per_second DOUBLE PRECISION NOT NULL DEFAULT 0.1;
 ALTER TABLE IF EXISTS integration_settings
   ADD COLUMN IF NOT EXISTS expected_cache_hit_ratio DOUBLE PRECISION NOT NULL DEFAULT 0;
 ALTER TABLE IF EXISTS sites
@@ -222,6 +228,7 @@ CREATE TABLE IF NOT EXISTS price_snapshots (
   cache_read_price DOUBLE PRECISION,
   cache_write_price DOUBLE PRECISION,
   request_price DOUBLE PRECISION,
+  request_latency_ms DOUBLE PRECISION,
   upstream_balance DOUBLE PRECISION,
   balance_unit TEXT NOT NULL DEFAULT '',
   online_topup_enabled BOOLEAN NOT NULL DEFAULT false,
@@ -253,6 +260,9 @@ ALTER TABLE IF EXISTS price_snapshots
 
 ALTER TABLE IF EXISTS price_snapshots
   ADD COLUMN IF NOT EXISTS invalid_at TIMESTAMPTZ;
+
+ALTER TABLE IF EXISTS price_snapshots
+  ADD COLUMN IF NOT EXISTS request_latency_ms DOUBLE PRECISION;
 
 UPDATE price_snapshots
 SET upstream_balance = upstream_balance / 500000.0,

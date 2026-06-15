@@ -1550,7 +1550,7 @@ func (s *Server) listSnapshots(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "list snapshots failed")
 		return
 	}
-	snapshots, err := s.store.LatestSnapshots(r.Context(), limit, r.URL.Query().Get("category"), settings.ExpectedCacheHitRatio)
+	snapshots, err := s.store.LatestSnapshots(r.Context(), limit, r.URL.Query().Get("category"), settings.ExpectedCacheHitRatio, effectiveLatencyWeight(settings))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "list snapshots failed")
 		return
@@ -1592,6 +1592,7 @@ func (s *Server) runNewAPIRule(ctx context.Context, rule Rule, site Site) ([]Pri
 		return nil, err
 	}
 	expectedCacheHitRatio := settings.ExpectedCacheHitRatio
+	latencyWeight := effectiveLatencyWeight(settings)
 	client, userID, token, err := s.newAPIClientForSite(ctx, site, false)
 	if err != nil {
 		s.saveNewAPISession(ctx, site, client, site.UserID, site.AccessToken, err.Error())
@@ -1656,7 +1657,8 @@ func (s *Server) runNewAPIRule(ctx context.Context, rule Rule, site Site) ([]Pri
 	syncDecisionRecorded := false
 	for _, row := range rows {
 		activeGroups = append(activeGroups, row.GroupName)
-		previousLowest, previousLowestErr := s.store.CheapestLatestSnapshot(ctx, rule.Category, row.ModelName, expectedCacheHitRatio)
+		previousLowest, previousLowestErr := s.store.CheapestLatestSnapshot(ctx, rule.Category, row.ModelName, expectedCacheHitRatio, latencyWeight)
+		requestLatencyMS := s.measureNewAPIUpstreamLatency(ctx, rule, site, client, userID, token, row)
 		snapshot := PriceSnapshot{
 			RuleID:             rule.ID,
 			SourceType:         RuleSourceNewAPI,
@@ -1677,6 +1679,7 @@ func (s *Server) runNewAPIRule(ctx context.Context, rule Rule, site Site) ([]Pri
 			CacheReadPrice:     row.CacheReadPrice,
 			CacheWritePrice:    row.CacheWritePrice,
 			RequestPrice:       row.RequestPrice,
+			RequestLatencyMS:   requestLatencyMS,
 			UpstreamBalance:    balance.Value,
 			BalanceUnit:        balance.Unit,
 			OnlineTopupEnabled: rechargeStatus.Enabled,
@@ -1688,7 +1691,7 @@ func (s *Server) runNewAPIRule(ctx context.Context, rule Rule, site Site) ([]Pri
 			return nil, err
 		}
 		snapshots = append(snapshots, snapshot)
-		currentLowest, newLowest, stableLowest := s.lowestSnapshotEvent(ctx, rule, snapshot, previousLowest, previousLowestErr, expectedCacheHitRatio)
+		currentLowest, newLowest, stableLowest := s.lowestSnapshotEvent(ctx, rule, snapshot, previousLowest, previousLowestErr, expectedCacheHitRatio, latencyWeight)
 		if stableLowest {
 			syncDecisionRecorded = true
 		}
@@ -1696,7 +1699,7 @@ func (s *Server) runNewAPIRule(ctx context.Context, rule Rule, site Site) ([]Pri
 			s.notifyPriceChange(ctx, previousLowest, currentLowest, lowestSnapshotChanges(previousLowest, currentLowest))
 		}
 		if rule.SyncEnabled {
-			attempted, decisionRecorded, err := s.syncBestAvailableCandidate(ctx, rule, row.ModelName, expectedCacheHitRatio)
+			attempted, decisionRecorded, err := s.syncBestAvailableCandidate(ctx, rule, row.ModelName, expectedCacheHitRatio, latencyWeight)
 			syncDecisionRecorded = syncDecisionRecorded || decisionRecorded
 			if attempted {
 				syncAttempted = true
@@ -1725,6 +1728,7 @@ func (s *Server) runSub2APIRule(ctx context.Context, rule Rule, upstream Sub2API
 		return nil, err
 	}
 	expectedCacheHitRatio := settings.ExpectedCacheHitRatio
+	latencyWeight := effectiveLatencyWeight(settings)
 	client, groups, userRates, err := s.fetchSub2APIUserClientGroups(ctx, sub2APIUserPriceInput{
 		Sub2APIUpstreamID: upstream.ID,
 	})
@@ -1772,7 +1776,8 @@ func (s *Server) runSub2APIRule(ctx context.Context, rule Rule, upstream Sub2API
 	syncDecisionRecorded := false
 	for _, row := range rows {
 		activeGroups = append(activeGroups, row.GroupName)
-		previousLowest, previousLowestErr := s.store.CheapestLatestSnapshot(ctx, rule.Category, row.ModelName, expectedCacheHitRatio)
+		previousLowest, previousLowestErr := s.store.CheapestLatestSnapshot(ctx, rule.Category, row.ModelName, expectedCacheHitRatio, latencyWeight)
+		requestLatencyMS := s.measureSub2APIUpstreamLatency(ctx, rule, upstream, row)
 		cacheWritePrice := row.FinalCacheWritePerMillion
 		if cacheWritePrice == nil {
 			cacheWritePrice = row.FinalCacheWrite1hPerMillion
@@ -1796,6 +1801,7 @@ func (s *Server) runSub2APIRule(ctx context.Context, rule Rule, upstream Sub2API
 			OutputPrice:        row.FinalOutputPerMillion,
 			CacheReadPrice:     row.FinalCacheReadPerMillion,
 			CacheWritePrice:    cacheWritePrice,
+			RequestLatencyMS:   requestLatencyMS,
 			UpstreamBalance:    balance.Value,
 			BalanceUnit:        balance.Unit,
 			OnlineTopupEnabled: rechargeStatus.Enabled,
@@ -1807,7 +1813,7 @@ func (s *Server) runSub2APIRule(ctx context.Context, rule Rule, upstream Sub2API
 			return nil, err
 		}
 		snapshots = append(snapshots, snapshot)
-		currentLowest, newLowest, stableLowest := s.lowestSnapshotEvent(ctx, rule, snapshot, previousLowest, previousLowestErr, expectedCacheHitRatio)
+		currentLowest, newLowest, stableLowest := s.lowestSnapshotEvent(ctx, rule, snapshot, previousLowest, previousLowestErr, expectedCacheHitRatio, latencyWeight)
 		if stableLowest {
 			syncDecisionRecorded = true
 		}
@@ -1815,7 +1821,7 @@ func (s *Server) runSub2APIRule(ctx context.Context, rule Rule, upstream Sub2API
 			s.notifyPriceChange(ctx, previousLowest, currentLowest, lowestSnapshotChanges(previousLowest, currentLowest))
 		}
 		if rule.SyncEnabled {
-			attempted, decisionRecorded, err := s.syncBestAvailableCandidate(ctx, rule, row.ModelName, expectedCacheHitRatio)
+			attempted, decisionRecorded, err := s.syncBestAvailableCandidate(ctx, rule, row.ModelName, expectedCacheHitRatio, latencyWeight)
 			syncDecisionRecorded = syncDecisionRecorded || decisionRecorded
 			if attempted {
 				syncAttempted = true
@@ -1882,6 +1888,58 @@ func pricingRowFromSub2APIUserPriceRow(row Sub2APIUserPriceRow) PricingRow {
 		CacheReadPrice:  row.FinalCacheReadPerMillion,
 		CacheWritePrice: cacheWritePrice,
 	}
+}
+
+func (s *Server) measureNewAPIUpstreamLatency(ctx context.Context, rule Rule, site Site, client *NewAPIClient, userID int64, token string, row PricingRow) *float64 {
+	settings, err := s.store.GetIntegrationSettings(ctx)
+	if err != nil || !settings.LatencyTestEnabled {
+		return nil
+	}
+	keyName := upstreamKeyName(rule, row.ModelName)
+	apiKey, _, err := createNewAPIUpstreamKey(ctx, client, userID, token, keyName, row.GroupName)
+	if err != nil && isSessionAuthError(err) {
+		client, userID, token, err = s.newAPIClientForSite(ctx, site, true)
+		if err == nil {
+			apiKey, _, err = createNewAPIUpstreamKey(ctx, client, userID, token, keyName, row.GroupName)
+			if err == nil {
+				s.saveNewAPISession(ctx, site, client, userID, token, "")
+			}
+		}
+	}
+	if err != nil {
+		log.Printf("create newapi latency probe key for rule %d group %q: %v", rule.ID, row.GroupName, err)
+		return nil
+	}
+	latency, err := probeModelRequestLatency(ctx, site.BaseURL, apiKey, row.ModelName)
+	if err != nil {
+		log.Printf("probe newapi latency for rule %d site %s group %q model %q: %v", rule.ID, site.Name, row.GroupName, row.ModelName, err)
+		return nil
+	}
+	return ptr(latency)
+}
+
+func (s *Server) measureSub2APIUpstreamLatency(ctx context.Context, rule Rule, upstream Sub2APIUpstream, row Sub2APIUserPriceRow) *float64 {
+	settings, err := s.store.GetIntegrationSettings(ctx)
+	if err != nil || !settings.LatencyTestEnabled {
+		return nil
+	}
+	group := sub2Group{
+		ID:       row.GroupID,
+		Name:     row.GroupName,
+		Platform: row.GroupPlatform,
+		Rate:     row.EffectiveRate,
+	}
+	apiKey, _, err := s.ensureSub2APIUpstreamAPIKey(ctx, upstream, upstreamKeyName(rule, row.ModelName), group)
+	if err != nil {
+		log.Printf("create sub2api latency probe key for rule %d group %q: %v", rule.ID, row.GroupName, err)
+		return nil
+	}
+	latency, err := probeModelRequestLatency(ctx, upstream.BaseURL, apiKey, row.ModelName)
+	if err != nil {
+		log.Printf("probe sub2api latency for rule %d upstream %s group %q model %q: %v", rule.ID, upstream.Name, row.GroupName, row.ModelName, err)
+		return nil
+	}
+	return ptr(latency)
 }
 
 func missingPricingRowsError(rule Rule, sub2api bool, blockedOnly bool) error {
@@ -2154,8 +2212,8 @@ func sub2APIUserPriceRowRaw(row Sub2APIUserPriceRow) []byte {
 	return data
 }
 
-func (s *Server) lowestSnapshotEvent(ctx context.Context, rule Rule, inserted PriceSnapshot, previous PriceSnapshot, previousErr error, expectedCacheHitRatio float64) (PriceSnapshot, bool, bool) {
-	current, err := s.store.CheapestLatestSnapshot(ctx, rule.Category, inserted.ModelName, expectedCacheHitRatio)
+func (s *Server) lowestSnapshotEvent(ctx context.Context, rule Rule, inserted PriceSnapshot, previous PriceSnapshot, previousErr error, expectedCacheHitRatio float64, latencyWeightPerSecond float64) (PriceSnapshot, bool, bool) {
+	current, err := s.store.CheapestLatestSnapshot(ctx, rule.Category, inserted.ModelName, expectedCacheHitRatio, latencyWeightPerSecond)
 	if err != nil {
 		log.Printf("load current cheapest snapshot for rule %d model %q: %v", rule.ID, inserted.ModelName, err)
 		return PriceSnapshot{}, false, false
@@ -2173,13 +2231,13 @@ func (s *Server) lowestSnapshotEvent(ctx context.Context, rule Rule, inserted Pr
 	if sameLowestSnapshot(previous, current) {
 		return current, false, true
 	}
-	if !lowerThanPreviousLowest(previous, current, expectedCacheHitRatio) {
+	if !lowerThanPreviousLowest(previous, current, expectedCacheHitRatio, latencyWeightPerSecond) {
 		return current, false, true
 	}
 	return current, true, false
 }
 
-func (s *Server) syncBestAvailableCandidate(ctx context.Context, rule Rule, modelName string, expectedCacheHitRatio float64) (bool, bool, error) {
+func (s *Server) syncBestAvailableCandidate(ctx context.Context, rule Rule, modelName string, expectedCacheHitRatio float64, latencyWeightPerSecond float64) (bool, bool, error) {
 	settings, settingsErr := s.store.GetIntegrationSettings(ctx)
 	if settingsErr != nil {
 		log.Printf("load integration settings for sync candidates: %v", settingsErr)
@@ -2193,7 +2251,7 @@ func (s *Server) syncBestAvailableCandidate(ctx context.Context, rule Rule, mode
 	var fallbackErrors []string
 	var lastCandidates []PriceSnapshot
 	for pass := 0; pass < 2; pass++ {
-		candidates, skippedLowBalance, err := s.store.SyncCandidates(ctx, rule.Category, modelName, expectedCacheHitRatio, balanceThreshold)
+		candidates, skippedLowBalance, err := s.store.SyncCandidates(ctx, rule.Category, modelName, expectedCacheHitRatio, balanceThreshold, latencyWeightPerSecond)
 		if err != nil {
 			log.Printf("load sync candidates for rule %d model %q: %v", rule.ID, modelName, err)
 			return false, false, nil
@@ -2210,7 +2268,7 @@ func (s *Server) syncBestAvailableCandidate(ctx context.Context, rule Rule, mode
 		}
 		if pass == 0 && len(skippedLowBalance) > 0 {
 			s.updateLowBalanceStatuses(ctx, skippedLowBalance)
-			if notifySkipped := s.recordLowBalanceNotifications(ctx, lowBalanceSkippedBelowCandidate(skippedLowBalance, candidates[0], expectedCacheHitRatio)); len(notifySkipped) > 0 {
+			if notifySkipped := s.recordLowBalanceNotifications(ctx, lowBalanceSkippedBelowCandidate(skippedLowBalance, candidates[0], expectedCacheHitRatio, latencyWeightPerSecond)); len(notifySkipped) > 0 {
 				s.notifyLowBalanceSkip(ctx, rule, notifySkipped, candidates[0])
 			}
 		}
@@ -2363,14 +2421,14 @@ func (s *Server) recordLowBalanceNotifications(ctx context.Context, skipped []Pr
 	return notifySkipped
 }
 
-func lowBalanceSkippedBelowCandidate(skipped []PriceSnapshot, candidate PriceSnapshot, expectedCacheHitRatio float64) []PriceSnapshot {
+func lowBalanceSkippedBelowCandidate(skipped []PriceSnapshot, candidate PriceSnapshot, expectedCacheHitRatio float64, latencyWeightPerSecond float64) []PriceSnapshot {
 	if candidate.ID <= 0 {
 		return skipped
 	}
 	filtered := make([]PriceSnapshot, 0, len(skipped))
 	candidateRow := pricingRowFromSnapshot(candidate)
 	for _, snapshot := range skipped {
-		if pricingRowLessWithExpectedCacheHitRatio(pricingRowFromSnapshot(snapshot), candidateRow, expectedCacheHitRatio) {
+		if pricingRowLessWithComparisonCost(pricingRowFromSnapshot(snapshot), candidateRow, expectedCacheHitRatio, latencyWeightPerSecond) {
 			filtered = append(filtered, snapshot)
 		}
 	}
@@ -2468,33 +2526,35 @@ func pricingRowFromSnapshot(snapshot PriceSnapshot) PricingRow {
 		groupRatio = *snapshot.GroupRatio
 	}
 	return PricingRow{
-		ModelName:       snapshot.ModelName,
-		GroupName:       snapshot.GroupName,
-		GroupDesc:       snapshot.GroupDesc,
-		QuotaType:       snapshot.QuotaType,
-		GroupRatio:      groupRatio,
-		InputPrice:      snapshot.InputPrice,
-		OutputPrice:     snapshot.OutputPrice,
-		CacheReadPrice:  snapshot.CacheReadPrice,
-		CacheWritePrice: snapshot.CacheWritePrice,
-		RequestPrice:    snapshot.RequestPrice,
+		ModelName:        snapshot.ModelName,
+		GroupName:        snapshot.GroupName,
+		GroupDesc:        snapshot.GroupDesc,
+		QuotaType:        snapshot.QuotaType,
+		GroupRatio:       groupRatio,
+		InputPrice:       snapshot.InputPrice,
+		OutputPrice:      snapshot.OutputPrice,
+		CacheReadPrice:   snapshot.CacheReadPrice,
+		CacheWritePrice:  snapshot.CacheWritePrice,
+		RequestPrice:     snapshot.RequestPrice,
+		RequestLatencyMS: snapshot.RequestLatencyMS,
 	}
 }
 
 func priceSnapshotFromPricingRow(row PricingRow, sourceName string, sourceBaseURL string) PriceSnapshot {
 	return PriceSnapshot{
-		SiteName:        sourceName,
-		SiteBaseURL:     sourceBaseURL,
-		ModelName:       row.ModelName,
-		GroupName:       row.GroupName,
-		GroupDesc:       row.GroupDesc,
-		QuotaType:       row.QuotaType,
-		GroupRatio:      ptr(row.GroupRatio),
-		InputPrice:      row.InputPrice,
-		OutputPrice:     row.OutputPrice,
-		CacheReadPrice:  row.CacheReadPrice,
-		CacheWritePrice: row.CacheWritePrice,
-		RequestPrice:    row.RequestPrice,
+		SiteName:         sourceName,
+		SiteBaseURL:      sourceBaseURL,
+		ModelName:        row.ModelName,
+		GroupName:        row.GroupName,
+		GroupDesc:        row.GroupDesc,
+		QuotaType:        row.QuotaType,
+		GroupRatio:       ptr(row.GroupRatio),
+		InputPrice:       row.InputPrice,
+		OutputPrice:      row.OutputPrice,
+		CacheReadPrice:   row.CacheReadPrice,
+		CacheWritePrice:  row.CacheWritePrice,
+		RequestPrice:     row.RequestPrice,
+		RequestLatencyMS: row.RequestLatencyMS,
 	}
 }
 
@@ -2706,7 +2766,7 @@ func (s *Server) shouldSyncGlobalCheapestWithBalance(ctx context.Context, rule R
 		log.Printf("load integration settings for sync candidate: %v", err)
 		return false, nil, false
 	}
-	candidate, skipped, err := s.store.CheapestSyncCandidate(ctx, rule.Category, snapshot.ModelName, settings.ExpectedCacheHitRatio, settings.UpstreamBalanceThreshold)
+	candidate, skipped, err := s.store.CheapestSyncCandidate(ctx, rule.Category, snapshot.ModelName, settings.ExpectedCacheHitRatio, settings.UpstreamBalanceThreshold, effectiveLatencyWeight(settings))
 	if err != nil {
 		log.Printf("load cheapest sync candidate for rule %d model %q: %v", rule.ID, snapshot.ModelName, err)
 		return false, skipped, false

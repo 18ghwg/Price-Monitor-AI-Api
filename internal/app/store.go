@@ -95,6 +95,8 @@ type SettingsInput struct {
 	Sub2APISyncAccountMode   string                         `json:"sub2api_sync_account_mode"`
 	MonitorIntervalMinutes   int                            `json:"monitor_interval_minutes"`
 	MonitorRuleDelaySeconds  int                            `json:"monitor_rule_delay_seconds"`
+	LatencyTestEnabled       bool                           `json:"latency_test_enabled"`
+	LatencyWeightPerSecond   float64                        `json:"latency_weight_per_second"`
 	ExpectedCacheHitRatio    float64                        `json:"expected_cache_hit_ratio"`
 	UpstreamBalanceThreshold float64                        `json:"upstream_balance_threshold"`
 	SyncThresholdRatio       float64                        `json:"sync_threshold_ratio"`
@@ -1625,9 +1627,9 @@ func (s Store) InsertSnapshot(ctx context.Context, snapshot PriceSnapshot) (Pric
 	err := s.db.QueryRow(ctx, `
 		INSERT INTO price_snapshots (
 			rule_id, source_type, site_id, sub2api_upstream_id, source_base_url, source_account, category, model_keyword, model_name, group_name, group_desc, quota_type, group_ratio,
-			input_price, output_price, cache_read_price, cache_write_price, request_price, upstream_balance, balance_unit, online_topup_enabled, recharge_multiplier, raw
+			input_price, output_price, cache_read_price, cache_write_price, request_price, request_latency_ms, upstream_balance, balance_unit, online_topup_enabled, recharge_multiplier, raw
 		)
-		VALUES ($1, $2, NULLIF($3, 0), $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
+		VALUES ($1, $2, NULLIF($3, 0), $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
 		ON CONFLICT (
 			COALESCE(source_type, 'newapi'),
 			lower(regexp_replace(trim(source_base_url), '/+$', '')),
@@ -1652,6 +1654,7 @@ func (s Store) InsertSnapshot(ctx context.Context, snapshot PriceSnapshot) (Pric
 			cache_read_price = EXCLUDED.cache_read_price,
 			cache_write_price = EXCLUDED.cache_write_price,
 			request_price = EXCLUDED.request_price,
+			request_latency_ms = EXCLUDED.request_latency_ms,
 			upstream_balance = EXCLUDED.upstream_balance,
 			balance_unit = EXCLUDED.balance_unit,
 			online_topup_enabled = EXCLUDED.online_topup_enabled,
@@ -1666,7 +1669,7 @@ func (s Store) InsertSnapshot(ctx context.Context, snapshot PriceSnapshot) (Pric
 		snapshot.RuleID, snapshot.SourceType, snapshot.SiteID, snapshot.Sub2APIUpstreamID, normalizeBaseURL(snapshot.SiteBaseURL), strings.TrimSpace(snapshot.SourceAccount), normalizeCategorySlug(snapshot.Category), snapshot.ModelKeyword,
 		snapshot.ModelName, snapshot.GroupName, snapshot.GroupDesc,
 		snapshot.QuotaType, snapshot.GroupRatio, snapshot.InputPrice, snapshot.OutputPrice,
-		snapshot.CacheReadPrice, snapshot.CacheWritePrice, snapshot.RequestPrice, snapshot.UpstreamBalance, snapshot.BalanceUnit, snapshot.OnlineTopupEnabled, snapshot.RechargeMultiplier, string(snapshot.Raw),
+		snapshot.CacheReadPrice, snapshot.CacheWritePrice, snapshot.RequestPrice, snapshot.RequestLatencyMS, snapshot.UpstreamBalance, snapshot.BalanceUnit, snapshot.OnlineTopupEnabled, snapshot.RechargeMultiplier, string(snapshot.Raw),
 	).Scan(&snapshot.ID, &snapshot.CreatedAt)
 	return snapshot, err
 }
@@ -1753,7 +1756,7 @@ func (s Store) PruneExpiredInvalidSnapshots(ctx context.Context, olderThan time.
 
 func (s Store) PreviousSnapshot(ctx context.Context, ruleID int64, modelName string) (PriceSnapshot, error) {
 	var snapshot PriceSnapshot
-	var groupRatio, inputPrice, outputPrice, cacheReadPrice, cacheWritePrice, requestPrice, upstreamBalance, rechargeMultiplier sql.NullFloat64
+	var groupRatio, inputPrice, outputPrice, cacheReadPrice, cacheWritePrice, requestPrice, requestLatencyMS, upstreamBalance, rechargeMultiplier sql.NullFloat64
 	var invalidAt sql.NullTime
 	err := s.db.QueryRow(ctx, `
 		SELECT p.id, p.rule_id, COALESCE(p.source_type, 'newapi'), COALESCE(p.site_id, 0), p.sub2api_upstream_id,
@@ -1762,7 +1765,7 @@ func (s Store) PreviousSnapshot(ctx context.Context, ruleID int64, modelName str
 		       COALESCE(p.source_account, '') AS source_account,
 		       p.category, COALESCE(c.name, p.category) AS category_name, p.model_keyword, p.model_name,
 		       p.group_name, p.group_desc, p.quota_type, p.group_ratio, p.input_price, p.output_price,
-		       p.cache_read_price, p.cache_write_price, p.request_price, p.upstream_balance, p.balance_unit,
+		       p.cache_read_price, p.cache_write_price, p.request_price, p.request_latency_ms, p.upstream_balance, p.balance_unit,
 		       p.online_topup_enabled, p.recharge_multiplier,
 		       p.invalid, p.invalid_reason, p.invalid_at, p.raw, p.created_at
 		FROM price_snapshots p
@@ -1776,7 +1779,7 @@ func (s Store) PreviousSnapshot(ctx context.Context, ruleID int64, modelName str
 		&snapshot.ID, &snapshot.RuleID, &snapshot.SourceType, &snapshot.SiteID, &snapshot.Sub2APIUpstreamID, &snapshot.SiteName, &snapshot.SiteBaseURL, &snapshot.SourceAccount,
 		&snapshot.Category, &snapshot.CategoryName, &snapshot.ModelKeyword, &snapshot.ModelName,
 		&snapshot.GroupName, &snapshot.GroupDesc, &snapshot.QuotaType, &groupRatio, &inputPrice,
-		&outputPrice, &cacheReadPrice, &cacheWritePrice, &requestPrice, &upstreamBalance, &snapshot.BalanceUnit,
+		&outputPrice, &cacheReadPrice, &cacheWritePrice, &requestPrice, &requestLatencyMS, &upstreamBalance, &snapshot.BalanceUnit,
 		&snapshot.OnlineTopupEnabled, &rechargeMultiplier,
 		&snapshot.Invalid, &snapshot.InvalidReason, &invalidAt, &snapshot.Raw, &snapshot.CreatedAt,
 	)
@@ -1789,16 +1792,18 @@ func (s Store) PreviousSnapshot(ctx context.Context, ruleID int64, modelName str
 	snapshot.CacheReadPrice = floatPtr(cacheReadPrice)
 	snapshot.CacheWritePrice = floatPtr(cacheWritePrice)
 	snapshot.RequestPrice = floatPtr(requestPrice)
+	snapshot.RequestLatencyMS = floatPtr(requestLatencyMS)
 	snapshot.UpstreamBalance = floatPtr(upstreamBalance)
 	snapshot.RechargeMultiplier = floatPtr(rechargeMultiplier)
 	snapshot.InvalidAt = timePtr(invalidAt)
 	return snapshot, nil
 }
 
-func (s Store) CheapestLatestSnapshot(ctx context.Context, category string, modelName string, expectedCacheHitRatio float64) (PriceSnapshot, error) {
+func (s Store) CheapestLatestSnapshot(ctx context.Context, category string, modelName string, expectedCacheHitRatio float64, latencyWeightPerSecond float64) (PriceSnapshot, error) {
 	hitRatio := normalizeExpectedCacheHitRatio(expectedCacheHitRatio)
+	latencyWeight := normalizeLatencyWeightPerSecond(latencyWeightPerSecond)
 	var snapshot PriceSnapshot
-	var groupRatio, inputPrice, outputPrice, cacheReadPrice, cacheWritePrice, requestPrice, upstreamBalance, rechargeMultiplier sql.NullFloat64
+	var groupRatio, inputPrice, outputPrice, cacheReadPrice, cacheWritePrice, requestPrice, requestLatencyMS, upstreamBalance, rechargeMultiplier sql.NullFloat64
 	var invalidAt sql.NullTime
 	err := s.db.QueryRow(ctx, `
 		WITH latest AS (
@@ -1809,7 +1814,7 @@ func (s Store) CheapestLatestSnapshot(ctx context.Context, category string, mode
 			       COALESCE(p.source_account, '') AS source_account,
 		       r.category, COALESCE(c.name, r.category) AS category_name, p.model_keyword, p.model_name,
 		       p.group_name, p.group_desc, p.quota_type, p.group_ratio, p.input_price, p.output_price,
-		       p.cache_read_price, p.cache_write_price, p.request_price, p.upstream_balance, p.balance_unit,
+		       p.cache_read_price, p.cache_write_price, p.request_price, p.request_latency_ms, p.upstream_balance, p.balance_unit,
 		       p.online_topup_enabled, p.recharge_multiplier,
 		       p.invalid, p.invalid_reason, p.invalid_at, p.raw, p.created_at
 			FROM price_snapshots p
@@ -1833,18 +1838,18 @@ func (s Store) CheapestLatestSnapshot(ctx context.Context, category string, mode
 		SELECT id, rule_id, source_type, site_id, sub2api_upstream_id, site_name, site_base_url, source_account, category, category_name, model_keyword,
 		       model_name, group_name, group_desc, quota_type,
 		       group_ratio, input_price, output_price, cache_read_price, cache_write_price,
-		       request_price, upstream_balance, balance_unit, online_topup_enabled, recharge_multiplier, invalid, invalid_reason, invalid_at, raw, created_at
+		       request_price, request_latency_ms, upstream_balance, balance_unit, online_topup_enabled, recharge_multiplier, invalid, invalid_reason, invalid_at, raw, created_at
 		FROM latest
-		ORDER BY `+priceComparisonExpr("$3")+` ASC,
+		ORDER BY `+priceComparisonExpr("$3", "$4")+` ASC,
 		         COALESCE(output_price, 1e308) ASC,
 		         group_ratio ASC NULLS LAST,
 		         id DESC
 		LIMIT 1
-	`, normalizeCategorySlug(category), strings.TrimSpace(modelName), hitRatio).Scan(
+	`, normalizeCategorySlug(category), strings.TrimSpace(modelName), hitRatio, latencyWeight).Scan(
 		&snapshot.ID, &snapshot.RuleID, &snapshot.SourceType, &snapshot.SiteID, &snapshot.Sub2APIUpstreamID, &snapshot.SiteName, &snapshot.SiteBaseURL, &snapshot.SourceAccount,
 		&snapshot.Category, &snapshot.CategoryName, &snapshot.ModelKeyword, &snapshot.ModelName,
 		&snapshot.GroupName, &snapshot.GroupDesc, &snapshot.QuotaType, &groupRatio, &inputPrice,
-		&outputPrice, &cacheReadPrice, &cacheWritePrice, &requestPrice, &upstreamBalance, &snapshot.BalanceUnit,
+		&outputPrice, &cacheReadPrice, &cacheWritePrice, &requestPrice, &requestLatencyMS, &upstreamBalance, &snapshot.BalanceUnit,
 		&snapshot.OnlineTopupEnabled, &rechargeMultiplier,
 		&snapshot.Invalid, &snapshot.InvalidReason, &invalidAt, &snapshot.Raw, &snapshot.CreatedAt,
 	)
@@ -1857,17 +1862,19 @@ func (s Store) CheapestLatestSnapshot(ctx context.Context, category string, mode
 	snapshot.CacheReadPrice = floatPtr(cacheReadPrice)
 	snapshot.CacheWritePrice = floatPtr(cacheWritePrice)
 	snapshot.RequestPrice = floatPtr(requestPrice)
+	snapshot.RequestLatencyMS = floatPtr(requestLatencyMS)
 	snapshot.UpstreamBalance = floatPtr(upstreamBalance)
 	snapshot.RechargeMultiplier = floatPtr(rechargeMultiplier)
 	snapshot.InvalidAt = timePtr(invalidAt)
 	return snapshot, nil
 }
 
-func (s Store) LatestSnapshots(ctx context.Context, limit int, category string, expectedCacheHitRatio float64) ([]PriceSnapshot, error) {
+func (s Store) LatestSnapshots(ctx context.Context, limit int, category string, expectedCacheHitRatio float64, latencyWeightPerSecond float64) ([]PriceSnapshot, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
 	hitRatio := normalizeExpectedCacheHitRatio(expectedCacheHitRatio)
+	latencyWeight := normalizeLatencyWeightPerSecond(latencyWeightPerSecond)
 	category = normalizeCategorySlug(category)
 	categoryFilter := ""
 	args := []any{}
@@ -1893,7 +1900,7 @@ func (s Store) LatestSnapshots(ctx context.Context, limit int, category string, 
 			       COALESCE(p.source_account, '') AS source_account,
 			       p.rule_category AS category, COALESCE(c.name, p.rule_category) AS category_name, p.model_keyword, p.model_name, p.group_name,
 			       p.group_desc, p.quota_type, p.group_ratio, p.input_price, p.output_price,
-			       p.cache_read_price, p.cache_write_price, p.request_price, p.upstream_balance, p.balance_unit,
+			       p.cache_read_price, p.cache_write_price, p.request_price, p.request_latency_ms, p.upstream_balance, p.balance_unit,
 			       p.online_topup_enabled, p.recharge_multiplier,
 			       p.invalid, p.invalid_reason, p.invalid_at, p.raw, p.created_at
 			FROM filtered p
@@ -1905,17 +1912,17 @@ func (s Store) LatestSnapshots(ctx context.Context, limit int, category string, 
 		SELECT id, rule_id, source_type, site_id, sub2api_upstream_id, site_name, site_base_url, source_account, category, category_name, model_keyword,
 		       model_name, group_name, group_desc, quota_type,
 		       group_ratio, input_price, output_price, cache_read_price, cache_write_price,
-		       request_price, upstream_balance, balance_unit, online_topup_enabled, recharge_multiplier, invalid, invalid_reason, invalid_at, raw, created_at
+		       request_price, request_latency_ms, upstream_balance, balance_unit, online_topup_enabled, recharge_multiplier, invalid, invalid_reason, invalid_at, raw, created_at
 		FROM latest
 		ORDER BY category,
 		         invalid ASC,
 		         model_name,
-		         `+priceComparisonExpr(fmt.Sprintf("$%d", len(args)+1))+` ASC,
+		         `+priceComparisonExpr(fmt.Sprintf("$%d", len(args)+1), fmt.Sprintf("$%d", len(args)+2))+` ASC,
 		         COALESCE(output_price, 1e308) ASC,
 		         group_ratio ASC NULLS LAST,
 		         group_name
 		LIMIT `+limitPlaceholder+`
-	`, append(args, hitRatio)...)
+	`, append(args, hitRatio, latencyWeight)...)
 	if err != nil {
 		return nil, err
 	}
@@ -1924,13 +1931,13 @@ func (s Store) LatestSnapshots(ctx context.Context, limit int, category string, 
 	var snapshots []PriceSnapshot
 	for rows.Next() {
 		var snapshot PriceSnapshot
-		var groupRatio, inputPrice, outputPrice, cacheReadPrice, cacheWritePrice, requestPrice, upstreamBalance, rechargeMultiplier sql.NullFloat64
+		var groupRatio, inputPrice, outputPrice, cacheReadPrice, cacheWritePrice, requestPrice, requestLatencyMS, upstreamBalance, rechargeMultiplier sql.NullFloat64
 		var invalidAt sql.NullTime
 		if err := rows.Scan(
 			&snapshot.ID, &snapshot.RuleID, &snapshot.SourceType, &snapshot.SiteID, &snapshot.Sub2APIUpstreamID, &snapshot.SiteName, &snapshot.SiteBaseURL, &snapshot.SourceAccount,
 			&snapshot.Category, &snapshot.CategoryName, &snapshot.ModelKeyword, &snapshot.ModelName,
 			&snapshot.GroupName, &snapshot.GroupDesc, &snapshot.QuotaType, &groupRatio, &inputPrice,
-			&outputPrice, &cacheReadPrice, &cacheWritePrice, &requestPrice, &upstreamBalance, &snapshot.BalanceUnit,
+			&outputPrice, &cacheReadPrice, &cacheWritePrice, &requestPrice, &requestLatencyMS, &upstreamBalance, &snapshot.BalanceUnit,
 			&snapshot.OnlineTopupEnabled, &rechargeMultiplier,
 			&snapshot.Invalid, &snapshot.InvalidReason, &invalidAt, &snapshot.Raw, &snapshot.CreatedAt,
 		); err != nil {
@@ -1942,6 +1949,7 @@ func (s Store) LatestSnapshots(ctx context.Context, limit int, category string, 
 		snapshot.CacheReadPrice = floatPtr(cacheReadPrice)
 		snapshot.CacheWritePrice = floatPtr(cacheWritePrice)
 		snapshot.RequestPrice = floatPtr(requestPrice)
+		snapshot.RequestLatencyMS = floatPtr(requestLatencyMS)
 		snapshot.UpstreamBalance = floatPtr(upstreamBalance)
 		snapshot.RechargeMultiplier = floatPtr(rechargeMultiplier)
 		snapshot.InvalidAt = timePtr(invalidAt)
@@ -1950,8 +1958,8 @@ func (s Store) LatestSnapshots(ctx context.Context, limit int, category string, 
 	return snapshots, rows.Err()
 }
 
-func (s Store) CheapestSyncCandidate(ctx context.Context, category string, modelName string, expectedCacheHitRatio float64, balanceThreshold float64) (PriceSnapshot, []PriceSnapshot, error) {
-	candidates, skipped, err := s.SyncCandidates(ctx, category, modelName, expectedCacheHitRatio, balanceThreshold)
+func (s Store) CheapestSyncCandidate(ctx context.Context, category string, modelName string, expectedCacheHitRatio float64, balanceThreshold float64, latencyWeightPerSecond float64) (PriceSnapshot, []PriceSnapshot, error) {
+	candidates, skipped, err := s.SyncCandidates(ctx, category, modelName, expectedCacheHitRatio, balanceThreshold, latencyWeightPerSecond)
 	if err != nil {
 		return PriceSnapshot{}, nil, err
 	}
@@ -1961,8 +1969,8 @@ func (s Store) CheapestSyncCandidate(ctx context.Context, category string, model
 	return candidates[0], skipped, nil
 }
 
-func (s Store) SyncCandidates(ctx context.Context, category string, modelName string, expectedCacheHitRatio float64, balanceThreshold float64) ([]PriceSnapshot, []PriceSnapshot, error) {
-	snapshots, err := s.latestSnapshotsForModel(ctx, category, modelName, expectedCacheHitRatio)
+func (s Store) SyncCandidates(ctx context.Context, category string, modelName string, expectedCacheHitRatio float64, balanceThreshold float64, latencyWeightPerSecond float64) ([]PriceSnapshot, []PriceSnapshot, error) {
+	snapshots, err := s.latestSnapshotsForModel(ctx, category, modelName, expectedCacheHitRatio, latencyWeightPerSecond)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1978,8 +1986,9 @@ func (s Store) SyncCandidates(ctx context.Context, category string, modelName st
 	return candidates, skipped, nil
 }
 
-func (s Store) latestSnapshotsForModel(ctx context.Context, category string, modelName string, expectedCacheHitRatio float64) ([]PriceSnapshot, error) {
+func (s Store) latestSnapshotsForModel(ctx context.Context, category string, modelName string, expectedCacheHitRatio float64, latencyWeightPerSecond float64) ([]PriceSnapshot, error) {
 	hitRatio := normalizeExpectedCacheHitRatio(expectedCacheHitRatio)
+	latencyWeight := normalizeLatencyWeightPerSecond(latencyWeightPerSecond)
 	rows, err := s.db.Query(ctx, `
 		WITH latest AS (
 			SELECT DISTINCT ON (p.rule_id)
@@ -1989,7 +1998,7 @@ func (s Store) latestSnapshotsForModel(ctx context.Context, category string, mod
 			       COALESCE(p.source_account, '') AS source_account,
 			       r.category, COALESCE(c.name, r.category) AS category_name, p.model_keyword, p.model_name,
 			       p.group_name, p.group_desc, p.quota_type, p.group_ratio, p.input_price, p.output_price,
-			       p.cache_read_price, p.cache_write_price, p.request_price, p.upstream_balance, p.balance_unit,
+			       p.cache_read_price, p.cache_write_price, p.request_price, p.request_latency_ms, p.upstream_balance, p.balance_unit,
 			       p.online_topup_enabled, p.recharge_multiplier,
 			       p.invalid, p.invalid_reason, p.invalid_at, p.raw, p.created_at
 			FROM price_snapshots p
@@ -2013,13 +2022,13 @@ func (s Store) latestSnapshotsForModel(ctx context.Context, category string, mod
 		SELECT id, rule_id, source_type, site_id, sub2api_upstream_id, site_name, site_base_url, source_account, category, category_name, model_keyword,
 		       model_name, group_name, group_desc, quota_type,
 		       group_ratio, input_price, output_price, cache_read_price, cache_write_price,
-		       request_price, upstream_balance, balance_unit, online_topup_enabled, recharge_multiplier, invalid, invalid_reason, invalid_at, raw, created_at
+		       request_price, request_latency_ms, upstream_balance, balance_unit, online_topup_enabled, recharge_multiplier, invalid, invalid_reason, invalid_at, raw, created_at
 		FROM latest
-		ORDER BY `+priceComparisonExpr("$3")+` ASC,
+		ORDER BY `+priceComparisonExpr("$3", "$4")+` ASC,
 		         COALESCE(output_price, 1e308) ASC,
 		         group_ratio ASC NULLS LAST,
 		         id DESC
-	`, normalizeCategorySlug(category), strings.TrimSpace(modelName), hitRatio)
+	`, normalizeCategorySlug(category), strings.TrimSpace(modelName), hitRatio, latencyWeight)
 	if err != nil {
 		return nil, err
 	}
@@ -2028,13 +2037,13 @@ func (s Store) latestSnapshotsForModel(ctx context.Context, category string, mod
 	var snapshots []PriceSnapshot
 	for rows.Next() {
 		var snapshot PriceSnapshot
-		var groupRatio, inputPrice, outputPrice, cacheReadPrice, cacheWritePrice, requestPrice, upstreamBalance, rechargeMultiplier sql.NullFloat64
+		var groupRatio, inputPrice, outputPrice, cacheReadPrice, cacheWritePrice, requestPrice, requestLatencyMS, upstreamBalance, rechargeMultiplier sql.NullFloat64
 		var invalidAt sql.NullTime
 		if err := rows.Scan(
 			&snapshot.ID, &snapshot.RuleID, &snapshot.SourceType, &snapshot.SiteID, &snapshot.Sub2APIUpstreamID, &snapshot.SiteName, &snapshot.SiteBaseURL, &snapshot.SourceAccount,
 			&snapshot.Category, &snapshot.CategoryName, &snapshot.ModelKeyword, &snapshot.ModelName,
 			&snapshot.GroupName, &snapshot.GroupDesc, &snapshot.QuotaType, &groupRatio, &inputPrice,
-			&outputPrice, &cacheReadPrice, &cacheWritePrice, &requestPrice, &upstreamBalance, &snapshot.BalanceUnit,
+			&outputPrice, &cacheReadPrice, &cacheWritePrice, &requestPrice, &requestLatencyMS, &upstreamBalance, &snapshot.BalanceUnit,
 			&snapshot.OnlineTopupEnabled, &rechargeMultiplier,
 			&snapshot.Invalid, &snapshot.InvalidReason, &invalidAt, &snapshot.Raw, &snapshot.CreatedAt,
 		); err != nil {
@@ -2046,6 +2055,7 @@ func (s Store) latestSnapshotsForModel(ctx context.Context, category string, mod
 		snapshot.CacheReadPrice = floatPtr(cacheReadPrice)
 		snapshot.CacheWritePrice = floatPtr(cacheWritePrice)
 		snapshot.RequestPrice = floatPtr(requestPrice)
+		snapshot.RequestLatencyMS = floatPtr(requestLatencyMS)
 		snapshot.UpstreamBalance = floatPtr(upstreamBalance)
 		snapshot.RechargeMultiplier = floatPtr(rechargeMultiplier)
 		snapshot.InvalidAt = timePtr(invalidAt)
@@ -2098,6 +2108,13 @@ func normalizeUpstreamBalanceThreshold(value float64) float64 {
 	return value
 }
 
+func normalizeLatencyWeightPerSecond(value float64) float64 {
+	if value < 0 {
+		return 0
+	}
+	return value
+}
+
 const (
 	sub2APISyncAccountModeSchedulableOnly = "schedulable_only"
 )
@@ -2116,6 +2133,8 @@ func (s Store) GetIntegrationSettings(ctx context.Context) (IntegrationSettings,
 		       sub2api_base_url, sub2api_access_token, sub2api_email, sub2api_password,
 		       sub2api_sync_account_mode,
 		       monitor_interval_minutes, monitor_rule_delay_seconds,
+		       latency_test_enabled,
+		       latency_weight_per_second,
 		       expected_cache_hit_ratio, upstream_balance_threshold,
 		       sync_threshold_ratio, sync_threshold_ratios,
 		       email_notify_enabled, email_notify_price_change, email_notify_sync_update,
@@ -2130,6 +2149,8 @@ func (s Store) GetIntegrationSettings(ctx context.Context) (IntegrationSettings,
 		&settings.Sub2APIEmail, &settings.Sub2APIPassword,
 		&settings.Sub2APISyncAccountMode,
 		&settings.MonitorIntervalMinutes, &settings.MonitorRuleDelaySeconds,
+		&settings.LatencyTestEnabled,
+		&settings.LatencyWeightPerSecond,
 		&settings.ExpectedCacheHitRatio, &settings.UpstreamBalanceThreshold,
 		&syncThresholdRatio, &syncThresholdRatiosRaw,
 		&settings.EmailNotifyEnabled, &settings.EmailNotifyPriceChange, &settings.EmailNotifySyncUpdate,
@@ -2154,6 +2175,9 @@ func (s Store) GetIntegrationSettings(ctx context.Context) (IntegrationSettings,
 	settings.Sub2APISyncAccountMode = normalizeSub2APISyncAccountMode(settings.Sub2APISyncAccountMode)
 	settings.MonitorIntervalMinutes, settings.MonitorRuleDelaySeconds = normalizeMonitorScheduleSettings(settings.MonitorIntervalMinutes, settings.MonitorRuleDelaySeconds)
 	settings.ExpectedCacheHitRatio = normalizeExpectedCacheHitRatio(settings.ExpectedCacheHitRatio)
+	if settings.LatencyWeightPerSecond <= 0 {
+		settings.LatencyWeightPerSecond = 0.1
+	}
 	settings.UpstreamBalanceThreshold = normalizeUpstreamBalanceThreshold(settings.UpstreamBalanceThreshold)
 	settings.Sub2APIBaseURL = settings.Sub2APIMainBaseURL
 	settings.Sub2APIAccessToken = settings.Sub2APIAdminKey
@@ -2175,6 +2199,9 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 	input.SyncThresholdRatios = normalizeSyncThresholdRatios(input.SyncThresholdRatios)
 	input.MonitorIntervalMinutes, input.MonitorRuleDelaySeconds = normalizeMonitorScheduleSettings(input.MonitorIntervalMinutes, input.MonitorRuleDelaySeconds)
 	input.ExpectedCacheHitRatio = normalizeExpectedCacheHitRatio(input.ExpectedCacheHitRatio)
+	if input.LatencyWeightPerSecond <= 0 {
+		input.LatencyWeightPerSecond = 0.1
+	}
 	input.UpstreamBalanceThreshold = normalizeUpstreamBalanceThreshold(input.UpstreamBalanceThreshold)
 	if input.SMTPPort <= 0 {
 		input.SMTPPort = 587
@@ -2235,6 +2262,8 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 			sub2api_base_url, sub2api_access_token, sub2api_email, sub2api_password,
 			sub2api_sync_account_mode,
 			monitor_interval_minutes, monitor_rule_delay_seconds,
+			latency_test_enabled,
+			latency_weight_per_second,
 			expected_cache_hit_ratio, upstream_balance_threshold,
 			sync_threshold_ratio, sync_threshold_ratios,
 			email_notify_enabled, email_notify_price_change, email_notify_sync_update,
@@ -2242,7 +2271,7 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 			email_template_enabled, email_template_subject, email_template_body, email_template_configs,
 			updated_at
 		)
-		VALUES (true, $1, $2, $3, $2, $3, $4, $5, $6, $7, $8, $9, $10, CASE WHEN $11::double precision > 0 THEN $11::double precision ELSE NULL END, $12::jsonb, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26::jsonb, now())
+		VALUES (true, $1, $2, $3, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, CASE WHEN $13::double precision > 0 THEN $13::double precision ELSE NULL END, $14::jsonb, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28::jsonb, now())
 		ON CONFLICT (id) DO UPDATE
 		SET sub2api_enabled = EXCLUDED.sub2api_enabled,
 		    sub2api_main_base_url = EXCLUDED.sub2api_main_base_url,
@@ -2254,6 +2283,8 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 		    sub2api_sync_account_mode = EXCLUDED.sub2api_sync_account_mode,
 		    monitor_interval_minutes = EXCLUDED.monitor_interval_minutes,
 		    monitor_rule_delay_seconds = EXCLUDED.monitor_rule_delay_seconds,
+		    latency_test_enabled = EXCLUDED.latency_test_enabled,
+		    latency_weight_per_second = EXCLUDED.latency_weight_per_second,
 		    expected_cache_hit_ratio = EXCLUDED.expected_cache_hit_ratio,
 		    upstream_balance_threshold = EXCLUDED.upstream_balance_threshold,
 		    sync_threshold_ratio = EXCLUDED.sync_threshold_ratio,
@@ -2277,6 +2308,8 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 		          sub2api_base_url, sub2api_access_token, sub2api_email, sub2api_password,
 		          sub2api_sync_account_mode,
 		          monitor_interval_minutes, monitor_rule_delay_seconds,
+		          latency_test_enabled,
+		          latency_weight_per_second,
 		          expected_cache_hit_ratio, upstream_balance_threshold,
 		          sync_threshold_ratio, sync_threshold_ratios,
 		          email_notify_enabled, email_notify_price_change, email_notify_sync_update,
@@ -2286,6 +2319,8 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 	`,
 		input.Sub2APIEnabled, input.Sub2APIMainBaseURL, input.Sub2APIAdminKey, input.Sub2APIEmail, input.Sub2APIPassword, input.Sub2APISyncAccountMode,
 		input.MonitorIntervalMinutes, input.MonitorRuleDelaySeconds,
+		input.LatencyTestEnabled,
+		input.LatencyWeightPerSecond,
 		input.ExpectedCacheHitRatio, input.UpstreamBalanceThreshold,
 		input.SyncThresholdRatio, string(syncThresholdRatiosRaw), input.EmailNotifyEnabled, input.EmailNotifyPriceChange, input.EmailNotifySyncUpdate,
 		input.SMTPHost, input.SMTPPort, input.SMTPEncryption, input.SMTPUsername, input.SMTPPassword, input.SMTPFrom, input.SMTPTo,
@@ -2296,6 +2331,8 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 		&settings.Sub2APIEmail, &settings.Sub2APIPassword,
 		&settings.Sub2APISyncAccountMode,
 		&settings.MonitorIntervalMinutes, &settings.MonitorRuleDelaySeconds,
+		&settings.LatencyTestEnabled,
+		&settings.LatencyWeightPerSecond,
 		&settings.ExpectedCacheHitRatio, &settings.UpstreamBalanceThreshold,
 		&syncThresholdRatio, &savedSyncThresholdRatiosRaw,
 		&settings.EmailNotifyEnabled, &settings.EmailNotifyPriceChange, &settings.EmailNotifySyncUpdate,
@@ -2309,6 +2346,9 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 	settings.SyncThresholdRatios = decodeSyncThresholdRatios(savedSyncThresholdRatiosRaw)
 	settings.Sub2APISyncAccountMode = normalizeSub2APISyncAccountMode(settings.Sub2APISyncAccountMode)
 	settings.ExpectedCacheHitRatio = normalizeExpectedCacheHitRatio(settings.ExpectedCacheHitRatio)
+	if settings.LatencyWeightPerSecond <= 0 {
+		settings.LatencyWeightPerSecond = 0.1
+	}
 	settings.UpstreamBalanceThreshold = normalizeUpstreamBalanceThreshold(settings.UpstreamBalanceThreshold)
 	settings.MonitorIntervalMinutes, settings.MonitorRuleDelaySeconds = normalizeMonitorScheduleSettings(settings.MonitorIntervalMinutes, settings.MonitorRuleDelaySeconds)
 	return settings, err

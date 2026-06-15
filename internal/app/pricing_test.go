@@ -185,6 +185,16 @@ func TestPricingRowExpectedPriceClampsHitRatio(t *testing.T) {
 	assertFloatClose(t, pricingRowExpectedPrice(row, 2), 2.1)
 }
 
+func TestPricingRowComparisonCostAddsLatencyWeight(t *testing.T) {
+	row := PricingRow{
+		InputPrice:       ptr(1.0),
+		OutputPrice:      ptr(1.0),
+		RequestLatencyMS: ptr(1500),
+	}
+
+	assertFloatClose(t, pricingRowComparisonCost(row, 0, 0.2), 2.3)
+}
+
 func assertFloatClose(t *testing.T, got float64, want float64) {
 	t.Helper()
 	diff := got - want

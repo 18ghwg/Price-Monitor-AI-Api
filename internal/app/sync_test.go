@@ -227,7 +227,7 @@ func TestLowBalanceSkippedBelowCandidateExcludesPricierSkippedRows(t *testing.T)
 		},
 	}
 
-	filtered := lowBalanceSkippedBelowCandidate(skipped, candidate, 0)
+	filtered := lowBalanceSkippedBelowCandidate(skipped, candidate, 0, 0)
 	if len(filtered) != 1 {
 		t.Fatalf("len(filtered) = %d, want 1", len(filtered))
 	}
@@ -252,7 +252,7 @@ func TestLowerThanPreviousLowestRejectsPriceIncrease(t *testing.T) {
 		OutputPrice: ptr(0.78),
 	}
 
-	if lowerThanPreviousLowest(previous, current, 0) {
+	if lowerThanPreviousLowest(previous, current, 0, 0) {
 		t.Fatal("lowerThanPreviousLowest() = true, want false when output price increases")
 	}
 }
@@ -273,7 +273,7 @@ func TestLowerThanPreviousLowestAcceptsRealPriceDrop(t *testing.T) {
 		OutputPrice: ptr(0.39),
 	}
 
-	if !lowerThanPreviousLowest(previous, current, 0) {
+	if !lowerThanPreviousLowest(previous, current, 0, 0) {
 		t.Fatal("lowerThanPreviousLowest() = false, want true when output price decreases")
 	}
 }
@@ -298,10 +298,10 @@ func TestLowerThanPreviousLowestUsesExpectedCacheHitRatio(t *testing.T) {
 		CacheWritePrice: ptr(1.2),
 	}
 
-	if lowerThanPreviousLowest(previous, current, 0.0) {
+	if lowerThanPreviousLowest(previous, current, 0.0, 0) {
 		t.Fatal("lowerThanPreviousLowest() = true, want false when expected cost is higher at hit ratio 0")
 	}
-	if !lowerThanPreviousLowest(previous, current, 1.0) {
+	if !lowerThanPreviousLowest(previous, current, 1.0, 0) {
 		t.Fatal("lowerThanPreviousLowest() = false, want true when cache-hit cost is lower at hit ratio 1")
 	}
 }

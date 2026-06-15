@@ -127,6 +127,7 @@ type PriceSnapshot struct {
 	CacheReadPrice     *float64   `json:"cache_read_price"`
 	CacheWritePrice    *float64   `json:"cache_write_price"`
 	RequestPrice       *float64   `json:"request_price"`
+	RequestLatencyMS   *float64   `json:"request_latency_ms"`
 	UpstreamBalance    *float64   `json:"upstream_balance"`
 	BalanceUnit        string     `json:"balance_unit"`
 	OnlineTopupEnabled bool       `json:"online_topup_enabled"`
@@ -139,16 +140,17 @@ type PriceSnapshot struct {
 }
 
 type PricingRow struct {
-	ModelName       string   `json:"model"`
-	GroupName       string   `json:"group"`
-	GroupDesc       string   `json:"group_desc"`
-	QuotaType       int      `json:"quota_type"`
-	GroupRatio      float64  `json:"group_ratio"`
-	InputPrice      *float64 `json:"input_price"`
-	OutputPrice     *float64 `json:"output_price"`
-	CacheReadPrice  *float64 `json:"cache_read_price"`
-	CacheWritePrice *float64 `json:"cache_write_price"`
-	RequestPrice    *float64 `json:"request_price"`
+	ModelName        string   `json:"model"`
+	GroupName        string   `json:"group"`
+	GroupDesc        string   `json:"group_desc"`
+	QuotaType        int      `json:"quota_type"`
+	GroupRatio       float64  `json:"group_ratio"`
+	InputPrice       *float64 `json:"input_price"`
+	OutputPrice      *float64 `json:"output_price"`
+	CacheReadPrice   *float64 `json:"cache_read_price"`
+	CacheWritePrice  *float64 `json:"cache_write_price"`
+	RequestPrice     *float64 `json:"request_price"`
+	RequestLatencyMS *float64 `json:"request_latency_ms"`
 }
 
 type NewAPIUserGroupPricing struct {
@@ -216,6 +218,8 @@ type IntegrationSettings struct {
 	Sub2APISyncAccountMode   string                         `json:"sub2api_sync_account_mode"`
 	MonitorIntervalMinutes   int                            `json:"monitor_interval_minutes"`
 	MonitorRuleDelaySeconds  int                            `json:"monitor_rule_delay_seconds"`
+	LatencyTestEnabled       bool                           `json:"latency_test_enabled"`
+	LatencyWeightPerSecond   float64                        `json:"latency_weight_per_second"`
 	ExpectedCacheHitRatio    float64                        `json:"expected_cache_hit_ratio"`
 	UpstreamBalanceThreshold float64                        `json:"upstream_balance_threshold"`
 	SyncThresholdRatio       *float64                       `json:"sync_threshold_ratio"`
