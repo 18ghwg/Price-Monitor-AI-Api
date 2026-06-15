@@ -9,7 +9,7 @@ import (
 )
 
 func priceComparisonExpr(hitRatioPlaceholder string, latencyWeightPlaceholder string) string {
-	noCacheExpr := noCacheGroupSQLExpr()
+	noCacheExpr := noCacheSnapshotSQLExpr()
 	baseExpr := "(CASE WHEN " + noCacheExpr + " THEN " +
 		"((CASE WHEN input_price IS NOT NULL THEN input_price + COALESCE(output_price, 0) ELSE COALESCE(request_price, output_price, 1e308) END) * (1 + " + hitRatioPlaceholder + ")) " +
 		"WHEN cache_write_price IS NULL AND cache_read_price IS NULL AND input_price IS NULL THEN COALESCE(request_price, output_price, 1e308) " +
@@ -26,6 +26,10 @@ func noCacheGroupSQLExpr() string {
 		lowered + " LIKE '%no cache%' OR " +
 		lowered + " LIKE '%no-cache%' OR " +
 		lowered + " LIKE '%nocache%'"
+}
+
+func noCacheSnapshotSQLExpr() string {
+	return "cache_read_price IS NULL OR " + noCacheGroupSQLExpr()
 }
 
 func ApplyNewAPIUserGroupPricing(pricing map[string]any, groups map[string]NewAPIUserGroupPricing) {
@@ -315,7 +319,7 @@ func pricingRowComparisonCost(row PricingRow, expectedCacheHitRatio float64, lat
 
 func pricingRowExpectedPrice(row PricingRow, expectedCacheHitRatio float64) float64 {
 	hitRatio := normalizeExpectedCacheHitRatio(expectedCacheHitRatio)
-	if noCacheGroup(row.GroupName, row.GroupDesc) {
+	if noCachePricingRow(row) {
 		return pricingRowBasePrice(row) * (1 + hitRatio)
 	}
 	if row.InputPrice == nil && row.CacheReadPrice == nil && row.CacheWritePrice == nil {
@@ -371,6 +375,10 @@ func noCacheGroup(parts ...string) bool {
 		strings.Contains(text, "no cache") ||
 		strings.Contains(text, "no-cache") ||
 		strings.Contains(text, "nocache")
+}
+
+func noCachePricingRow(row PricingRow) bool {
+	return row.CacheReadPrice == nil || noCacheGroup(row.GroupName, row.GroupDesc)
 }
 
 func firstComparablePrice(values ...*float64) float64 {

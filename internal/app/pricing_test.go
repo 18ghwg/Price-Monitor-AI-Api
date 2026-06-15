@@ -169,7 +169,19 @@ func TestPricingRowExpectedPriceFallsBackWhenCacheMissing(t *testing.T) {
 	}
 
 	got := pricingRowExpectedPrice(row, 0.8)
-	want := 1.4
+	want := 2.52
+	assertFloatClose(t, got, want)
+}
+
+func TestPricingRowExpectedPriceAppliesExpectedCacheHitRatioWhenCacheReadPriceMissing(t *testing.T) {
+	row := PricingRow{
+		InputPrice:      ptr(1.0),
+		OutputPrice:     ptr(2.0),
+		CacheWritePrice: ptr(1.2),
+	}
+
+	got := pricingRowExpectedPrice(row, 0.5)
+	want := 4.5
 	assertFloatClose(t, got, want)
 }
 
