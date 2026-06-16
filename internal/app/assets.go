@@ -237,8 +237,8 @@ const indexHTML = `<!doctype html>
                 <th data-sort="group_ratio">分组倍率</th>
                 <th data-sort="upstream_balance">余额</th>
                 <th data-sort="recharge_multiplier">在线充值</th>
-                <th data-sort="base_price">基础成本</th>
-                <th data-sort="expected_price">预期成本</th>
+                <th data-sort="expected_price">比价成本</th>
+                <th data-sort="request_latency_ms">延迟(ms)</th>
                 <th data-sort="input_price">输入</th>
                 <th data-sort="output_price">输出</th>
                 <th data-sort="cache_read_price">缓存读</th>
@@ -3284,8 +3284,8 @@ function renderSnapshots() {
       + "<td data-label=\"分组倍率\">" + fmt(row.group_ratio) + "</td>"
       + "<td data-label=\"余额\">" + fmtBalance(row.upstream_balance, row.balance_unit) + "</td>"
       + "<td data-label=\"在线充值\">" + rechargeBadge(row) + "</td>"
-      + "<td data-label=\"基础成本\">" + fmt(basePrice(row)) + "</td>"
-      + "<td data-label=\"预期成本\">" + fmt(expectedPrice(row)) + "</td>"
+      + "<td data-label=\"比价成本\">" + fmt(comparisonCost(row)) + "</td>"
+      + "<td data-label=\"延迟(ms)\">" + fmt(row.request_latency_ms) + "</td>"
       + "<td data-label=\"输入\">" + fmt(row.input_price) + "</td>"
       + "<td data-label=\"输出\">" + fmt(row.output_price) + "</td>"
       + "<td data-label=\"缓存读\">" + fmt(row.cache_read_price) + "</td>"
@@ -4275,14 +4275,14 @@ function sortedSnapshots() {
 function compareSnapshot(left, right, key, dir) {
   if (!!left.invalid !== !!right.invalid) return left.invalid ? 1 : -1;
   const factor = dir === "desc" ? -1 : 1;
-  const numericKeys = new Set(["group_ratio", "upstream_balance", "recharge_multiplier", "base_price", "expected_price", "effective_price", "input_price", "output_price", "cache_read_price", "cache_write_price", "request_price"]);
+  const numericKeys = new Set(["group_ratio", "upstream_balance", "recharge_multiplier", "base_price", "expected_price", "effective_price", "input_price", "output_price", "cache_read_price", "cache_write_price", "request_price", "request_latency_ms"]);
   let result;
   if (key === "created_at") {
     result = new Date(left.created_at || 0).getTime() - new Date(right.created_at || 0).getTime();
   } else if (key === "base_price") {
     result = numberSort(basePrice(left), basePrice(right));
   } else if (key === "expected_price" || key === "effective_price") {
-    result = numberSort(expectedPrice(left), expectedPrice(right));
+    result = numberSort(comparisonCost(left), comparisonCost(right));
   } else if (numericKeys.has(key)) {
     result = numberSort(left[key], right[key]);
   } else {
@@ -4292,7 +4292,7 @@ function compareSnapshot(left, right, key, dir) {
     result = String(left.model_name || "").localeCompare(String(right.model_name || ""), "zh-Hans-CN", { numeric: true, sensitivity: "base" });
   }
   if (result === 0) {
-    result = numberSort(expectedPrice(left), expectedPrice(right));
+    result = numberSort(comparisonCost(left), comparisonCost(right));
   }
   return result * factor;
 }
@@ -4333,6 +4333,22 @@ function expectedPrice(row) {
     return expected + Number(row.output_price);
   }
   return expected;
+}
+
+function comparisonCost(row) {
+  const latency = Number(row.request_latency_ms);
+  const weight = latencyWeightPerSecond();
+  const latencyCost = Number.isFinite(latency) && latency > 0 && weight > 0
+    ? (latency / 1000) * weight
+    : 0;
+  return expectedPrice(row) + latencyCost;
+}
+
+function latencyWeightPerSecond() {
+  if (!state.settings || !state.settings.latency_test_enabled) return 0;
+  const value = Number(state.settings.latency_weight_per_second);
+  if (!Number.isFinite(value) || value <= 0) return 0.1;
+  return value;
 }
 
 function expectedCacheHitRatio() {
