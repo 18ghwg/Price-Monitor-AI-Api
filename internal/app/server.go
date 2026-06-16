@@ -2039,11 +2039,11 @@ func sub2APIUserPriceRowLessWithExpectedCacheHitRatio(left, right Sub2APIUserPri
 
 func sub2APIUserPriceRowExpectedPrice(row Sub2APIUserPriceRow, expectedCacheHitRatio float64) float64 {
 	hitRatio := normalizeExpectedCacheHitRatio(expectedCacheHitRatio)
-	if noCacheGroup(row.GroupName, row.GroupPlatform) {
+	if row.FinalCacheReadPerMillion == nil && row.FinalCacheWritePerMillion == nil && row.FinalCacheWrite1hPerMillion == nil {
 		return sub2APIUserPriceRowBasePrice(row) * (1 + hitRatio)
 	}
 	missPrice := firstComparablePrice(row.FinalCacheWritePerMillion, row.FinalCacheWrite1hPerMillion, row.FinalInputPerMillion, row.FinalOutputPerMillion)
-	hitPrice := firstComparablePrice(row.FinalCacheReadPerMillion, row.FinalCacheWritePerMillion, row.FinalCacheWrite1hPerMillion, row.FinalInputPerMillion, row.FinalOutputPerMillion)
+	hitPrice := firstComparablePrice(row.FinalCacheReadPerMillion, row.FinalInputPerMillion, row.FinalOutputPerMillion)
 	if missPrice == 1e308 && hitPrice == 1e308 {
 		return 1e308
 	}

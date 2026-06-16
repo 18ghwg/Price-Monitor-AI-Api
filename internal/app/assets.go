@@ -4317,14 +4317,14 @@ function basePrice(row) {
 
 function expectedPrice(row) {
   const hitRatio = expectedCacheHitRatio();
-  if (noCacheGroup(row.group_name, row.group_desc)) return basePrice(row);
+  if (noCacheSnapshot(row)) return basePrice(row) * (1 + hitRatio);
   if (!Number.isFinite(Number(row.input_price)) && !Number.isFinite(Number(row.cache_read_price)) && !Number.isFinite(Number(row.cache_write_price))) {
     if (Number.isFinite(Number(row.request_price))) return Number(row.request_price);
     if (Number.isFinite(Number(row.output_price))) return Number(row.output_price);
     return Number.POSITIVE_INFINITY;
   }
   const missPrice = firstComparablePrice(row.cache_write_price, row.input_price, row.request_price, row.output_price);
-  const hitPrice = firstComparablePrice(row.cache_read_price, row.cache_write_price, row.input_price, row.request_price, row.output_price);
+  const hitPrice = firstComparablePrice(row.cache_read_price, row.input_price, row.request_price, row.output_price);
   if (!Number.isFinite(missPrice) && !Number.isFinite(hitPrice)) return Number.POSITIVE_INFINITY;
   const normalizedMiss = Number.isFinite(missPrice) ? missPrice : hitPrice;
   const normalizedHit = Number.isFinite(hitPrice) ? hitPrice : normalizedMiss;
@@ -4341,10 +4341,8 @@ function expectedCacheHitRatio() {
   return Math.min(1, Math.max(0, value));
 }
 
-function noCacheGroup(...parts) {
-  const text = parts.map((part) => String(part || "")).join(" ").trim().toLowerCase();
-  if (!text) return false;
-  return text.includes("无缓存") || text.includes("no cache") || text.includes("no-cache") || text.includes("nocache");
+function noCacheSnapshot(row) {
+  return !Number.isFinite(Number(row.cache_read_price)) && !Number.isFinite(Number(row.cache_write_price));
 }
 
 function firstComparablePrice(...values) {

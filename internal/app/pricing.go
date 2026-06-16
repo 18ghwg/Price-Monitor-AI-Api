@@ -14,22 +14,13 @@ func priceComparisonExpr(hitRatioPlaceholder string, latencyWeightPlaceholder st
 		"((CASE WHEN input_price IS NOT NULL THEN input_price + COALESCE(output_price, 0) ELSE COALESCE(request_price, output_price, 1e308) END) * (1 + " + hitRatioPlaceholder + ")) " +
 		"WHEN cache_write_price IS NULL AND cache_read_price IS NULL AND input_price IS NULL THEN COALESCE(request_price, output_price, 1e308) " +
 		"ELSE COALESCE(cache_write_price, input_price, request_price, output_price, 1e308) * (1 - " + hitRatioPlaceholder + ") + " +
-		"COALESCE(cache_read_price, cache_write_price, input_price, request_price, output_price, 1e308) * " + hitRatioPlaceholder + " + " +
+		"COALESCE(cache_read_price, input_price, request_price, output_price, 1e308) * " + hitRatioPlaceholder + " + " +
 		"COALESCE(output_price, 0) END)"
 	return "(" + baseExpr + " + COALESCE(request_latency_ms, 0) / 1000.0 * " + latencyWeightPlaceholder + ")"
 }
 
-func noCacheGroupSQLExpr() string {
-	text := "COALESCE(group_name, '') || ' ' || COALESCE(group_desc, '')"
-	lowered := "lower(" + text + ")"
-	return "position('无缓存' in " + text + ") > 0 OR " +
-		lowered + " LIKE '%no cache%' OR " +
-		lowered + " LIKE '%no-cache%' OR " +
-		lowered + " LIKE '%nocache%'"
-}
-
 func noCacheSnapshotSQLExpr() string {
-	return "cache_read_price IS NULL OR " + noCacheGroupSQLExpr()
+	return "(cache_read_price IS NULL AND cache_write_price IS NULL)"
 }
 
 func ApplyNewAPIUserGroupPricing(pricing map[string]any, groups map[string]NewAPIUserGroupPricing) {
@@ -332,7 +323,7 @@ func pricingRowExpectedPrice(row PricingRow, expectedCacheHitRatio float64) floa
 		return 1e308
 	}
 	missPrice := firstComparablePrice(row.CacheWritePrice, row.InputPrice, row.RequestPrice, row.OutputPrice)
-	hitPrice := firstComparablePrice(row.CacheReadPrice, row.CacheWritePrice, row.InputPrice, row.RequestPrice, row.OutputPrice)
+	hitPrice := firstComparablePrice(row.CacheReadPrice, row.InputPrice, row.RequestPrice, row.OutputPrice)
 	if missPrice == 1e308 && hitPrice == 1e308 {
 		return 1e308
 	}
@@ -366,19 +357,8 @@ func pricingRowBasePrice(row PricingRow) float64 {
 	return 1e308
 }
 
-func noCacheGroup(parts ...string) bool {
-	text := strings.ToLower(strings.TrimSpace(strings.Join(parts, " ")))
-	if text == "" {
-		return false
-	}
-	return strings.Contains(text, "无缓存") ||
-		strings.Contains(text, "no cache") ||
-		strings.Contains(text, "no-cache") ||
-		strings.Contains(text, "nocache")
-}
-
 func noCachePricingRow(row PricingRow) bool {
-	return row.CacheReadPrice == nil || noCacheGroup(row.GroupName, row.GroupDesc)
+	return row.CacheReadPrice == nil && row.CacheWritePrice == nil
 }
 
 func firstComparablePrice(values ...*float64) float64 {

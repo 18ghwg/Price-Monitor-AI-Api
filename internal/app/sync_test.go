@@ -308,15 +308,26 @@ func TestLowerThanPreviousLowestUsesExpectedCacheHitRatio(t *testing.T) {
 
 func TestSub2APIUserPriceRowExpectedPriceAppliesExpectedCacheHitRatioToNoCacheBasePrice(t *testing.T) {
 	row := Sub2APIUserPriceRow{
-		GroupName:                 "Claude",
-		GroupPlatform:             "no-cache",
-		FinalInputPerMillion:      ptr(1.0),
-		FinalOutputPerMillion:     ptr(2.0),
-		FinalCacheReadPerMillion:  ptr(0.1),
-		FinalCacheWritePerMillion: ptr(1.2),
+		GroupName:             "Claude",
+		GroupPlatform:         "no-cache",
+		FinalInputPerMillion:  ptr(1.0),
+		FinalOutputPerMillion: ptr(2.0),
 	}
 
 	got := sub2APIUserPriceRowExpectedPrice(row, 1)
 	want := 6.0
+	assertFloatClose(t, got, want)
+}
+
+func TestSub2APIUserPriceRowExpectedPriceIncludesExpensiveCacheWriteWhenCacheReadPriceMissing(t *testing.T) {
+	row := Sub2APIUserPriceRow{
+		GroupName:                 "Claude",
+		FinalInputPerMillion:      ptr(1.0),
+		FinalOutputPerMillion:     ptr(2.0),
+		FinalCacheWritePerMillion: ptr(10.0),
+	}
+
+	got := sub2APIUserPriceRowExpectedPrice(row, 0.5)
+	want := 7.5
 	assertFloatClose(t, got, want)
 }

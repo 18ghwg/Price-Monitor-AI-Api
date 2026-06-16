@@ -128,11 +128,9 @@ func TestPricingRowExpectedPriceUsesCacheHitRatioAndOutput(t *testing.T) {
 
 func TestPricingRowExpectedPriceAppliesExpectedCacheHitRatioToNoCacheBasePrice(t *testing.T) {
 	row := PricingRow{
-		GroupName:       "Codex 无缓存",
-		InputPrice:      ptr(1.0),
-		OutputPrice:     ptr(2.0),
-		CacheReadPrice:  ptr(0.1),
-		CacheWritePrice: ptr(1.2),
+		GroupName:   "Codex 无缓存",
+		InputPrice:  ptr(1.0),
+		OutputPrice: ptr(2.0),
 	}
 
 	got := pricingRowExpectedPrice(row, 1)
@@ -173,15 +171,15 @@ func TestPricingRowExpectedPriceFallsBackWhenCacheMissing(t *testing.T) {
 	assertFloatClose(t, got, want)
 }
 
-func TestPricingRowExpectedPriceAppliesExpectedCacheHitRatioWhenCacheReadPriceMissing(t *testing.T) {
+func TestPricingRowExpectedPriceIncludesExpensiveCacheWriteWhenCacheReadPriceMissing(t *testing.T) {
 	row := PricingRow{
 		InputPrice:      ptr(1.0),
 		OutputPrice:     ptr(2.0),
-		CacheWritePrice: ptr(1.2),
+		CacheWritePrice: ptr(10.0),
 	}
 
 	got := pricingRowExpectedPrice(row, 0.5)
-	want := 4.5
+	want := 7.5
 	assertFloatClose(t, got, want)
 }
 
