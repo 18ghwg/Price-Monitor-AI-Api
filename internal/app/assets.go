@@ -174,6 +174,12 @@ const indexHTML = `<!doctype html>
         </div>
         <form id="bulkRuleEditForm" class="bulk-rule-edit-bar" hidden>
           <span id="bulkRuleEditSummary" class="summary-line">已选择 0 条规则</span>
+          <div class="bulk-rule-quick-actions" aria-label="规则快捷批量操作">
+            <button id="bulkRuleEnableBtn" class="secondary" type="button">批量启用规则</button>
+            <button id="bulkRuleEnableSyncBtn" class="secondary" type="button">批量开启同步</button>
+          </div>
+          <label class="checkbox-label"><input name="update_enabled" type="checkbox">修改规则状态</label>
+          <label>规则<select name="enabled"><option value="true">启用</option><option value="false">停用</option></select></label>
           <label class="checkbox-label"><input name="update_model_keyword" type="checkbox">修改模型</label>
           <label>完整模型名<input name="model_keyword" placeholder="gpt-5.5 / claude-opus-4-8"></label>
           <label class="checkbox-label"><input name="update_interval_minutes" type="checkbox">修改保留间隔</label>
@@ -1221,6 +1227,13 @@ input[type="checkbox"] {
 .bulk-rule-edit-bar label,
 .bulk-rule-edit-bar .summary-line {
   margin-bottom: 0;
+}
+
+.bulk-rule-quick-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
 }
 
 .bulk-rule-edit-bar .checkbox-label {
@@ -5250,23 +5263,46 @@ if (bulkRuleForm) {
 }
 
 const bulkRuleEditForm = $("#bulkRuleEditForm");
+async function submitSelectedRuleBulkUpdate(payload, button, successText) {
+  payload.rule_ids = Array.from(state.selectedRuleIds);
+  if (!payload.rule_ids.length) {
+    toast("请选择要编辑的监控规则");
+    return false;
+  }
+  const originalText = button ? button.textContent : "";
+  if (button) {
+    button.disabled = true;
+    button.textContent = "应用中";
+  }
+  try {
+    const result = await api("/api/rules/bulk-update", { method: "POST", body: JSON.stringify(payload) });
+    toast(successText + "，已更新 " + (result?.updated || payload.rule_ids.length) + " 条规则");
+    state.selectedRuleIds.clear();
+    await refreshRules({ silent: true });
+    return true;
+  } catch (error) {
+    toast(error.message);
+    return false;
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText || "应用到选中规则";
+    }
+  }
+}
+
 if (bulkRuleEditForm) {
   bulkRuleEditForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
     const button = $("#bulkRuleEditSubmitBtn");
-    const originalText = button ? button.textContent : "";
     const payload = formJSON(form);
-    payload.rule_ids = Array.from(state.selectedRuleIds);
     payload.model_keyword = String(payload.model_keyword || "").trim();
     payload.interval_minutes = Number(payload.interval_minutes || 15);
+    payload.enabled = String(payload.enabled) === "true";
     payload.schedule_enabled = String(payload.schedule_enabled) === "true";
     payload.sync_enabled = String(payload.sync_enabled) === "true";
-    if (!payload.rule_ids.length) {
-      toast("请选择要编辑的监控规则");
-      return;
-    }
-    if (!payload.update_model_keyword && !payload.update_interval_minutes && !payload.update_schedule_enabled && !payload.update_sync_enabled) {
+    if (!payload.update_enabled && !payload.update_model_keyword && !payload.update_interval_minutes && !payload.update_schedule_enabled && !payload.update_sync_enabled) {
       toast("请选择至少一个要批量修改的字段");
       return;
     }
@@ -5274,24 +5310,10 @@ if (bulkRuleEditForm) {
       toast("请填写新的完整模型名");
       return;
     }
-    if (button) {
-      button.disabled = true;
-      button.textContent = "应用中";
-    }
-    try {
-      const result = await api("/api/rules/bulk-update", { method: "POST", body: JSON.stringify(payload) });
-      toast("批量编辑完成，已更新 " + (result?.updated || payload.rule_ids.length) + " 条规则");
-      state.selectedRuleIds.clear();
+    const done = await submitSelectedRuleBulkUpdate(payload, button, "批量编辑完成");
+    if (done) {
       form.reset();
       if (form.elements.interval_minutes) form.elements.interval_minutes.value = "15";
-      await refreshRules({ silent: true });
-    } catch (error) {
-      toast(error.message);
-    } finally {
-      if (button) {
-        button.disabled = false;
-        button.textContent = originalText || "应用到选中规则";
-      }
     }
   });
 }
@@ -5353,6 +5375,28 @@ document.addEventListener("click", async (event) => {
   const viewButton = event.target.closest("[data-app-view]");
   if (viewButton) {
     setActiveView(viewButton.getAttribute("data-app-view"));
+    return;
+  }
+
+  const enableRulesButton = event.target.closest("#bulkRuleEnableBtn");
+  if (enableRulesButton) {
+    await submitSelectedRuleBulkUpdate({
+      update_enabled: true,
+      enabled: true,
+    }, enableRulesButton, "批量启用规则完成");
+    return;
+  }
+
+  const enableRuleSyncButton = event.target.closest("#bulkRuleEnableSyncBtn");
+  if (enableRuleSyncButton) {
+    if (!state.settings?.sub2api_enabled) {
+      toast("请先在网站设置中开启主站 sub2api 同步");
+      return;
+    }
+    await submitSelectedRuleBulkUpdate({
+      update_sync_enabled: true,
+      sync_enabled: true,
+    }, enableRuleSyncButton, "批量开启同步完成");
     return;
   }
 

@@ -74,6 +74,8 @@ type RuleInput struct {
 
 type BulkRuleUpdateInput struct {
 	RuleIDs               []int64 `json:"rule_ids"`
+	UpdateEnabled         bool    `json:"update_enabled"`
+	Enabled               bool    `json:"enabled"`
 	UpdateModelKeyword    bool    `json:"update_model_keyword"`
 	ModelKeyword          string  `json:"model_keyword"`
 	UpdateIntervalMinutes bool    `json:"update_interval_minutes"`
@@ -844,7 +846,7 @@ func (s Store) BulkUpdateRules(ctx context.Context, input BulkRuleUpdateInput) (
 	if err != nil {
 		return nil, err
 	}
-	if !input.UpdateModelKeyword && !input.UpdateIntervalMinutes && !input.UpdateScheduleEnabled && !input.UpdateSyncEnabled {
+	if !input.UpdateEnabled && !input.UpdateModelKeyword && !input.UpdateIntervalMinutes && !input.UpdateScheduleEnabled && !input.UpdateSyncEnabled {
 		return nil, fmt.Errorf("请选择至少一个要批量修改的字段")
 	}
 	modelKeyword := strings.TrimSpace(input.ModelKeyword)
@@ -870,6 +872,9 @@ func (s Store) BulkUpdateRules(ctx context.Context, input BulkRuleUpdateInput) (
 		if input.UpdateModelKeyword {
 			nextInput.ModelKeyword = modelKeyword
 			nextInput.ModelName = modelKeyword
+		}
+		if input.UpdateEnabled {
+			nextInput.Enabled = input.Enabled
 		}
 		if input.UpdateIntervalMinutes {
 			nextInput.IntervalMinutes = input.IntervalMinutes
@@ -912,17 +917,26 @@ func (s Store) BulkUpdateRules(ctx context.Context, input BulkRuleUpdateInput) (
 			    schedule_enabled = $4,
 			    interval_minutes = $5,
 			    next_run_at = CASE
-			      WHEN $4 THEN
+			      WHEN $7 AND $4 THEN
 			        CASE
-			          WHEN schedule_enabled = false OR interval_minutes <> $5 THEN now() + make_interval(mins => $5)
+			          WHEN enabled = false OR schedule_enabled = false OR interval_minutes <> $5 THEN now() + make_interval(mins => $5)
 			          ELSE COALESCE(next_run_at, now())
 			        END
 			      ELSE NULL
 			    END,
 			    sync_enabled = $6,
+			    enabled = $7,
+			    sync_status = CASE
+			      WHEN $8 AND $6 AND sync_status LIKE '主站 sub2api 同步开关未开启%' THEN ''
+			      ELSE sync_status
+			    END,
+			    sync_error = CASE
+			      WHEN $8 AND $6 THEN ''
+			      ELSE sync_error
+			    END,
 			    updated_at = now()
 			WHERE id = $1
-		`, rule.ID, nextInput.ModelKeyword, nextInput.ModelName, nextInput.ScheduleEnabled, nextInput.IntervalMinutes, nextInput.SyncEnabled); err != nil {
+		`, rule.ID, nextInput.ModelKeyword, nextInput.ModelName, nextInput.ScheduleEnabled, nextInput.IntervalMinutes, nextInput.SyncEnabled, nextInput.Enabled, input.UpdateSyncEnabled); err != nil {
 			return nil, err
 		}
 	}
