@@ -527,7 +527,12 @@ func (c *Sub2APIClient) EnsureGroup(ctx context.Context, groupName string) (sub2
 }
 
 func (c *Sub2APIClient) EnsureGroupByIDOrName(ctx context.Context, groupID int64, groupName string) (sub2Group, error) {
+	return c.EnsureGroupByIDOrNameWithRate(ctx, groupID, groupName, nil)
+}
+
+func (c *Sub2APIClient) EnsureGroupByIDOrNameWithRate(ctx context.Context, groupID int64, groupName string, groupRate *float64) (sub2Group, error) {
 	groupName = strings.TrimSpace(groupName)
+	groupRate = normalizeSub2AccountRate(groupRate)
 	if groupID <= 0 && groupName == "" {
 		return sub2Group{}, fmt.Errorf("sub2api group name is required")
 	}
@@ -538,6 +543,9 @@ func (c *Sub2APIClient) EnsureGroupByIDOrName(ctx context.Context, groupID int64
 	if groupID > 0 {
 		for _, group := range groups {
 			if group.ID == groupID {
+				if groupRate != nil && !floatNearlyEqual(group.Rate, *groupRate) {
+					return c.updateGroupRate(ctx, group, *groupRate)
+				}
 				return group, nil
 			}
 		}
@@ -545,21 +553,45 @@ func (c *Sub2APIClient) EnsureGroupByIDOrName(ctx context.Context, groupID int64
 	}
 	for _, group := range groups {
 		if strings.EqualFold(group.Name, groupName) {
+			if groupRate != nil && !floatNearlyEqual(group.Rate, *groupRate) {
+				return c.updateGroupRate(ctx, group, *groupRate)
+			}
 			return group, nil
 		}
 	}
 	var group sub2Group
+	rate := 1.0
+	if groupRate != nil {
+		rate = *groupRate
+	}
 	payload := map[string]any{
 		"name":            groupName,
 		"description":     "created by newapi price monitor",
 		"platform":        "openai",
-		"rate_multiplier": 1,
+		"rate_multiplier": rate,
 		"status":          "active",
 	}
 	if err := c.request(ctx, http.MethodPost, "api/v1/admin/groups", nil, payload, &group); err != nil {
 		return sub2Group{}, fmt.Errorf("create sub2api group %q: %w", groupName, err)
 	}
 	return group, nil
+}
+
+func (c *Sub2APIClient) updateGroupRate(ctx context.Context, group sub2Group, rate float64) (sub2Group, error) {
+	if group.ID <= 0 {
+		return sub2Group{}, fmt.Errorf("sub2api group id is required")
+	}
+	payload := map[string]any{
+		"name":            strings.TrimSpace(group.Name),
+		"platform":        normalizeSub2Platform(group.Platform),
+		"rate_multiplier": rate,
+		"status":          firstNonEmpty(group.Status, "active"),
+	}
+	var updated sub2Group
+	if err := c.request(ctx, http.MethodPut, fmt.Sprintf("api/v1/admin/groups/%d", group.ID), nil, payload, &updated); err != nil {
+		return sub2Group{}, fmt.Errorf("update sub2api group %d rate: %w", group.ID, err)
+	}
+	return updated, nil
 }
 
 func (c *Sub2APIClient) UpsertOpenAIAPIKeyAccount(ctx context.Context, accountName, apiBaseURL, apiKey string, group sub2Group) (sub2Account, string, error) {

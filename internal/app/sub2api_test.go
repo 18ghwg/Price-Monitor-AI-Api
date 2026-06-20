@@ -362,6 +362,54 @@ func TestSub2APIUpsertSyncsAccountRateMultiplier(t *testing.T) {
 	}
 }
 
+func TestSub2APIEnsureGroupByIDOrNameWithRateUpdatesGroupRate(t *testing.T) {
+	var updatePayload map[string]any
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/admin/groups/all":
+			writeSub2TestJSON(w, []map[string]any{{
+				"id":              7,
+				"name":            "Codex",
+				"platform":        "openai",
+				"status":          "active",
+				"rate_multiplier": 1,
+			}})
+		case r.Method == http.MethodPut && r.URL.Path == "/api/v1/admin/groups/7":
+			if err := json.NewDecoder(r.Body).Decode(&updatePayload); err != nil {
+				t.Fatalf("decode update payload: %v", err)
+			}
+			writeSub2TestJSON(w, map[string]any{
+				"id":              7,
+				"name":            updatePayload["name"],
+				"platform":        updatePayload["platform"],
+				"status":          updatePayload["status"],
+				"rate_multiplier": updatePayload["rate_multiplier"],
+			})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewSub2APIClient(server.URL, "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rate := 0.42
+	group, err := client.EnsureGroupByIDOrNameWithRate(context.Background(), 7, "", &rate)
+	if err != nil {
+		t.Fatalf("EnsureGroupByIDOrNameWithRate() error = %v", err)
+	}
+	if group.Rate != rate {
+		t.Fatalf("group rate = %v, want %v", group.Rate, rate)
+	}
+	if got, ok := updatePayload["rate_multiplier"].(float64); !ok || got != rate {
+		t.Fatalf("group rate_multiplier = %#v, want %v", updatePayload["rate_multiplier"], rate)
+	}
+}
+
 func TestSub2APIUpsertMatchesSameURLWithinRequestedPlatform(t *testing.T) {
 	var anthropicUpdate map[string]any
 	requestCount := map[string]int{}

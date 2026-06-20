@@ -87,7 +87,7 @@ func syncUpdateEmailBody(rule Rule, site Site, snapshot PriceSnapshot, action st
 	body.WriteString(fmt.Sprintf("主站账号: #%d %s\n", account.ID, account.Name))
 	body.WriteString("分组倍率变动明细:\n")
 	body.WriteString(fmt.Sprintf("- 上游最低价分组: %s，倍率 %s\n", snapshot.GroupName, formatFloatPtr(snapshot.GroupRatio)))
-	body.WriteString(fmt.Sprintf("- 主站账号倍率: %s\n", formatFloatPtr(account.Rate)))
+	body.WriteString(fmt.Sprintf("- 主站分组倍率: %s\n", formatFloatPtr(snapshot.GroupRatio)))
 	body.WriteString(fmt.Sprintf("- 同步动作: %s\n", action))
 	return body.String()
 }

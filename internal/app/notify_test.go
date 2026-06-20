@@ -189,7 +189,7 @@ func TestSyncUpdateEmailBodyIncludesUpstreamAccountBalanceAndRateDetails(t *test
 		"缓存写价格: 0.25",
 		"分组倍率变动明细:",
 		"- 上游最低价分组: default，倍率 0.05",
-		"- 主站账号倍率: 0.05",
+		"- 主站分组倍率: 0.05",
 		"主站账号: #54 chat.ekti openai-local+hermes-openclaw-long+VIP default",
 	} {
 		if !strings.Contains(body, want) {

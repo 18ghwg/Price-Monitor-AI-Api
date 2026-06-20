@@ -2942,8 +2942,9 @@ func (s *Server) syncUpstreamKeyToMainSub2APIWithSignature(ctx context.Context, 
 	}
 	targets := categorySyncTargets(rule, category)
 	groups := make([]sub2Group, 0, len(targets))
+	groupRate := ptr(row.GroupRatio)
 	for _, target := range targets {
-		group, err := sub2.EnsureGroupByIDOrName(ctx, target.ID, target.Name)
+		group, err := sub2.EnsureGroupByIDOrNameWithRate(ctx, target.ID, target.Name, groupRate)
 		if err != nil {
 			return err
 		}
@@ -2955,12 +2956,11 @@ func (s *Server) syncUpstreamKeyToMainSub2APIWithSignature(ctx context.Context, 
 	}
 	platform := syncPlatformForRule(rule, category)
 	accountName := fmt.Sprintf("%s %s %s", sourceName, strings.Join(groupNames, "+"), row.GroupName)
-	accountRate := ptr(row.GroupRatio)
-	account, action, err := sub2.UpsertAPIKeyAccountGroupsWithRateAndMode(ctx, platform, accountName, sourceBaseURL, apiKey, groups, accountRate, settings.Sub2APISyncAccountMode)
+	account, action, err := sub2.UpsertAPIKeyAccountGroupsWithRateAndMode(ctx, platform, accountName, sourceBaseURL, apiKey, groups, nil, settings.Sub2APISyncAccountMode)
 	if err != nil {
 		return err
 	}
-	if err := sub2.PrioritizeOpenAIAPIKeyAccountForGroupsWithRate(ctx, account.ID, groups, accountRate); err != nil {
+	if err := sub2.PrioritizeOpenAIAPIKeyAccountForGroupsWithRate(ctx, account.ID, groups, nil); err != nil {
 		return err
 	}
 	if err := sub2.TestAccountConnection(ctx, account.ID, row.ModelName); err != nil {
