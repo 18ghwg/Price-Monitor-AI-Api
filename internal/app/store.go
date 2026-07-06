@@ -36,12 +36,13 @@ type SiteInput struct {
 }
 
 type CategoryInput struct {
-	Name                 string            `json:"name"`
-	Slug                 string            `json:"slug"`
-	Sub2APIMainGroupID   int64             `json:"sub2api_main_group_id"`
-	Sub2APIMainGroupName string            `json:"sub2api_main_group_name"`
-	Sub2APIMainGroups    []Sub2APIGroupRef `json:"sub2api_main_groups"`
-	BlockedGroupKeywords []string          `json:"blocked_group_keywords"`
+	Name                    string            `json:"name"`
+	Slug                    string            `json:"slug"`
+	Sub2APIMainGroupID      int64             `json:"sub2api_main_group_id"`
+	Sub2APIMainGroupName    string            `json:"sub2api_main_group_name"`
+	Sub2APIMainGroups       []Sub2APIGroupRef `json:"sub2api_main_groups"`
+	Sub2APIMainGroupKeywords []string         `json:"sub2api_main_group_keywords"`
+	BlockedGroupKeywords    []string          `json:"blocked_group_keywords"`
 }
 
 type Sub2APIUpstreamInput struct {
@@ -434,7 +435,7 @@ func (s Store) UpdateSub2APIUpstreamCheckWithSession(ctx context.Context, upstre
 
 func (s Store) ListCategories(ctx context.Context) ([]Category, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, name, slug, sub2api_main_group_id, sub2api_main_group_name, COALESCE(sub2api_main_groups, '[]'::jsonb), COALESCE(blocked_group_keywords, '[]'::jsonb), created_at, updated_at
+		SELECT id, name, slug, sub2api_main_group_id, sub2api_main_group_name, COALESCE(sub2api_main_groups, '[]'::jsonb), COALESCE(sub2api_main_group_keywords, '[]'::jsonb), COALESCE(blocked_group_keywords, '[]'::jsonb), created_at, updated_at
 		FROM categories
 		ORDER BY CASE slug WHEN 'codex' THEN 0 WHEN 'claud' THEN 1 WHEN 'other' THEN 2 ELSE 3 END, name
 	`)
@@ -447,15 +448,17 @@ func (s Store) ListCategories(ctx context.Context) ([]Category, error) {
 	for rows.Next() {
 		var category Category
 		var groupsRaw []byte
+		var includeRaw []byte
 		var blockedRaw []byte
 		if err := rows.Scan(
 			&category.ID, &category.Name, &category.Slug, &category.Sub2APIMainGroupID, &category.Sub2APIMainGroupName,
-			&groupsRaw, &blockedRaw,
+			&groupsRaw, &includeRaw, &blockedRaw,
 			&category.CreatedAt, &category.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
 		category.Sub2APIMainGroups = normalizeCategoryGroupRefs(category.Sub2APIMainGroupID, category.Sub2APIMainGroupName, groupsRaw)
+		category.Sub2APIMainGroupKeywords = normalizeStringListFromJSON(includeRaw)
 		category.BlockedGroupKeywords = normalizeStringListFromJSON(blockedRaw)
 		categories = append(categories, category)
 	}
@@ -469,6 +472,7 @@ func (s Store) CreateCategory(ctx context.Context, input CategoryInput) (Categor
 	if err != nil {
 		return Category{}, err
 	}
+	includeKeywords, includeJSON := normalizeStringList(input.Sub2APIMainGroupKeywords)
 	blockedKeywords, blockedJSON := normalizeStringList(input.BlockedGroupKeywords)
 	primary := primaryCategoryGroup(groups)
 	if slug == "" {
@@ -480,22 +484,24 @@ func (s Store) CreateCategory(ctx context.Context, input CategoryInput) (Categor
 
 	var category Category
 	err = s.db.QueryRow(ctx, `
-		INSERT INTO categories (name, slug, sub2api_main_group_id, sub2api_main_group_name, sub2api_main_groups, blocked_group_keywords)
-		VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb)
+		INSERT INTO categories (name, slug, sub2api_main_group_id, sub2api_main_group_name, sub2api_main_groups, sub2api_main_group_keywords, blocked_group_keywords)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb)
 		ON CONFLICT (slug) DO UPDATE
 		SET name = EXCLUDED.name,
 		    sub2api_main_group_id = EXCLUDED.sub2api_main_group_id,
 		    sub2api_main_group_name = EXCLUDED.sub2api_main_group_name,
 		    sub2api_main_groups = EXCLUDED.sub2api_main_groups,
+		    sub2api_main_group_keywords = EXCLUDED.sub2api_main_group_keywords,
 		    blocked_group_keywords = EXCLUDED.blocked_group_keywords,
 		    updated_at = now()
-		RETURNING id, name, slug, sub2api_main_group_id, sub2api_main_group_name, COALESCE(sub2api_main_groups, '[]'::jsonb), COALESCE(blocked_group_keywords, '[]'::jsonb), created_at, updated_at
-	`, name, slug, primary.ID, primary.Name, string(groupsJSON), string(blockedJSON)).Scan(
+		RETURNING id, name, slug, sub2api_main_group_id, sub2api_main_group_name, COALESCE(sub2api_main_groups, '[]'::jsonb), COALESCE(sub2api_main_group_keywords, '[]'::jsonb), COALESCE(blocked_group_keywords, '[]'::jsonb), created_at, updated_at
+	`, name, slug, primary.ID, primary.Name, string(groupsJSON), string(includeJSON), string(blockedJSON)).Scan(
 		&category.ID, &category.Name, &category.Slug, &category.Sub2APIMainGroupID, &category.Sub2APIMainGroupName,
-		&groupsJSON, &blockedJSON,
+		&groupsJSON, &includeJSON, &blockedJSON,
 		&category.CreatedAt, &category.UpdatedAt,
 	)
 	category.Sub2APIMainGroups = normalizeCategoryGroupRefs(category.Sub2APIMainGroupID, category.Sub2APIMainGroupName, groupsJSON)
+	category.Sub2APIMainGroupKeywords = includeKeywords
 	category.BlockedGroupKeywords = blockedKeywords
 	return category, err
 }
@@ -507,6 +513,7 @@ func (s Store) UpdateCategory(ctx context.Context, categoryID int64, input Categ
 	if err != nil {
 		return Category{}, err
 	}
+	includeKeywords, includeJSON := normalizeStringList(input.Sub2APIMainGroupKeywords)
 	blockedKeywords, blockedJSON := normalizeStringList(input.BlockedGroupKeywords)
 	primary := primaryCategoryGroup(groups)
 	if slug == "" {
@@ -535,18 +542,20 @@ func (s Store) UpdateCategory(ctx context.Context, categoryID int64, input Categ
 		    sub2api_main_group_id = $4,
 		    sub2api_main_group_name = $5,
 		    sub2api_main_groups = $6::jsonb,
-		    blocked_group_keywords = $7::jsonb,
+		    sub2api_main_group_keywords = $7::jsonb,
+		    blocked_group_keywords = $8::jsonb,
 		    updated_at = now()
 		WHERE id = $1
-		RETURNING id, name, slug, sub2api_main_group_id, sub2api_main_group_name, COALESCE(sub2api_main_groups, '[]'::jsonb), COALESCE(blocked_group_keywords, '[]'::jsonb), created_at, updated_at
-	`, categoryID, name, slug, primary.ID, primary.Name, string(groupsJSON), string(blockedJSON)).Scan(
+		RETURNING id, name, slug, sub2api_main_group_id, sub2api_main_group_name, COALESCE(sub2api_main_groups, '[]'::jsonb), COALESCE(sub2api_main_group_keywords, '[]'::jsonb), COALESCE(blocked_group_keywords, '[]'::jsonb), created_at, updated_at
+	`, categoryID, name, slug, primary.ID, primary.Name, string(groupsJSON), string(includeJSON), string(blockedJSON)).Scan(
 		&category.ID, &category.Name, &category.Slug, &category.Sub2APIMainGroupID, &category.Sub2APIMainGroupName,
-		&groupsJSON, &blockedJSON,
+		&groupsJSON, &includeJSON, &blockedJSON,
 		&category.CreatedAt, &category.UpdatedAt,
 	); err != nil {
 		return Category{}, err
 	}
 	category.Sub2APIMainGroups = normalizeCategoryGroupRefs(category.Sub2APIMainGroupID, category.Sub2APIMainGroupName, groupsJSON)
+	category.Sub2APIMainGroupKeywords = includeKeywords
 	category.BlockedGroupKeywords = blockedKeywords
 	if oldSlug != slug {
 		if _, err := tx.Exec(ctx, `UPDATE monitor_rules SET category = $2, updated_at = now() WHERE category = $1`, oldSlug, slug); err != nil {
@@ -597,17 +606,19 @@ func (s Store) GetCategoryBySlug(ctx context.Context, slug string) (Category, er
 	}
 	var category Category
 	var groupsRaw []byte
+	var includeRaw []byte
 	var blockedRaw []byte
 	err := s.db.QueryRow(ctx, `
-		SELECT id, name, slug, sub2api_main_group_id, sub2api_main_group_name, COALESCE(sub2api_main_groups, '[]'::jsonb), COALESCE(blocked_group_keywords, '[]'::jsonb), created_at, updated_at
+		SELECT id, name, slug, sub2api_main_group_id, sub2api_main_group_name, COALESCE(sub2api_main_groups, '[]'::jsonb), COALESCE(sub2api_main_group_keywords, '[]'::jsonb), COALESCE(blocked_group_keywords, '[]'::jsonb), created_at, updated_at
 		FROM categories
 		WHERE slug = $1
 	`, slug).Scan(
 		&category.ID, &category.Name, &category.Slug, &category.Sub2APIMainGroupID, &category.Sub2APIMainGroupName,
-		&groupsRaw, &blockedRaw,
+		&groupsRaw, &includeRaw, &blockedRaw,
 		&category.CreatedAt, &category.UpdatedAt,
 	)
 	category.Sub2APIMainGroups = normalizeCategoryGroupRefs(category.Sub2APIMainGroupID, category.Sub2APIMainGroupName, groupsRaw)
+	category.Sub2APIMainGroupKeywords = normalizeStringListFromJSON(includeRaw)
 	category.BlockedGroupKeywords = normalizeStringListFromJSON(blockedRaw)
 	return category, err
 }
@@ -668,6 +679,11 @@ func normalizeCategoryInputGroups(input CategoryInput) ([]Sub2APIGroupRef, []byt
 		return nil, nil, err
 	}
 	return groups, data, nil
+}
+
+func normalizeCategoryGroupKeywords(input []string) ([]string, []byte) {
+	normalized, data := normalizeStringList(input)
+	return normalized, data
 }
 
 func normalizeCategoryGroupRefs(groupID int64, groupName string, raw []byte) []Sub2APIGroupRef {
@@ -958,6 +974,20 @@ func (s Store) DisableAllRuleSync(ctx context.Context) error {
 		    sync_error = '',
 		    updated_at = now()
 		WHERE sync_enabled = true
+	`)
+	return err
+}
+
+func (s Store) RestoreRuleSyncDisabledByGlobalSwitch(ctx context.Context) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE monitor_rules
+		SET sync_enabled = true,
+		    sync_status = '',
+		    sync_error = '',
+		    updated_at = now()
+		WHERE enabled = true
+		  AND sync_enabled = false
+		  AND sync_status LIKE '主站 sub2api 同步开关未开启，已关闭规则同步%'
 	`)
 	return err
 }

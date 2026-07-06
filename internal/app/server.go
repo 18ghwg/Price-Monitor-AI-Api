@@ -425,9 +425,9 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
-	if !settings.Sub2APIEnabled {
-		if err := s.store.DisableAllRuleSync(r.Context()); err != nil {
-			writeError(w, http.StatusInternalServerError, "disable rule sync failed")
+	if settings.Sub2APIEnabled {
+		if err := s.store.RestoreRuleSyncDisabledByGlobalSwitch(r.Context()); err != nil {
+			writeError(w, http.StatusInternalServerError, "restore rule sync failed")
 			return
 		}
 	}
@@ -1268,7 +1268,7 @@ func (s *Server) bulkCreateRulesWithInput(w http.ResponseWriter, r *http.Request
 	if input.ScheduleEnabled != nil {
 		scheduleEnabled = *input.ScheduleEnabled
 	}
-	syncEnabled := settings.Sub2APIEnabled
+	syncEnabled := true
 	if input.SyncEnabled != nil {
 		syncEnabled = *input.SyncEnabled
 	}
@@ -1641,6 +1641,7 @@ func (s *Server) runNewAPIRule(ctx context.Context, rule Rule, site Site) ([]Pri
 	}
 	rows = filterPricingRowsForRule(rule, rows)
 	beforeBlockedFilter := len(rows)
+	rows = filterPricingRowsByIncludedKeywords(rows, categorySub2APIMainGroupKeywords(ctx, s.store, rule.Category))
 	rows = filterPricingRowsByBlockedKeywords(rows, categoryBlockedGroupKeywords(ctx, s.store, rule.Category))
 	rows = CheapestPricingRowsWithExpectedCacheHitRatio(rows, expectedCacheHitRatio)
 	if len(rows) == 0 {
@@ -1762,6 +1763,7 @@ func (s *Server) runSub2APIRule(ctx context.Context, rule Rule, upstream Sub2API
 	}
 	rows := filterSub2APIPriceRowsForRule(rule, result.Rows)
 	beforeBlockedFilter := len(rows)
+	rows = filterSub2APIPriceRowsByIncludedKeywords(rows, categorySub2APIMainGroupKeywords(ctx, s.store, rule.Category))
 	rows = filterSub2APIPriceRowsByBlockedKeywords(rows, categoryBlockedGroupKeywords(ctx, s.store, rule.Category))
 	rows = cheapestSub2PriceRowsWithExpectedCacheHitRatio(rows, expectedCacheHitRatio)
 	if len(rows) == 0 {
@@ -2123,6 +2125,43 @@ func categoryBlockedGroupKeywords(ctx context.Context, store Store, categorySlug
 	return category.BlockedGroupKeywords
 }
 
+func categorySub2APIMainGroupKeywords(ctx context.Context, store Store, categorySlug string) []string {
+	category, err := store.GetCategoryBySlug(ctx, categorySlug)
+	if err != nil {
+		if !notFound(err) {
+			log.Printf("load category included keywords %q: %v", categorySlug, err)
+		}
+		return nil
+	}
+	return category.Sub2APIMainGroupKeywords
+}
+
+func filterPricingRowsByIncludedKeywords(rows []PricingRow, keywords []string) []PricingRow {
+	if len(keywords) == 0 || len(rows) == 0 {
+		return rows
+	}
+	filtered := make([]PricingRow, 0, len(rows))
+	for _, row := range rows {
+		if groupMatchesIncludedKeywords(row.GroupName, row.GroupDesc, keywords) {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
+}
+
+func filterSub2APIPriceRowsByIncludedKeywords(rows []Sub2APIUserPriceRow, keywords []string) []Sub2APIUserPriceRow {
+	if len(keywords) == 0 || len(rows) == 0 {
+		return rows
+	}
+	filtered := make([]Sub2APIUserPriceRow, 0, len(rows))
+	for _, row := range rows {
+		if groupMatchesIncludedKeywords(row.GroupName, row.GroupPlatform, keywords) {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
+}
+
 func filterPricingRowsByBlockedKeywords(rows []PricingRow, keywords []string) []PricingRow {
 	if len(keywords) == 0 || len(rows) == 0 {
 		return rows
@@ -2152,6 +2191,23 @@ func filterSub2APIPriceRowsByBlockedKeywords(rows []Sub2APIUserPriceRow, keyword
 }
 
 func groupMatchesBlockedKeywords(groupName string, groupDesc string, keywords []string) bool {
+	text := strings.ToLower(strings.TrimSpace(groupName + " " + groupDesc))
+	if text == "" {
+		return false
+	}
+	for _, keyword := range keywords {
+		keyword = strings.ToLower(strings.TrimSpace(keyword))
+		if keyword != "" && strings.Contains(text, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+func groupMatchesIncludedKeywords(groupName string, groupDesc string, keywords []string) bool {
+	if len(keywords) == 0 {
+		return true
+	}
 	text := strings.ToLower(strings.TrimSpace(groupName + " " + groupDesc))
 	if text == "" {
 		return false
@@ -2956,16 +3012,18 @@ func (s *Server) syncUpstreamKeyToMainSub2APIWithSignature(ctx context.Context, 
 	}
 	platform := syncPlatformForRule(rule, category)
 	accountName := fmt.Sprintf("%s %s %s", sourceName, strings.Join(groupNames, "+"), row.GroupName)
-	account, action, err := sub2.UpsertAPIKeyAccountGroupsWithRateAndMode(ctx, platform, accountName, sourceBaseURL, apiKey, groups, nil, settings.Sub2APISyncAccountMode)
+	account, action, alreadyMatchedGroups, err := sub2.UpsertAPIKeyAccountGroupsWithRateAndMode(ctx, platform, accountName, sourceBaseURL, apiKey, groups, nil, settings.Sub2APISyncAccountMode)
 	if err != nil {
 		return err
 	}
 	if err := sub2.PrioritizeOpenAIAPIKeyAccountForGroupsWithRate(ctx, account.ID, groups, nil); err != nil {
 		return err
 	}
-	if err := sub2.TestAccountConnection(ctx, account.ID, row.ModelName); err != nil {
-		return fmt.Errorf("主站账号连接测试失败：账号 #%d，模型 %s，主站分组 %s，上游低价分组 %s，原因：%w",
-			account.ID, row.ModelName, strings.Join(groupNames, ", "), row.GroupName, err)
+	if !alreadyMatchedGroups {
+		if err := sub2.TestAccountConnection(ctx, account.ID, row.ModelName); err != nil {
+			return fmt.Errorf("主站账号连接测试失败：账号 #%d，模型 %s，主站分组 %s，上游低价分组 %s，原因：%w",
+				account.ID, row.ModelName, strings.Join(groupNames, ", "), row.GroupName, err)
+		}
 	}
 	if err := sub2.DisableOtherAPIKeyAccountsForGroups(ctx, platform, account.ID, groups, settings.Sub2APISyncAccountMode); err != nil {
 		return fmt.Errorf("关闭同分组其他主站账号失败：分组 %s，原因：%w", strings.Join(groupNames, ", "), err)
@@ -2976,8 +3034,13 @@ func (s *Server) syncUpstreamKeyToMainSub2APIWithSignature(ctx context.Context, 
 	if notifySync {
 		s.notifySyncUpdate(ctx, rule, Site{Name: sourceName, BaseURL: sourceBaseURL}, snapshot, action, account)
 	}
-	status := fmt.Sprintf("同步成功：主站账号%s，上游key%s，低价分组 %s，倍率 %s，同步到主站分组 %s，已测试模型 %s",
-		chineseSyncAction(action), chineseSyncAction(keyAction), row.GroupName, fmtFloat(row.GroupRatio), strings.Join(groupNames, ", "), row.ModelName)
+	status := fmt.Sprintf("同步成功：主站账号%s，上游key%s，低价分组 %s，倍率 %s，同步到主站分组 %s",
+		chineseSyncAction(action), chineseSyncAction(keyAction), row.GroupName, fmtFloat(row.GroupRatio), strings.Join(groupNames, ", "))
+	if !alreadyMatchedGroups {
+		status += fmt.Sprintf("，已测试模型 %s", row.ModelName)
+	} else {
+		status += "，已跳过真实测试"
+	}
 	if !notifySync {
 		status = "复核成功：" + strings.TrimPrefix(status, "同步成功：")
 	}
@@ -3097,35 +3160,103 @@ func (s *Server) runEnabledRules(ctx context.Context) {
 	if len(ids) > 0 {
 		log.Printf("scheduler found %d scheduled rule(s)", len(ids))
 	}
-	for index, id := range ids {
+	rules := make([]scheduledRuleSource, 0, len(ids))
+	for _, id := range ids {
+		loadCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		rule, site, upstream, ruleErr := s.store.GetRuleWithSource(loadCtx, id)
+		cancel()
+		if ruleErr != nil {
+			log.Printf("scheduler load rule %d: %v", id, ruleErr)
+			continue
+		}
+		if !rule.Enabled || !rule.ScheduleEnabled {
+			continue
+		}
+		rules = append(rules, scheduledRuleSource{rule: rule, site: site, upstream: upstream})
+	}
+	groups := groupScheduledRulesBySource(rules)
+	if len(groups) > 0 {
+		log.Printf("scheduler grouped %d scheduled rule(s) into %d source site batch(es)", len(rules), len(groups))
+	}
+	for index, group := range groups {
 		if index > 0 {
 			_, ruleDelay = s.schedulerIntervals(ctx, s.cfg.MonitorInterval)
 			if !sleepContext(ctx, ruleDelay) {
 				return
 			}
 		}
-		runCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-		rule, _, _, ruleErr := s.store.GetRuleWithSource(runCtx, id)
-		if ruleErr != nil {
+		log.Printf("scheduler running source site batch %s with %d rule(s)", group.label, len(group.rules))
+		batchCtx := withRuleBatchSessionCache(ctx)
+		for _, item := range group.rules {
+			runCtx, cancel := context.WithTimeout(batchCtx, 60*time.Second)
+			runStartedAt := time.Now()
+			_, err := s.runRuleWithSource(runCtx, item.rule, item.site, item.upstream)
+			if markErr := s.store.MarkRuleScheduled(context.Background(), item.rule.ID, runStartedAt, roundInterval); markErr != nil {
+				log.Printf("scheduler mark rule %d scheduled: %v", item.rule.ID, markErr)
+			} else {
+				log.Printf("scheduler rule %d scheduled next run in %d minute(s)", item.rule.ID, roundInterval)
+			}
 			cancel()
-			log.Printf("scheduler load rule %d: %v", id, ruleErr)
+			if err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("scheduler rule %d: %v", item.rule.ID, err)
+			}
+		}
+	}
+}
+
+type scheduledRuleSource struct {
+	rule     Rule
+	site     Site
+	upstream Sub2APIUpstream
+}
+
+type scheduledRuleSourceBatch struct {
+	key   string
+	label string
+	rules []scheduledRuleSource
+}
+
+func groupScheduledRulesBySource(rules []scheduledRuleSource) []scheduledRuleSourceBatch {
+	if len(rules) == 0 {
+		return nil
+	}
+	groups := make([]scheduledRuleSourceBatch, 0)
+	indexByKey := make(map[string]int, len(rules))
+	for _, item := range rules {
+		key, label := scheduledRuleSourceKey(item)
+		if idx, ok := indexByKey[key]; ok {
+			groups[idx].rules = append(groups[idx].rules, item)
 			continue
 		}
-		if !rule.Enabled || !rule.ScheduleEnabled {
-			cancel()
-			continue
+		indexByKey[key] = len(groups)
+		groups = append(groups, scheduledRuleSourceBatch{
+			key:   key,
+			label: label,
+			rules: []scheduledRuleSource{item},
+		})
+	}
+	return groups
+}
+
+func scheduledRuleSourceKey(item scheduledRuleSource) (string, string) {
+	sourceType := strings.ToLower(strings.TrimSpace(item.rule.SourceType))
+	switch sourceType {
+	case "", RuleSourceNewAPI:
+		id := firstPositiveInt64(item.site.ID, item.rule.SiteID)
+		label := fmt.Sprintf("newapi:%d", id)
+		if name := strings.TrimSpace(firstNonEmpty(item.site.Name, item.rule.SiteName, item.rule.SourceName)); name != "" {
+			label += ":" + name
 		}
-		runStartedAt := time.Now()
-		_, err := s.RunRule(runCtx, id)
-		if markErr := s.store.MarkRuleScheduled(context.Background(), id, runStartedAt, roundInterval); markErr != nil {
-			log.Printf("scheduler mark rule %d scheduled: %v", id, markErr)
-		} else {
-			log.Printf("scheduler rule %d scheduled next run in %d minute(s)", id, roundInterval)
+		return fmt.Sprintf("newapi:%d", id), label
+	case RuleSourceSub2API:
+		id := firstPositiveInt64(item.upstream.ID, item.rule.Sub2APIUpstreamID)
+		label := fmt.Sprintf("sub2api:%d", id)
+		if name := strings.TrimSpace(firstNonEmpty(item.upstream.Name, item.rule.Sub2APIUpstreamName, item.rule.SourceName)); name != "" {
+			label += ":" + name
 		}
-		cancel()
-		if err != nil && !errors.Is(err, context.Canceled) {
-			log.Printf("scheduler rule %d: %v", id, err)
-		}
+		return fmt.Sprintf("sub2api:%d", id), label
+	default:
+		return fmt.Sprintf("%s:%d", sourceType, item.rule.ID), fmt.Sprintf("%s:%d", sourceType, item.rule.ID)
 	}
 }
 

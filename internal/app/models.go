@@ -34,15 +34,16 @@ type Site struct {
 }
 
 type Category struct {
-	ID                   int64             `json:"id"`
-	Name                 string            `json:"name"`
-	Slug                 string            `json:"slug"`
-	Sub2APIMainGroupID   int64             `json:"sub2api_main_group_id"`
-	Sub2APIMainGroupName string            `json:"sub2api_main_group_name"`
-	Sub2APIMainGroups    []Sub2APIGroupRef `json:"sub2api_main_groups"`
-	BlockedGroupKeywords []string          `json:"blocked_group_keywords"`
-	CreatedAt            time.Time         `json:"created_at"`
-	UpdatedAt            time.Time         `json:"updated_at"`
+	ID                      int64             `json:"id"`
+	Name                    string            `json:"name"`
+	Slug                    string            `json:"slug"`
+	Sub2APIMainGroupID      int64             `json:"sub2api_main_group_id"`
+	Sub2APIMainGroupName    string            `json:"sub2api_main_group_name"`
+	Sub2APIMainGroups       []Sub2APIGroupRef `json:"sub2api_main_groups"`
+	Sub2APIMainGroupKeywords []string         `json:"sub2api_main_group_keywords"`
+	BlockedGroupKeywords    []string          `json:"blocked_group_keywords"`
+	CreatedAt               time.Time         `json:"created_at"`
+	UpdatedAt               time.Time         `json:"updated_at"`
 }
 
 type Sub2APIGroupRef struct {

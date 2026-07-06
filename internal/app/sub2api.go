@@ -603,14 +603,16 @@ func (c *Sub2APIClient) UpsertOpenAIAPIKeyAccountGroups(ctx context.Context, acc
 }
 
 func (c *Sub2APIClient) UpsertAPIKeyAccountGroups(ctx context.Context, platform, accountName, apiBaseURL, apiKey string, groups []sub2Group) (sub2Account, string, error) {
-	return c.UpsertAPIKeyAccountGroupsWithRate(ctx, platform, accountName, apiBaseURL, apiKey, groups, nil)
+	account, action, _, err := c.UpsertAPIKeyAccountGroupsWithRateAndMode(ctx, platform, accountName, apiBaseURL, apiKey, groups, nil, sub2APISyncAccountModeSchedulableOnly)
+	return account, action, err
 }
 
 func (c *Sub2APIClient) UpsertAPIKeyAccountGroupsWithRate(ctx context.Context, platform, accountName, apiBaseURL, apiKey string, groups []sub2Group, accountRate *float64) (sub2Account, string, error) {
-	return c.UpsertAPIKeyAccountGroupsWithRateAndMode(ctx, platform, accountName, apiBaseURL, apiKey, groups, accountRate, sub2APISyncAccountModeSchedulableOnly)
+	account, action, _, err := c.UpsertAPIKeyAccountGroupsWithRateAndMode(ctx, platform, accountName, apiBaseURL, apiKey, groups, accountRate, sub2APISyncAccountModeSchedulableOnly)
+	return account, action, err
 }
 
-func (c *Sub2APIClient) UpsertAPIKeyAccountGroupsWithRateAndMode(ctx context.Context, platform, accountName, apiBaseURL, apiKey string, groups []sub2Group, accountRate *float64, syncAccountMode string) (sub2Account, string, error) {
+func (c *Sub2APIClient) UpsertAPIKeyAccountGroupsWithRateAndMode(ctx context.Context, platform, accountName, apiBaseURL, apiKey string, groups []sub2Group, accountRate *float64, syncAccountMode string) (sub2Account, string, bool, error) {
 	platform = normalizeSub2Platform(platform)
 	apiBaseURL = normalizeBaseURL(apiBaseURL)
 	apiKey = strings.TrimSpace(apiKey)
@@ -621,11 +623,11 @@ func (c *Sub2APIClient) UpsertAPIKeyAccountGroupsWithRateAndMode(ctx context.Con
 		accountName = "newapi " + apiBaseURL + " " + primary.Name
 	}
 	if apiBaseURL == "" || apiKey == "" || len(groups) == 0 {
-		return sub2Account{}, "", fmt.Errorf("sub2api account base url, api key and groups are required")
+		return sub2Account{}, "", false, fmt.Errorf("sub2api account base url, api key and groups are required")
 	}
 	accounts, err := c.listAPIKeyAccounts(ctx, platform, "", sub2Group{})
 	if err != nil {
-		return sub2Account{}, "", err
+		return sub2Account{}, "", false, err
 	}
 	var sameURL []sub2Account
 	for _, account := range accounts {
@@ -633,19 +635,21 @@ func (c *Sub2APIClient) UpsertAPIKeyAccountGroupsWithRateAndMode(ctx context.Con
 			sameURL = append(sameURL, account)
 		}
 	}
+	targetGroupIDs := sub2GroupIDs(groups)
 	if len(sameURL) > 0 {
 		account := preferredSub2Account(sameURL, groups)
+		alreadyMatchedGroups := sub2AccountGroupIDsEqual(account, targetGroupIDs)
 		updated, err := c.updateAccountGroupsWithRate(ctx, platform, account, accountName, apiBaseURL, apiKey, groups, accountRate)
 		if err != nil {
-			return updated, "updated", err
+			return updated, "updated", false, err
 		}
 		if err := c.disableDuplicateAPIKeyAccounts(ctx, platform, updated.ID, apiBaseURL, accounts); err != nil {
-			return updated, "updated", err
+			return updated, "updated", alreadyMatchedGroups, err
 		}
-		return updated, "updated", nil
+		return updated, "updated", alreadyMatchedGroups, nil
 	}
 	created, err := c.createAccountGroupsWithRate(ctx, platform, accountName, apiBaseURL, apiKey, groups, accountRate)
-	return created, "created", err
+	return created, "created", false, err
 }
 
 func (c *Sub2APIClient) ListOpenAIAPIKeyAccounts(ctx context.Context, apiBaseURL string, group sub2Group) ([]sub2Account, error) {

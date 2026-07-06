@@ -224,3 +224,53 @@ func TestBlockedGroupKeywordsFilterSub2APIPriceRows(t *testing.T) {
 		t.Fatalf("group = %q, want Claude Stable", cheapest[0].GroupName)
 	}
 }
+
+func TestIncludedGroupKeywordsFilterPricingRows(t *testing.T) {
+	rows := []PricingRow{
+		{
+			ModelName:  "gpt-5.5",
+			GroupName:  "Codex Basic",
+			GroupRatio: 0.01,
+			InputPrice: ptr(0.01),
+		},
+		{
+			ModelName:  "gpt-5.5",
+			GroupName:  "Codex Pro",
+			GroupRatio: 0.02,
+			InputPrice: ptr(0.02),
+		},
+	}
+
+	filtered := filterPricingRowsByIncludedKeywords(rows, []string{"pro"})
+	if len(filtered) != 1 {
+		t.Fatalf("len(filtered) = %d, want 1", len(filtered))
+	}
+	if filtered[0].GroupName != "Codex Pro" {
+		t.Fatalf("group = %q, want Codex Pro", filtered[0].GroupName)
+	}
+}
+
+func TestIncludedGroupKeywordsFilterSub2APIPriceRows(t *testing.T) {
+	rows := []Sub2APIUserPriceRow{
+		{
+			ModelName:     "gpt-5.5",
+			GroupName:     "Codex Basic",
+			GroupPlatform: sub2PlatformOpenAI,
+			EffectiveRate: 0.01,
+		},
+		{
+			ModelName:     "gpt-5.5",
+			GroupName:     "Codex Pro",
+			GroupPlatform: sub2PlatformOpenAI,
+			EffectiveRate: 0.02,
+		},
+	}
+
+	filtered := filterSub2APIPriceRowsByIncludedKeywords(rows, []string{"pro"})
+	if len(filtered) != 1 {
+		t.Fatalf("len(filtered) = %d, want 1", len(filtered))
+	}
+	if filtered[0].GroupName != "Codex Pro" {
+		t.Fatalf("group = %q, want Codex Pro", filtered[0].GroupName)
+	}
+}

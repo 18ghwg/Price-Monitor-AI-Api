@@ -5,8 +5,82 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 )
+
+type ruleBatchSessionCacheKey struct{}
+
+type ruleBatchSessionCache struct {
+	mu     sync.Mutex
+	newAPI map[int64]newAPISessionCacheEntry
+	sub2   map[string]*Sub2APIClient
+}
+
+type newAPISessionCacheEntry struct {
+	client *NewAPIClient
+	userID int64
+	token  string
+}
+
+func withRuleBatchSessionCache(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, ruleBatchSessionCacheKey{}, &ruleBatchSessionCache{
+		newAPI: make(map[int64]newAPISessionCacheEntry),
+		sub2:   make(map[string]*Sub2APIClient),
+	})
+}
+
+func ruleBatchSessionCacheFromContext(ctx context.Context) *ruleBatchSessionCache {
+	if ctx == nil {
+		return nil
+	}
+	cache, _ := ctx.Value(ruleBatchSessionCacheKey{}).(*ruleBatchSessionCache)
+	return cache
+}
+
+func (c *ruleBatchSessionCache) getNewAPI(siteID int64) (newAPISessionCacheEntry, bool) {
+	if c == nil || siteID <= 0 {
+		return newAPISessionCacheEntry{}, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.newAPI[siteID]
+	if !ok || entry.client == nil || entry.token == "" {
+		return newAPISessionCacheEntry{}, false
+	}
+	return entry, true
+}
+
+func (c *ruleBatchSessionCache) setNewAPI(siteID int64, client *NewAPIClient, userID int64, token string) {
+	if c == nil || siteID <= 0 || client == nil || strings.TrimSpace(token) == "" {
+		return
+	}
+	c.mu.Lock()
+	c.newAPI[siteID] = newAPISessionCacheEntry{client: client, userID: userID, token: token}
+	c.mu.Unlock()
+}
+
+func (c *ruleBatchSessionCache) getSub2(key string) (*Sub2APIClient, bool) {
+	if c == nil || strings.TrimSpace(key) == "" {
+		return nil, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	client, ok := c.sub2[key]
+	return client, ok && client != nil
+}
+
+func (c *ruleBatchSessionCache) setSub2(key string, client *Sub2APIClient) {
+	if c == nil || strings.TrimSpace(key) == "" || client == nil {
+		return
+	}
+	c.mu.Lock()
+	c.sub2[key] = client
+	c.mu.Unlock()
+}
 
 func isSessionAuthError(err error) bool {
 	if err == nil {
@@ -40,6 +114,12 @@ func isSessionAuthError(err error) bool {
 }
 
 func (s *Server) newAPIClientForSite(ctx context.Context, site Site, forceLogin bool) (*NewAPIClient, int64, string, error) {
+	cache := ruleBatchSessionCacheFromContext(ctx)
+	if !forceLogin {
+		if entry, ok := cache.getNewAPI(site.ID); ok {
+			return entry.client, entry.userID, entry.token, nil
+		}
+	}
 	client, err := NewNewAPIClient(site.BaseURL)
 	if err != nil {
 		return nil, 0, "", err
@@ -51,11 +131,13 @@ func (s *Server) newAPIClientForSite(ctx context.Context, site Site, forceLogin 
 	token := strings.TrimSpace(site.AccessToken)
 	if !forceLogin {
 		if userID > 0 && token != "" {
+			cache.setNewAPI(site.ID, client, userID, token)
 			return client, userID, token, nil
 		}
 		if userID > 0 {
 			generated, genErr := client.GenerateSystemAccessToken(ctx, userID)
 			if genErr == nil {
+				cache.setNewAPI(site.ID, client, userID, generated)
 				return client, userID, generated, nil
 			}
 			if !isSessionAuthError(genErr) {
@@ -77,6 +159,7 @@ func (s *Server) newAPIClientForSite(ctx context.Context, site Site, forceLogin 
 	if err != nil {
 		return client, userID, "", fmt.Errorf("generate NewAPI system token: %w", err)
 	}
+	cache.setNewAPI(site.ID, client, userID, token)
 	return client, userID, token, nil
 }
 
@@ -143,6 +226,13 @@ func (s *Server) sub2APIClientForUserSource(ctx context.Context, cfg sub2APIUser
 	if strings.TrimSpace(cfg.BaseURL) == "" {
 		return nil, fmt.Errorf("sub2api upstream base url is not configured")
 	}
+	cache := ruleBatchSessionCacheFromContext(ctx)
+	cacheKey := sub2APIUserSourceCacheKey(cfg)
+	if !forceLogin {
+		if client, ok := cache.getSub2(cacheKey); ok {
+			return client, nil
+		}
+	}
 	client, err := NewSub2APIClient(cfg.BaseURL, cfg.AuthToken)
 	if err != nil {
 		return nil, err
@@ -151,12 +241,26 @@ func (s *Server) sub2APIClientForUserSource(ctx context.Context, cfg sub2APIUser
 		log.Printf("load sub2api cookies for upstream %d: %v", cfg.UpstreamID, err)
 	}
 	if !forceLogin && (strings.TrimSpace(cfg.AuthToken) != "" || strings.TrimSpace(cfg.CookieJar) != "") {
+		cache.setSub2(cacheKey, client)
 		return client, nil
 	}
 	if err := client.LoginWith2FA(ctx, cfg.Email, cfg.Password, cfg.TOTPCode, cfg.TurnstileToken); err != nil {
 		return client, err
 	}
+	cache.setSub2(cacheKey, client)
 	return client, nil
+}
+
+func sub2APIUserSourceCacheKey(cfg sub2APIUserSourceConfig) string {
+	if cfg.UpstreamID > 0 {
+		return fmt.Sprintf("upstream:%d", cfg.UpstreamID)
+	}
+	return strings.Join([]string{
+		"adhoc",
+		strings.TrimSpace(cfg.BaseURL),
+		strings.TrimSpace(cfg.AuthToken),
+		strings.TrimSpace(cfg.Email),
+	}, "\x00")
 }
 
 func (s *Server) saveSub2APIUserSession(ctx context.Context, cfg sub2APIUserSourceConfig, client *Sub2APIClient, lastErr string) {

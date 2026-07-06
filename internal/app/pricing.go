@@ -11,7 +11,7 @@ import (
 func priceComparisonExpr(hitRatioPlaceholder string, latencyWeightPlaceholder string) string {
 	noCacheExpr := noCacheSnapshotSQLExpr()
 	baseExpr := "(CASE WHEN " + noCacheExpr + " THEN " +
-		"((CASE WHEN input_price IS NOT NULL THEN input_price + COALESCE(output_price, 0) ELSE COALESCE(request_price, output_price, 1e308) END) * (1 + " + hitRatioPlaceholder + ")) " +
+		"((CASE WHEN input_price IS NOT NULL THEN input_price + COALESCE(output_price, 0) ELSE COALESCE(request_price, output_price, 1e308) END) * (1 + " + hitRatioPlaceholder + ") * 5) " +
 		"WHEN cache_write_price IS NULL AND cache_read_price IS NULL AND input_price IS NULL THEN COALESCE(request_price, output_price, 1e308) " +
 		"ELSE COALESCE(cache_write_price, input_price, request_price, output_price, 1e308) * (1 - " + hitRatioPlaceholder + ") + " +
 		"COALESCE(cache_read_price, input_price, request_price, output_price, 1e308) * " + hitRatioPlaceholder + " + " +

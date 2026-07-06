@@ -588,6 +588,7 @@ const indexHTML = `<!doctype html>
                 <input name="name" required placeholder="分类名称">
                 <input name="slug" placeholder="标识，可留空">
                 <textarea name="blocked_group_keywords" rows="2" placeholder="屏蔽分组关键词，逗号或换行分隔"></textarea>
+                <textarea name="sub2api_main_group_keywords" rows="2" placeholder="包含分组关键词，逗号或换行分隔"></textarea>
                 <select id="categoryMainGroupSelect" aria-label="选择主站 sub2api 分组" multiple hidden>
                   <option value="">自动匹配或手动填写</option>
                 </select>
@@ -621,7 +622,7 @@ const indexHTML = `<!doctype html>
     <button type="button" data-jump-view="settings" data-jump-section="settings">设置</button>
   </nav>
   <div id="toast" class="toast" hidden></div>
-  <script src="/static/app.js?v=20260613-model-probe"></script>
+  <script src="/static/app.js?v=20260629-category-keywords"></script>
 </body>
 </html>`
 
@@ -2836,6 +2837,10 @@ function renderCategoryControls() {
     const mainGroup = mainGroups.length
       ? "<span class=\"category-main-group-tags\">" + mainGroups.map((group) => "<span class=\"group-badge\">" + escapeHTML((group.name || "未命名") + (group.id ? " #" + group.id : "")) + "</span>").join("") + "</span>"
       : "<span class=\"muted\">主站分组：按分类名称自动匹配</span>";
+    const includeKeywords = Array.isArray(category.sub2api_main_group_keywords) ? category.sub2api_main_group_keywords : [];
+    const included = includeKeywords.length
+      ? "<span class=\"category-main-group-tags\">" + includeKeywords.map((keyword) => "<span class=\"group-badge\">包含：" + escapeHTML(keyword) + "</span>").join("") + "</span>"
+      : "";
     const blockedKeywords = Array.isArray(category.blocked_group_keywords) ? category.blocked_group_keywords : [];
     const blocked = blockedKeywords.length
       ? "<span class=\"category-main-group-tags\">" + blockedKeywords.map((keyword) => "<span class=\"group-badge muted-badge\">屏蔽：" + escapeHTML(keyword) + "</span>").join("") + "</span>"
@@ -2844,6 +2849,7 @@ function renderCategoryControls() {
       + "<strong>" + escapeHTML(category.name) + "</strong>"
       + "<span class=\"muted\">" + escapeHTML(category.slug) + "</span>"
       + mainGroup
+      + included
       + blocked
       + "<span class=\"category-actions\">"
       + "<button class=\"secondary\" data-edit-category=\"" + category.id + "\" type=\"button\">编辑</button>"
@@ -4613,6 +4619,7 @@ async function editCategory(category) {
   form.elements.name.value = category.name || "";
   form.elements.slug.value = category.slug || "";
   form.elements.blocked_group_keywords.value = Array.isArray(category.blocked_group_keywords) ? category.blocked_group_keywords.join("\n") : "";
+  form.elements.sub2api_main_group_keywords.value = Array.isArray(category.sub2api_main_group_keywords) ? category.sub2api_main_group_keywords.join("\n") : "";
   form.elements.sub2api_main_group_name.value = category.sub2api_main_group_name || "";
   form.elements.sub2api_main_group_id.value = String(category.sub2api_main_group_id || 0);
   form.dataset.mainGroupIds = groups.map((group) => String(group.id || "")).filter(Boolean).join(",");
@@ -4631,6 +4638,7 @@ function resetCategoryForm() {
   form.reset();
   form.elements.id.value = "";
   form.elements.blocked_group_keywords.value = "";
+  form.elements.sub2api_main_group_keywords.value = "";
   form.elements.sub2api_main_group_id.value = "0";
   form.dataset.mainGroupIds = "";
   form.dataset.mainGroupsJson = "";
@@ -5060,7 +5068,7 @@ if (categoryForm) {
   if (mainGroupSelect) {
     mainGroupSelect.addEventListener("change", applyCategoryMainGroupSelection);
   }
-  ["sub2api_main_group_name", "sub2api_main_group_id"].forEach((name) => {
+  ["sub2api_main_group_name", "sub2api_main_group_id", "sub2api_main_group_keywords"].forEach((name) => {
     const input = categoryForm.elements[name];
     if (!input) return;
     input.addEventListener("input", () => {
@@ -5081,6 +5089,7 @@ if (categoryForm) {
     const id = Number(payload.id || state.editingCategoryId || 0);
     delete payload.id;
     payload.sub2api_main_groups = selectedCategoryMainGroups();
+    payload.sub2api_main_group_keywords = splitKeywords(payload.sub2api_main_group_keywords);
     payload.blocked_group_keywords = splitKeywords(payload.blocked_group_keywords);
     payload.sub2api_main_group_id = Number(payload.sub2api_main_group_id || 0);
     payload.sub2api_main_group_name = payload.sub2api_main_group_name || "";
@@ -5223,7 +5232,7 @@ if (bulkRuleForm) {
     payload.model_keyword = String(payload.model_keyword || "").trim();
     payload.model_name = payload.model_keyword;
     payload.interval_minutes = Number(payload.interval_minutes || 15);
-    payload.sync_enabled = !!state.settings?.sub2api_enabled;
+    payload.sync_enabled = true;
     const sourceType = String(payload.source_type || "all").toLowerCase();
     const targetCount = (sourceType === "all" || sourceType === "newapi" ? newapiSites().length : 0)
       + (sourceType === "all" || sourceType === "sub2api" ? state.sub2Upstreams.length : 0);

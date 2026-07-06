@@ -197,6 +197,75 @@ func TestSub2APIUpsertUpdatesSameURLAccountEvenWhenGroupsDiffer(t *testing.T) {
 	}
 }
 
+func TestSub2APIUpsertReportsAlreadyMatchedGroupsForExactGroupReuse(t *testing.T) {
+	requestCount := map[string]int{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		requestCount[r.Method+" "+r.URL.Path]++
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/admin/accounts":
+			writeSub2TestJSON(w, map[string]any{
+				"items": []map[string]any{{
+					"id":          42,
+					"name":        "existing",
+					"platform":    "openai",
+					"type":        "apikey",
+					"credentials": map[string]any{"base_url": "https://newapi.test"},
+					"group_ids":   []int64{7},
+					"status":      "active",
+					"schedulable": true,
+				}},
+				"total": 1,
+			})
+		case r.Method == http.MethodPut && r.URL.Path == "/api/v1/admin/accounts/42":
+			writeSub2TestJSON(w, map[string]any{
+				"id":          42,
+				"name":        "existing",
+				"platform":    "openai",
+				"type":        "apikey",
+				"credentials": map[string]any{"base_url": "https://newapi.test"},
+				"group_ids":   []int64{7},
+				"status":      "active",
+				"schedulable": true,
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/admin/accounts/42/schedulable":
+			writeSub2TestJSON(w, map[string]any{"id": 42, "schedulable": true})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewSub2APIClient(server.URL, "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, action, alreadyMatched, err := client.UpsertAPIKeyAccountGroupsWithRateAndMode(
+		context.Background(),
+		"openai",
+		"existing",
+		"https://newapi.test",
+		"sk-new",
+		[]sub2Group{{ID: 7, Name: "Codex"}},
+		nil,
+		sub2APISyncAccountModeSchedulableOnly,
+	)
+	if err != nil {
+		t.Fatalf("UpsertAPIKeyAccountGroupsWithRateAndMode() error = %v", err)
+	}
+	if action != "updated" {
+		t.Fatalf("action = %q, want updated", action)
+	}
+	if !alreadyMatched {
+		t.Fatalf("alreadyMatchedGroups = false, want true")
+	}
+	if requestCount[http.MethodPut+" /api/v1/admin/accounts/42"] != 1 {
+		t.Fatalf("update account calls = %d, want 1", requestCount[http.MethodPut+" /api/v1/admin/accounts/42"])
+	}
+}
+
 func TestSub2APIUpsertBindsOneAccountToMultipleGroups(t *testing.T) {
 	var createPayload map[string]any
 	requestCount := map[string]int{}
