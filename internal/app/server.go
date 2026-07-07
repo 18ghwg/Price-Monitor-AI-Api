@@ -2495,35 +2495,64 @@ func (s *Server) disableNonRetainedSyncAccounts(ctx context.Context, retained []
 	if len(retained) == 0 {
 		return nil
 	}
-	keepIDs := make([]int64, 0, len(retained))
-	var groups []sub2Group
-	var platform string
-	for _, result := range retained {
-		if result.Account.ID > 0 {
-			keepIDs = append(keepIDs, result.Account.ID)
-		}
-		if len(groups) == 0 && len(result.Groups) > 0 {
-			groups = result.Groups
-		}
-		if platform == "" {
-			platform = result.Platform
-		}
-	}
-	if len(keepIDs) == 0 || len(groups) == 0 {
+	keepIDs, targets := retainedSyncDisableTargets(retained)
+	if len(keepIDs) == 0 || len(targets) == 0 {
 		return nil
 	}
 	sub2, err := s.sub2APIClient(ctx, true)
 	if err != nil {
 		return err
 	}
-	if err := sub2.DisableOtherAPIKeyAccountsForGroupsKeeping(ctx, platform, keepIDs, groups, settings.Sub2APISyncAccountMode); err != nil {
-		groupNames := make([]string, 0, len(groups))
-		for _, group := range groups {
-			groupNames = append(groupNames, group.Name)
+	for _, target := range targets {
+		if err := sub2.DisableOtherAPIKeyAccountsForGroupsKeeping(ctx, target.platform, keepIDs, target.groups, settings.Sub2APISyncAccountMode); err != nil {
+			groupNames := make([]string, 0, len(target.groups))
+			for _, group := range target.groups {
+				groupNames = append(groupNames, group.Name)
+			}
+			return fmt.Errorf("关闭同分组其他主站账号失败：平台 %s，分组 %s，原因：%w", target.platform, strings.Join(groupNames, ", "), err)
 		}
-		return fmt.Errorf("关闭同分组其他主站账号失败：分组 %s，原因：%w", strings.Join(groupNames, ", "), err)
 	}
 	return nil
+}
+
+type retainedSyncDisableTarget struct {
+	platform string
+	groups   []sub2Group
+}
+
+func retainedSyncDisableTargets(retained []syncCandidateMainResult) ([]int64, []retainedSyncDisableTarget) {
+	keepIDs := make([]int64, 0, len(retained))
+	groupsByPlatform := map[string][]sub2Group{}
+	seenGroupsByPlatform := map[string]map[int64]bool{}
+	for _, result := range retained {
+		if result.Account.ID > 0 {
+			keepIDs = append(keepIDs, result.Account.ID)
+		}
+		platform := normalizeSub2Platform(result.Platform)
+		if platform == "" || len(result.Groups) == 0 {
+			continue
+		}
+		if seenGroupsByPlatform[platform] == nil {
+			seenGroupsByPlatform[platform] = map[int64]bool{}
+		}
+		for _, group := range normalizeSub2Groups(result.Groups) {
+			if group.ID <= 0 || seenGroupsByPlatform[platform][group.ID] {
+				continue
+			}
+			seenGroupsByPlatform[platform][group.ID] = true
+			groupsByPlatform[platform] = append(groupsByPlatform[platform], group)
+		}
+	}
+	platforms := make([]string, 0, len(groupsByPlatform))
+	for platform := range groupsByPlatform {
+		platforms = append(platforms, platform)
+	}
+	sort.Strings(platforms)
+	targets := make([]retainedSyncDisableTarget, 0, len(platforms))
+	for _, platform := range platforms {
+		targets = append(targets, retainedSyncDisableTarget{platform: platform, groups: groupsByPlatform[platform]})
+	}
+	return keepIDs, targets
 }
 
 func (s *Server) updateRetainedSyncStatus(ctx context.Context, ruleID int64, retained []syncCandidateMainResult, keepCount int) {
@@ -3141,7 +3170,11 @@ func (s *Server) syncUpstreamKeyToMainSub2APIWithOptions(ctx context.Context, ru
 	}
 	platform := syncPlatformForRule(rule, category)
 	accountName := fmt.Sprintf("%s %s %s", sourceName, strings.Join(groupNames, "+"), row.GroupName)
-	account, action, alreadyMatchedGroups, err := sub2.UpsertAPIKeyAccountGroupsWithRateAndMode(ctx, platform, accountName, sourceBaseURL, apiKey, groups, nil, settings.Sub2APISyncAccountMode)
+	upsert := sub2.UpsertAPIKeyAccountGroupsWithRateAndMode
+	if !disableOthers {
+		upsert = sub2.UpsertAPIKeyAccountGroupsWithRateAndModeNoDuplicateCleanup
+	}
+	account, action, alreadyMatchedGroups, err := upsert(ctx, platform, accountName, sourceBaseURL, apiKey, groups, nil, settings.Sub2APISyncAccountMode)
 	if err != nil {
 		return syncToMainResult{}, err
 	}

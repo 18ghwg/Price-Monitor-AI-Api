@@ -431,6 +431,85 @@ func TestSub2APIUpsertSyncsAccountRateMultiplier(t *testing.T) {
 	}
 }
 
+func TestSub2APIUpsertNoDuplicateCleanupCreatesSeparateLowGroupAccountForSameURL(t *testing.T) {
+	var createPayload map[string]any
+	var disabled []int64
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/admin/accounts":
+			writeSub2TestJSON(w, map[string]any{
+				"items": []map[string]any{{
+					"id":          88,
+					"name":        "site Codex Free",
+					"platform":    "openai",
+					"type":        "apikey",
+					"credentials": map[string]any{"base_url": "https://newapi.test"},
+					"group_ids":   []int64{7},
+					"status":      "active",
+					"schedulable": true,
+				}},
+				"total": 1,
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/admin/accounts":
+			if err := json.NewDecoder(r.Body).Decode(&createPayload); err != nil {
+				t.Fatalf("decode create payload: %v", err)
+			}
+			writeSub2TestJSON(w, map[string]any{
+				"id":          89,
+				"name":        createPayload["name"],
+				"platform":    "openai",
+				"type":        "apikey",
+				"credentials": createPayload["credentials"],
+				"group_ids":   []int64{7},
+				"status":      "active",
+				"schedulable": true,
+			})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/schedulable"):
+			var payload map[string]bool
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode schedulable payload: %v", err)
+			}
+			id := pathAccountID(strings.TrimSuffix(r.URL.Path, "/schedulable"))
+			if !payload["schedulable"] {
+				disabled = append(disabled, id)
+			}
+			writeSub2TestJSON(w, map[string]any{"id": id, "schedulable": payload["schedulable"]})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewSub2APIClient(server.URL, "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, action, _, err := client.UpsertAPIKeyAccountGroupsWithRateAndModeNoDuplicateCleanup(
+		context.Background(),
+		"openai",
+		"site Codex VIP",
+		"https://newapi.test",
+		"sk-vip",
+		[]sub2Group{{ID: 7, Name: "Codex"}},
+		nil,
+		sub2APISyncAccountModeSchedulableOnly,
+	)
+	if err != nil {
+		t.Fatalf("UpsertAPIKeyAccountGroupsWithRateAndModeNoDuplicateCleanup() error = %v", err)
+	}
+	if action != "created" {
+		t.Fatalf("action = %q, want created", action)
+	}
+	if createPayload["name"] != "site Codex VIP" {
+		t.Fatalf("created name = %v, want site Codex VIP", createPayload["name"])
+	}
+	if len(disabled) != 0 {
+		t.Fatalf("disabled accounts = %v, want none before global retained cleanup", disabled)
+	}
+}
+
 func TestSub2APIEnsureGroupByIDOrNameWithRateUpdatesGroupRate(t *testing.T) {
 	var updatePayload map[string]any
 

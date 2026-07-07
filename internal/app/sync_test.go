@@ -163,6 +163,39 @@ func TestLowBalanceNotificationSignatureUsesUpstreamAccount(t *testing.T) {
 	}
 }
 
+func TestRetainedSyncDisableTargetsCollectsAllGroupsAndKeepsAllAccounts(t *testing.T) {
+	keepIDs, targets := retainedSyncDisableTargets([]syncCandidateMainResult{
+		{
+			Account:  sub2Account{ID: 42},
+			Platform: sub2PlatformOpenAI,
+			Groups:   []sub2Group{{ID: 7, Name: "Codex"}},
+		},
+		{
+			Account:  sub2Account{ID: 43},
+			Platform: sub2PlatformOpenAI,
+			Groups:   []sub2Group{{ID: 8, Name: "Codex Plus"}},
+		},
+		{
+			Account:  sub2Account{ID: 44},
+			Platform: sub2PlatformAnthropic,
+			Groups:   []sub2Group{{ID: 12, Name: "Claude"}},
+		},
+	})
+
+	if len(keepIDs) != 3 || keepIDs[0] != 42 || keepIDs[1] != 43 || keepIDs[2] != 44 {
+		t.Fatalf("keepIDs = %v, want [42 43 44]", keepIDs)
+	}
+	if len(targets) != 2 {
+		t.Fatalf("targets len = %d, want 2", len(targets))
+	}
+	if targets[0].platform != sub2PlatformAnthropic || len(targets[0].groups) != 1 || targets[0].groups[0].ID != 12 {
+		t.Fatalf("targets[0] = %#v, want anthropic group 12", targets[0])
+	}
+	if targets[1].platform != sub2PlatformOpenAI || len(targets[1].groups) != 2 || targets[1].groups[0].ID != 7 || targets[1].groups[1].ID != 8 {
+		t.Fatalf("targets[1] = %#v, want openai groups 7 and 8", targets[1])
+	}
+}
+
 func TestLowBalanceStatusIncludesSourceGroupAndBalance(t *testing.T) {
 	balance := 0.0
 	status := lowBalanceStatus(PriceSnapshot{

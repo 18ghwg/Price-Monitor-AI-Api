@@ -613,6 +613,14 @@ func (c *Sub2APIClient) UpsertAPIKeyAccountGroupsWithRate(ctx context.Context, p
 }
 
 func (c *Sub2APIClient) UpsertAPIKeyAccountGroupsWithRateAndMode(ctx context.Context, platform, accountName, apiBaseURL, apiKey string, groups []sub2Group, accountRate *float64, syncAccountMode string) (sub2Account, string, bool, error) {
+	return c.upsertAPIKeyAccountGroupsWithRateAndMode(ctx, platform, accountName, apiBaseURL, apiKey, groups, accountRate, syncAccountMode, true)
+}
+
+func (c *Sub2APIClient) UpsertAPIKeyAccountGroupsWithRateAndModeNoDuplicateCleanup(ctx context.Context, platform, accountName, apiBaseURL, apiKey string, groups []sub2Group, accountRate *float64, syncAccountMode string) (sub2Account, string, bool, error) {
+	return c.upsertAPIKeyAccountGroupsWithRateAndMode(ctx, platform, accountName, apiBaseURL, apiKey, groups, accountRate, syncAccountMode, false)
+}
+
+func (c *Sub2APIClient) upsertAPIKeyAccountGroupsWithRateAndMode(ctx context.Context, platform, accountName, apiBaseURL, apiKey string, groups []sub2Group, accountRate *float64, syncAccountMode string, cleanupSameURLDuplicates bool) (sub2Account, string, bool, error) {
 	platform = normalizeSub2Platform(platform)
 	apiBaseURL = normalizeBaseURL(apiBaseURL)
 	apiKey = strings.TrimSpace(apiKey)
@@ -635,15 +643,35 @@ func (c *Sub2APIClient) UpsertAPIKeyAccountGroupsWithRateAndMode(ctx context.Con
 			sameURL = append(sameURL, account)
 		}
 	}
+	var sameURLAndName []sub2Account
+	for _, account := range sameURL {
+		if strings.EqualFold(strings.TrimSpace(account.Name), accountName) {
+			sameURLAndName = append(sameURLAndName, account)
+		}
+	}
 	targetGroupIDs := sub2GroupIDs(groups)
-	if len(sameURL) > 0 {
+	if len(sameURLAndName) > 0 {
+		account := preferredSub2Account(sameURLAndName, groups)
+		alreadyMatchedGroups := sub2AccountGroupIDsEqual(account, targetGroupIDs)
+		updated, err := c.updateAccountGroupsWithRate(ctx, platform, account, accountName, apiBaseURL, apiKey, groups, accountRate)
+		if err != nil {
+			return updated, "updated", false, err
+		}
+		if cleanupSameURLDuplicates {
+			if err := c.disableDuplicateAPIKeyAccounts(ctx, platform, updated.ID, apiBaseURL, accountName, accounts); err != nil {
+				return updated, "updated", alreadyMatchedGroups, err
+			}
+		}
+		return updated, "updated", alreadyMatchedGroups, nil
+	}
+	if cleanupSameURLDuplicates && len(sameURL) > 0 {
 		account := preferredSub2Account(sameURL, groups)
 		alreadyMatchedGroups := sub2AccountGroupIDsEqual(account, targetGroupIDs)
 		updated, err := c.updateAccountGroupsWithRate(ctx, platform, account, accountName, apiBaseURL, apiKey, groups, accountRate)
 		if err != nil {
 			return updated, "updated", false, err
 		}
-		if err := c.disableDuplicateAPIKeyAccounts(ctx, platform, updated.ID, apiBaseURL, accounts); err != nil {
+		if err := c.disableDuplicateAPIKeyAccounts(ctx, platform, updated.ID, apiBaseURL, accountName, accounts); err != nil {
 			return updated, "updated", alreadyMatchedGroups, err
 		}
 		return updated, "updated", alreadyMatchedGroups, nil
@@ -1039,7 +1067,7 @@ func (c *Sub2APIClient) SetAccountSchedulable(ctx context.Context, accountID int
 	return nil
 }
 
-func (c *Sub2APIClient) disableDuplicateAPIKeyAccounts(ctx context.Context, platform string, keepID int64, apiBaseURL string, accounts []sub2Account) error {
+func (c *Sub2APIClient) disableDuplicateAPIKeyAccounts(ctx context.Context, platform string, keepID int64, apiBaseURL string, accountName string, accounts []sub2Account) error {
 	platform = normalizeSub2Platform(platform)
 	for _, account := range accounts {
 		if account.ID <= 0 || account.ID == keepID || !accountMatchesPlatformAPIURL(account, platform, apiBaseURL) {
