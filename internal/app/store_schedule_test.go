@@ -37,6 +37,18 @@ func TestNormalizeMonitorScheduleSettings(t *testing.T) {
 	}
 }
 
+func TestNormalizeSub2APISyncKeepCount(t *testing.T) {
+	if got := normalizeSub2APISyncKeepCount(0); got != 1 {
+		t.Fatalf("normalizeSub2APISyncKeepCount(0) = %d, want 1", got)
+	}
+	if got := normalizeSub2APISyncKeepCount(2); got != 2 {
+		t.Fatalf("normalizeSub2APISyncKeepCount(2) = %d, want 2", got)
+	}
+	if got := normalizeSub2APISyncKeepCount(99); got != 10 {
+		t.Fatalf("normalizeSub2APISyncKeepCount(99) = %d, want 10", got)
+	}
+}
+
 func TestGroupScheduledRulesBySourceBatchesSameSite(t *testing.T) {
 	groups := groupScheduledRulesBySource([]scheduledRuleSource{
 		{rule: Rule{ID: 1, SourceType: RuleSourceNewAPI, SiteID: 10}, site: Site{ID: 10, Name: "site-a"}},

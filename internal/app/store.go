@@ -36,13 +36,13 @@ type SiteInput struct {
 }
 
 type CategoryInput struct {
-	Name                    string            `json:"name"`
-	Slug                    string            `json:"slug"`
-	Sub2APIMainGroupID      int64             `json:"sub2api_main_group_id"`
-	Sub2APIMainGroupName    string            `json:"sub2api_main_group_name"`
-	Sub2APIMainGroups       []Sub2APIGroupRef `json:"sub2api_main_groups"`
-	Sub2APIMainGroupKeywords []string         `json:"sub2api_main_group_keywords"`
-	BlockedGroupKeywords    []string          `json:"blocked_group_keywords"`
+	Name                     string            `json:"name"`
+	Slug                     string            `json:"slug"`
+	Sub2APIMainGroupID       int64             `json:"sub2api_main_group_id"`
+	Sub2APIMainGroupName     string            `json:"sub2api_main_group_name"`
+	Sub2APIMainGroups        []Sub2APIGroupRef `json:"sub2api_main_groups"`
+	Sub2APIMainGroupKeywords []string          `json:"sub2api_main_group_keywords"`
+	BlockedGroupKeywords     []string          `json:"blocked_group_keywords"`
 }
 
 type Sub2APIUpstreamInput struct {
@@ -96,6 +96,7 @@ type SettingsInput struct {
 	Sub2APIEmail             string                         `json:"sub2api_email"`
 	Sub2APIPassword          string                         `json:"sub2api_password"`
 	Sub2APISyncAccountMode   string                         `json:"sub2api_sync_account_mode"`
+	Sub2APISyncKeepCount     int                            `json:"sub2api_sync_keep_count"`
 	MonitorIntervalMinutes   int                            `json:"monitor_interval_minutes"`
 	MonitorRuleDelaySeconds  int                            `json:"monitor_rule_delay_seconds"`
 	LatencyTestEnabled       bool                           `json:"latency_test_enabled"`
@@ -1851,7 +1852,7 @@ func (s Store) CheapestLatestSnapshot(ctx context.Context, category string, mode
 	var invalidAt sql.NullTime
 	err := s.db.QueryRow(ctx, `
 		WITH latest AS (
-			SELECT DISTINCT ON (p.rule_id)
+			SELECT DISTINCT ON (COALESCE(p.source_type, 'newapi'), lower(regexp_replace(trim(p.source_base_url), '/+$', '')), lower(trim(p.source_account)), r.category, p.model_name, lower(trim(p.group_name)))
 			       p.id, p.rule_id, COALESCE(p.source_type, 'newapi') AS source_type, COALESCE(p.site_id, 0) AS site_id, p.sub2api_upstream_id,
 			       CASE WHEN COALESCE(p.source_type, 'newapi') = 'sub2api' THEN COALESCE(u.name, '') ELSE COALESCE(st.name, '') END AS site_name,
 			       COALESCE(NULLIF(p.source_base_url, ''), CASE WHEN COALESCE(p.source_type, 'newapi') = 'sub2api' THEN COALESCE(u.base_url, '') ELSE COALESCE(st.base_url, '') END) AS site_base_url,
@@ -1871,13 +1872,26 @@ func (s Store) CheapestLatestSnapshot(ctx context.Context, category string, mode
 			  AND p.model_name = $2
 			  AND lower(trim(p.model_name)) = lower(trim(r.model_keyword))
 			  AND p.invalid = false
+			  AND (
+			    NOT EXISTS (
+			      SELECT 1
+			      FROM jsonb_array_elements_text(COALESCE(c.sub2api_main_group_keywords, '[]'::jsonb)) AS included(keyword)
+			      WHERE trim(included.keyword) <> ''
+			    )
+			    OR EXISTS (
+			      SELECT 1
+			      FROM jsonb_array_elements_text(COALESCE(c.sub2api_main_group_keywords, '[]'::jsonb)) AS included(keyword)
+			      WHERE trim(included.keyword) <> ''
+			        AND lower(COALESCE(p.group_name, '') || ' ' || COALESCE(p.group_desc, '')) LIKE '%' || lower(trim(included.keyword)) || '%'
+			    )
+			  )
 			  AND NOT EXISTS (
 			    SELECT 1
 			    FROM jsonb_array_elements_text(COALESCE(c.blocked_group_keywords, '[]'::jsonb)) AS blocked(keyword)
 			    WHERE trim(blocked.keyword) <> ''
 			      AND lower(COALESCE(p.group_name, '') || ' ' || COALESCE(p.group_desc, '')) LIKE '%' || lower(trim(blocked.keyword)) || '%'
 			  )
-			ORDER BY p.rule_id, p.created_at DESC, p.id DESC
+			ORDER BY COALESCE(p.source_type, 'newapi'), lower(regexp_replace(trim(p.source_base_url), '/+$', '')), lower(trim(p.source_account)), r.category, p.model_name, lower(trim(p.group_name)), p.created_at DESC, p.id DESC
 		)
 		SELECT id, rule_id, source_type, site_id, sub2api_upstream_id, site_name, site_base_url, source_account, category, category_name, model_keyword,
 		       model_name, group_name, group_desc, quota_type,
@@ -2002,8 +2016,8 @@ func (s Store) LatestSnapshots(ctx context.Context, limit int, category string, 
 	return snapshots, rows.Err()
 }
 
-func (s Store) CheapestSyncCandidate(ctx context.Context, category string, modelName string, expectedCacheHitRatio float64, balanceThreshold float64, latencyWeightPerSecond float64) (PriceSnapshot, []PriceSnapshot, error) {
-	candidates, skipped, err := s.SyncCandidates(ctx, category, modelName, expectedCacheHitRatio, balanceThreshold, latencyWeightPerSecond)
+func (s Store) CheapestSyncCandidate(ctx context.Context, category string, modelName string, expectedCacheHitRatio float64, balanceThreshold float64, latencyWeightPerSecond float64, perSourceGroupLimit int) (PriceSnapshot, []PriceSnapshot, error) {
+	candidates, skipped, err := s.SyncCandidates(ctx, category, modelName, expectedCacheHitRatio, balanceThreshold, latencyWeightPerSecond, perSourceGroupLimit)
 	if err != nil {
 		return PriceSnapshot{}, nil, err
 	}
@@ -2013,8 +2027,8 @@ func (s Store) CheapestSyncCandidate(ctx context.Context, category string, model
 	return candidates[0], skipped, nil
 }
 
-func (s Store) SyncCandidates(ctx context.Context, category string, modelName string, expectedCacheHitRatio float64, balanceThreshold float64, latencyWeightPerSecond float64) ([]PriceSnapshot, []PriceSnapshot, error) {
-	snapshots, err := s.latestSnapshotsForModel(ctx, category, modelName, expectedCacheHitRatio, latencyWeightPerSecond)
+func (s Store) SyncCandidates(ctx context.Context, category string, modelName string, expectedCacheHitRatio float64, balanceThreshold float64, latencyWeightPerSecond float64, perSourceGroupLimit int) ([]PriceSnapshot, []PriceSnapshot, error) {
+	snapshots, err := s.latestSnapshotsForModel(ctx, category, modelName, expectedCacheHitRatio, latencyWeightPerSecond, perSourceGroupLimit)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -2030,12 +2044,13 @@ func (s Store) SyncCandidates(ctx context.Context, category string, modelName st
 	return candidates, skipped, nil
 }
 
-func (s Store) latestSnapshotsForModel(ctx context.Context, category string, modelName string, expectedCacheHitRatio float64, latencyWeightPerSecond float64) ([]PriceSnapshot, error) {
+func (s Store) latestSnapshotsForModel(ctx context.Context, category string, modelName string, expectedCacheHitRatio float64, latencyWeightPerSecond float64, perSourceGroupLimit int) ([]PriceSnapshot, error) {
 	hitRatio := normalizeExpectedCacheHitRatio(expectedCacheHitRatio)
 	latencyWeight := normalizeLatencyWeightPerSecond(latencyWeightPerSecond)
+	perSourceGroupLimit = normalizeSub2APISyncKeepCount(perSourceGroupLimit)
 	rows, err := s.db.Query(ctx, `
 		WITH latest AS (
-			SELECT DISTINCT ON (p.rule_id)
+			SELECT DISTINCT ON (COALESCE(p.source_type, 'newapi'), lower(regexp_replace(trim(p.source_base_url), '/+$', '')), lower(trim(p.source_account)), r.category, p.model_name, lower(trim(p.group_name)))
 			       p.id, p.rule_id, COALESCE(p.source_type, 'newapi') AS source_type, COALESCE(p.site_id, 0) AS site_id, p.sub2api_upstream_id,
 			       CASE WHEN COALESCE(p.source_type, 'newapi') = 'sub2api' THEN COALESCE(u.name, '') ELSE COALESCE(st.name, '') END AS site_name,
 			       COALESCE(NULLIF(p.source_base_url, ''), CASE WHEN COALESCE(p.source_type, 'newapi') = 'sub2api' THEN COALESCE(u.base_url, '') ELSE COALESCE(st.base_url, '') END) AS site_base_url,
@@ -2055,24 +2070,49 @@ func (s Store) latestSnapshotsForModel(ctx context.Context, category string, mod
 			  AND p.model_name = $2
 			  AND lower(trim(p.model_name)) = lower(trim(r.model_keyword))
 			  AND p.invalid = false
+			  AND (
+			    NOT EXISTS (
+			      SELECT 1
+			      FROM jsonb_array_elements_text(COALESCE(c.sub2api_main_group_keywords, '[]'::jsonb)) AS included(keyword)
+			      WHERE trim(included.keyword) <> ''
+			    )
+			    OR EXISTS (
+			      SELECT 1
+			      FROM jsonb_array_elements_text(COALESCE(c.sub2api_main_group_keywords, '[]'::jsonb)) AS included(keyword)
+			      WHERE trim(included.keyword) <> ''
+			        AND lower(COALESCE(p.group_name, '') || ' ' || COALESCE(p.group_desc, '')) LIKE '%' || lower(trim(included.keyword)) || '%'
+			    )
+			  )
 			  AND NOT EXISTS (
 			    SELECT 1
 			    FROM jsonb_array_elements_text(COALESCE(c.blocked_group_keywords, '[]'::jsonb)) AS blocked(keyword)
 			    WHERE trim(blocked.keyword) <> ''
 			      AND lower(COALESCE(p.group_name, '') || ' ' || COALESCE(p.group_desc, '')) LIKE '%' || lower(trim(blocked.keyword)) || '%'
 			  )
-			ORDER BY p.rule_id, p.created_at DESC, p.id DESC
+			ORDER BY COALESCE(p.source_type, 'newapi'), lower(regexp_replace(trim(p.source_base_url), '/+$', '')), lower(trim(p.source_account)), r.category, p.model_name, lower(trim(p.group_name)), p.created_at DESC, p.id DESC
+		),
+		ranked AS (
+			SELECT latest.*,
+			       row_number() OVER (
+			         PARTITION BY source_type, lower(regexp_replace(trim(site_base_url), '/+$', '')), lower(trim(source_account)), category, model_name
+			         ORDER BY `+priceComparisonExpr("$3", "$4")+` ASC,
+			                  COALESCE(output_price, 1e308) ASC,
+			                  group_ratio ASC NULLS LAST,
+			                  id DESC
+			       ) AS source_group_rank
+			FROM latest
 		)
 		SELECT id, rule_id, source_type, site_id, sub2api_upstream_id, site_name, site_base_url, source_account, category, category_name, model_keyword,
 		       model_name, group_name, group_desc, quota_type,
 		       group_ratio, input_price, output_price, cache_read_price, cache_write_price,
 		       request_price, request_latency_ms, upstream_balance, balance_unit, online_topup_enabled, recharge_multiplier, invalid, invalid_reason, invalid_at, raw, created_at
-		FROM latest
+		FROM ranked
+		WHERE source_group_rank <= $5
 		ORDER BY `+priceComparisonExpr("$3", "$4")+` ASC,
 		         COALESCE(output_price, 1e308) ASC,
 		         group_ratio ASC NULLS LAST,
 		         id DESC
-	`, normalizeCategorySlug(category), strings.TrimSpace(modelName), hitRatio, latencyWeight)
+	`, normalizeCategorySlug(category), strings.TrimSpace(modelName), hitRatio, latencyWeight, perSourceGroupLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -2167,6 +2207,16 @@ func normalizeSub2APISyncAccountMode(value string) string {
 	return sub2APISyncAccountModeSchedulableOnly
 }
 
+func normalizeSub2APISyncKeepCount(value int) int {
+	if value <= 0 {
+		return 1
+	}
+	if value > 10 {
+		return 10
+	}
+	return value
+}
+
 func (s Store) GetIntegrationSettings(ctx context.Context) (IntegrationSettings, error) {
 	var settings IntegrationSettings
 	var syncThresholdRatio sql.NullFloat64
@@ -2175,7 +2225,7 @@ func (s Store) GetIntegrationSettings(ctx context.Context) (IntegrationSettings,
 	err := s.db.QueryRow(ctx, `
 		SELECT sub2api_enabled, sub2api_main_base_url, sub2api_admin_key,
 		       sub2api_base_url, sub2api_access_token, sub2api_email, sub2api_password,
-		       sub2api_sync_account_mode,
+		       sub2api_sync_account_mode, sub2api_sync_keep_count,
 		       monitor_interval_minutes, monitor_rule_delay_seconds,
 		       latency_test_enabled,
 		       latency_weight_per_second,
@@ -2191,7 +2241,7 @@ func (s Store) GetIntegrationSettings(ctx context.Context) (IntegrationSettings,
 		&settings.Sub2APIEnabled, &settings.Sub2APIMainBaseURL, &settings.Sub2APIAdminKey,
 		&settings.Sub2APIBaseURL, &settings.Sub2APIAccessToken,
 		&settings.Sub2APIEmail, &settings.Sub2APIPassword,
-		&settings.Sub2APISyncAccountMode,
+		&settings.Sub2APISyncAccountMode, &settings.Sub2APISyncKeepCount,
 		&settings.MonitorIntervalMinutes, &settings.MonitorRuleDelaySeconds,
 		&settings.LatencyTestEnabled,
 		&settings.LatencyWeightPerSecond,
@@ -2204,7 +2254,7 @@ func (s Store) GetIntegrationSettings(ctx context.Context) (IntegrationSettings,
 		&settings.UpdatedAt,
 	)
 	if err == pgx.ErrNoRows {
-		return IntegrationSettings{Sub2APISyncAccountMode: sub2APISyncAccountModeSchedulableOnly}, nil
+		return IntegrationSettings{Sub2APISyncAccountMode: sub2APISyncAccountModeSchedulableOnly, Sub2APISyncKeepCount: 1}, nil
 	}
 	settings.EmailTemplateConfigs = decodeEmailTemplateConfigs(templateConfigsRaw)
 	settings.SyncThresholdRatio = floatPtr(syncThresholdRatio)
@@ -2217,6 +2267,7 @@ func (s Store) GetIntegrationSettings(ctx context.Context) (IntegrationSettings,
 	}
 	settings.SMTPEncryption = normalizeSMTPEncryption(settings.SMTPEncryption)
 	settings.Sub2APISyncAccountMode = normalizeSub2APISyncAccountMode(settings.Sub2APISyncAccountMode)
+	settings.Sub2APISyncKeepCount = normalizeSub2APISyncKeepCount(settings.Sub2APISyncKeepCount)
 	settings.MonitorIntervalMinutes, settings.MonitorRuleDelaySeconds = normalizeMonitorScheduleSettings(settings.MonitorIntervalMinutes, settings.MonitorRuleDelaySeconds)
 	settings.ExpectedCacheHitRatio = normalizeExpectedCacheHitRatio(settings.ExpectedCacheHitRatio)
 	if settings.LatencyWeightPerSecond <= 0 {
@@ -2233,6 +2284,7 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 	input.Sub2APIAdminKey = strings.TrimSpace(firstNonEmpty(input.Sub2APIAdminKey, input.Sub2APIAccessToken))
 	input.Sub2APIEmail = strings.TrimSpace(input.Sub2APIEmail)
 	input.Sub2APISyncAccountMode = normalizeSub2APISyncAccountMode(input.Sub2APISyncAccountMode)
+	input.Sub2APISyncKeepCount = normalizeSub2APISyncKeepCount(input.Sub2APISyncKeepCount)
 	input.SMTPHost = strings.TrimSpace(input.SMTPHost)
 	input.SMTPEncryption = normalizeSMTPEncryption(input.SMTPEncryption)
 	input.SMTPUsername = strings.TrimSpace(input.SMTPUsername)
@@ -2304,7 +2356,7 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 		INSERT INTO integration_settings (
 			id, sub2api_enabled, sub2api_main_base_url, sub2api_admin_key,
 			sub2api_base_url, sub2api_access_token, sub2api_email, sub2api_password,
-			sub2api_sync_account_mode,
+			sub2api_sync_account_mode, sub2api_sync_keep_count,
 			monitor_interval_minutes, monitor_rule_delay_seconds,
 			latency_test_enabled,
 			latency_weight_per_second,
@@ -2315,7 +2367,7 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 			email_template_enabled, email_template_subject, email_template_body, email_template_configs,
 			updated_at
 		)
-		VALUES (true, $1, $2, $3, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, CASE WHEN $13::double precision > 0 THEN $13::double precision ELSE NULL END, $14::jsonb, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28::jsonb, now())
+		VALUES (true, $1, $2, $3, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, CASE WHEN $14::double precision > 0 THEN $14::double precision ELSE NULL END, $15::jsonb, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29::jsonb, now())
 		ON CONFLICT (id) DO UPDATE
 		SET sub2api_enabled = EXCLUDED.sub2api_enabled,
 		    sub2api_main_base_url = EXCLUDED.sub2api_main_base_url,
@@ -2325,6 +2377,7 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 		    sub2api_email = EXCLUDED.sub2api_email,
 		    sub2api_password = EXCLUDED.sub2api_password,
 		    sub2api_sync_account_mode = EXCLUDED.sub2api_sync_account_mode,
+		    sub2api_sync_keep_count = EXCLUDED.sub2api_sync_keep_count,
 		    monitor_interval_minutes = EXCLUDED.monitor_interval_minutes,
 		    monitor_rule_delay_seconds = EXCLUDED.monitor_rule_delay_seconds,
 		    latency_test_enabled = EXCLUDED.latency_test_enabled,
@@ -2350,7 +2403,7 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 		    updated_at = now()
 		RETURNING sub2api_enabled, sub2api_main_base_url, sub2api_admin_key,
 		          sub2api_base_url, sub2api_access_token, sub2api_email, sub2api_password,
-		          sub2api_sync_account_mode,
+		          sub2api_sync_account_mode, sub2api_sync_keep_count,
 		          monitor_interval_minutes, monitor_rule_delay_seconds,
 		          latency_test_enabled,
 		          latency_weight_per_second,
@@ -2361,7 +2414,7 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 		          email_template_enabled, email_template_subject, email_template_body, email_template_configs,
 		          updated_at
 	`,
-		input.Sub2APIEnabled, input.Sub2APIMainBaseURL, input.Sub2APIAdminKey, input.Sub2APIEmail, input.Sub2APIPassword, input.Sub2APISyncAccountMode,
+		input.Sub2APIEnabled, input.Sub2APIMainBaseURL, input.Sub2APIAdminKey, input.Sub2APIEmail, input.Sub2APIPassword, input.Sub2APISyncAccountMode, input.Sub2APISyncKeepCount,
 		input.MonitorIntervalMinutes, input.MonitorRuleDelaySeconds,
 		input.LatencyTestEnabled,
 		input.LatencyWeightPerSecond,
@@ -2373,7 +2426,7 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 		&settings.Sub2APIEnabled, &settings.Sub2APIMainBaseURL, &settings.Sub2APIAdminKey,
 		&settings.Sub2APIBaseURL, &settings.Sub2APIAccessToken,
 		&settings.Sub2APIEmail, &settings.Sub2APIPassword,
-		&settings.Sub2APISyncAccountMode,
+		&settings.Sub2APISyncAccountMode, &settings.Sub2APISyncKeepCount,
 		&settings.MonitorIntervalMinutes, &settings.MonitorRuleDelaySeconds,
 		&settings.LatencyTestEnabled,
 		&settings.LatencyWeightPerSecond,
@@ -2389,6 +2442,7 @@ func (s Store) SaveIntegrationSettings(ctx context.Context, input SettingsInput)
 	settings.SyncThresholdRatio = floatPtr(syncThresholdRatio)
 	settings.SyncThresholdRatios = decodeSyncThresholdRatios(savedSyncThresholdRatiosRaw)
 	settings.Sub2APISyncAccountMode = normalizeSub2APISyncAccountMode(settings.Sub2APISyncAccountMode)
+	settings.Sub2APISyncKeepCount = normalizeSub2APISyncKeepCount(settings.Sub2APISyncKeepCount)
 	settings.ExpectedCacheHitRatio = normalizeExpectedCacheHitRatio(settings.ExpectedCacheHitRatio)
 	if settings.LatencyWeightPerSecond <= 0 {
 		settings.LatencyWeightPerSecond = 0.1

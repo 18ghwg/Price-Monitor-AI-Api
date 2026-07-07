@@ -34,16 +34,16 @@ type Site struct {
 }
 
 type Category struct {
-	ID                      int64             `json:"id"`
-	Name                    string            `json:"name"`
-	Slug                    string            `json:"slug"`
-	Sub2APIMainGroupID      int64             `json:"sub2api_main_group_id"`
-	Sub2APIMainGroupName    string            `json:"sub2api_main_group_name"`
-	Sub2APIMainGroups       []Sub2APIGroupRef `json:"sub2api_main_groups"`
-	Sub2APIMainGroupKeywords []string         `json:"sub2api_main_group_keywords"`
-	BlockedGroupKeywords    []string          `json:"blocked_group_keywords"`
-	CreatedAt               time.Time         `json:"created_at"`
-	UpdatedAt               time.Time         `json:"updated_at"`
+	ID                       int64             `json:"id"`
+	Name                     string            `json:"name"`
+	Slug                     string            `json:"slug"`
+	Sub2APIMainGroupID       int64             `json:"sub2api_main_group_id"`
+	Sub2APIMainGroupName     string            `json:"sub2api_main_group_name"`
+	Sub2APIMainGroups        []Sub2APIGroupRef `json:"sub2api_main_groups"`
+	Sub2APIMainGroupKeywords []string          `json:"sub2api_main_group_keywords"`
+	BlockedGroupKeywords     []string          `json:"blocked_group_keywords"`
+	CreatedAt                time.Time         `json:"created_at"`
+	UpdatedAt                time.Time         `json:"updated_at"`
 }
 
 type Sub2APIGroupRef struct {
@@ -217,6 +217,7 @@ type IntegrationSettings struct {
 	Sub2APIEmail             string                         `json:"sub2api_email"`
 	Sub2APIPassword          string                         `json:"sub2api_password,omitempty"`
 	Sub2APISyncAccountMode   string                         `json:"sub2api_sync_account_mode"`
+	Sub2APISyncKeepCount     int                            `json:"sub2api_sync_keep_count"`
 	MonitorIntervalMinutes   int                            `json:"monitor_interval_minutes"`
 	MonitorRuleDelaySeconds  int                            `json:"monitor_rule_delay_seconds"`
 	LatencyTestEnabled       bool                           `json:"latency_test_enabled"`

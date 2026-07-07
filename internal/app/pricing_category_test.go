@@ -225,6 +225,41 @@ func TestBlockedGroupKeywordsFilterSub2APIPriceRows(t *testing.T) {
 	}
 }
 
+func TestCheapestSub2PriceRowsWithLimitKeepsTopGroupsPerModel(t *testing.T) {
+	rows := []Sub2APIUserPriceRow{
+		{
+			ModelName:             "claude-opus-4-8",
+			GroupName:             "Claude Expensive",
+			EffectiveRate:         0.3,
+			FinalInputPerMillion:  ptr(0.3),
+			FinalOutputPerMillion: ptr(0.6),
+		},
+		{
+			ModelName:             "claude-opus-4-8",
+			GroupName:             "Claude Cheap A",
+			EffectiveRate:         0.1,
+			FinalInputPerMillion:  ptr(0.1),
+			FinalOutputPerMillion: ptr(0.2),
+		},
+		{
+			ModelName:             "claude-opus-4-8",
+			GroupName:             "Claude Cheap B",
+			EffectiveRate:         0.2,
+			FinalInputPerMillion:  ptr(0.2),
+			FinalOutputPerMillion: ptr(0.4),
+		},
+	}
+
+	limited := cheapestSub2PriceRowsWithExpectedCacheHitRatioLimit(rows, 0, 2)
+
+	if len(limited) != 2 {
+		t.Fatalf("len(limited) = %d, want 2", len(limited))
+	}
+	if limited[0].GroupName != "Claude Cheap A" || limited[1].GroupName != "Claude Cheap B" {
+		t.Fatalf("groups = %q, %q; want Claude Cheap A, Claude Cheap B", limited[0].GroupName, limited[1].GroupName)
+	}
+}
+
 func TestIncludedGroupKeywordsFilterPricingRows(t *testing.T) {
 	rows := []PricingRow{
 		{

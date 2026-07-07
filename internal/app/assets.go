@@ -348,7 +348,8 @@ const indexHTML = `<!doctype html>
                   <option value="schedulable_only">仅关闭调度其它账号</option>
                 </select>
               </label>
-              <p class="muted">同步新的最低价账号后，对同主站分组内其它账号只关闭调用调度，不修改账号状态。</p>
+              <label>每站点低价分组/保留账号数<input name="sub2api_sync_keep_count" type="number" min="1" max="10" step="1" value="1" placeholder="1"></label>
+              <p class="muted">每个上游站点会抓取排序靠前的多个低价分组参与全局比价；同步成功后保留同样数量的可用主站账号，同主站分组内其它账号只关闭调用调度。</p>
               <div class="form-grid">
                 <label>主站 sub2api 地址<input name="sub2api_main_base_url" placeholder="https://sub2api.example.com"></label>
                 <label>管理员 API Key<input name="sub2api_admin_key" type="password" placeholder="主站后台生成的 admin-...，留空保留现有值"></label>
@@ -3451,6 +3452,9 @@ function renderSettings() {
   if (form.elements.sub2api_sync_account_mode) {
     form.elements.sub2api_sync_account_mode.value = state.settings.sub2api_sync_account_mode || "schedulable_only";
   }
+  if (form.elements.sub2api_sync_keep_count) {
+    form.elements.sub2api_sync_keep_count.value = String(state.settings.sub2api_sync_keep_count || 1);
+  }
   const savedKey = state.settings.sub2api_admin_key || state.settings.sub2api_access_token || "";
   form.elements.sub2api_admin_key.placeholder = savedKey ? "已保存：" + savedKey : "主站后台生成的 admin-...，留空保留现有值";
   form.elements.sub2api_admin_key.value = "";
@@ -4819,6 +4823,7 @@ if (settingsForm) {
     const form = event.currentTarget;
     persistActiveEmailTemplateInputs();
     const payload = formJSON(form);
+    payload.sub2api_sync_keep_count = Number(payload.sub2api_sync_keep_count || 1);
     payload.monitor_interval_minutes = Number(payload.monitor_interval_minutes || 15);
     payload.monitor_rule_delay_seconds = Number(payload.monitor_rule_delay_seconds || 60);
     payload.expected_cache_hit_ratio = Number(payload.expected_cache_hit_ratio || 0);

@@ -825,6 +825,14 @@ func (c *Sub2APIClient) DisableOtherAPIKeyAccountsForGroups(ctx context.Context,
 	if keepID <= 0 {
 		return fmt.Errorf("sub2api account id is required")
 	}
+	return c.DisableOtherAPIKeyAccountsForGroupsKeeping(ctx, platform, []int64{keepID}, groups, syncAccountMode)
+}
+
+func (c *Sub2APIClient) DisableOtherAPIKeyAccountsForGroupsKeeping(ctx context.Context, platform string, keepIDs []int64, groups []sub2Group, syncAccountMode string) error {
+	keep := keepIDSet(keepIDs)
+	if len(keep) == 0 {
+		return fmt.Errorf("sub2api account id is required")
+	}
 	platform = normalizeSub2Platform(platform)
 	groups = normalizeSub2Groups(groups)
 	disabled := map[int64]struct{}{}
@@ -834,7 +842,10 @@ func (c *Sub2APIClient) DisableOtherAPIKeyAccountsForGroups(ctx context.Context,
 			return err
 		}
 		for _, account := range accounts {
-			if account.ID <= 0 || account.ID == keepID {
+			if account.ID <= 0 {
+				continue
+			}
+			if _, ok := keep[account.ID]; ok {
 				continue
 			}
 			if _, ok := disabled[account.ID]; ok {
@@ -847,6 +858,16 @@ func (c *Sub2APIClient) DisableOtherAPIKeyAccountsForGroups(ctx context.Context,
 		}
 	}
 	return nil
+}
+
+func keepIDSet(ids []int64) map[int64]struct{} {
+	keep := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		if id > 0 {
+			keep[id] = struct{}{}
+		}
+	}
+	return keep
 }
 
 func (c *Sub2APIClient) getAccount(ctx context.Context, accountID int64) (sub2Account, error) {

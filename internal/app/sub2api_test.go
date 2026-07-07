@@ -1143,6 +1143,52 @@ func TestSub2APIDisableOtherAPIKeyAccountsForGroupsOnlyClosesSchedulable(t *test
 	}
 }
 
+func TestSub2APIDisableOtherAPIKeyAccountsForGroupsKeepsMultipleTargets(t *testing.T) {
+	schedulable := map[int64]bool{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/admin/accounts":
+			writeSub2TestJSON(w, map[string]any{
+				"items": []map[string]any{
+					{"id": 42, "platform": "openai", "type": "apikey", "group_ids": []int64{7}, "status": "active", "schedulable": true},
+					{"id": 43, "platform": "openai", "type": "apikey", "group_ids": []int64{7}, "status": "active", "schedulable": true},
+					{"id": 44, "platform": "openai", "type": "apikey", "group_ids": []int64{7}, "status": "active", "schedulable": true},
+				},
+				"total": 3,
+			})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/schedulable"):
+			id := pathAccountID(strings.TrimSuffix(r.URL.Path, "/schedulable"))
+			var payload map[string]bool
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode schedulable payload: %v", err)
+			}
+			schedulable[id] = payload["schedulable"]
+			writeSub2TestJSON(w, map[string]any{"id": id, "schedulable": payload["schedulable"]})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewSub2APIClient(server.URL, "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.DisableOtherAPIKeyAccountsForGroupsKeeping(context.Background(), "openai", []int64{42, 43}, []sub2Group{{ID: 7, Name: "Codex"}}, "schedulable_only"); err != nil {
+		t.Fatalf("DisableOtherAPIKeyAccountsForGroupsKeeping() error = %v", err)
+	}
+	for _, id := range []int64{42, 43} {
+		if _, ok := schedulable[id]; ok {
+			t.Fatalf("kept account %d schedulable was changed", id)
+		}
+	}
+	if got, ok := schedulable[44]; !ok || got {
+		t.Fatalf("account 44 schedulable = %v, changed = %v; want false and changed", got, ok)
+	}
+}
+
 func TestSub2APIDisableOtherAPIKeyAccountsForGroupsIgnoresDisableStatusMode(t *testing.T) {
 	statusUpdated := map[int64]string{}
 	schedulable := map[int64]bool{}

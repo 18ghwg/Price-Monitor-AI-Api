@@ -64,6 +64,23 @@ func TestBuildCheapestKeywordRows(t *testing.T) {
 	}
 }
 
+func TestCheapestPricingRowsWithLimitKeepsTopGroupsPerModel(t *testing.T) {
+	rows := []PricingRow{
+		{ModelName: "gpt-5.5", GroupName: "expensive", GroupRatio: 0.3, InputPrice: ptr(0.3), OutputPrice: ptr(0.6)},
+		{ModelName: "gpt-5.5", GroupName: "cheap-a", GroupRatio: 0.1, InputPrice: ptr(0.1), OutputPrice: ptr(0.2)},
+		{ModelName: "gpt-5.5", GroupName: "cheap-b", GroupRatio: 0.2, InputPrice: ptr(0.2), OutputPrice: ptr(0.4)},
+	}
+
+	limited := CheapestPricingRowsWithExpectedCacheHitRatioLimit(rows, 0, 2)
+
+	if len(limited) != 2 {
+		t.Fatalf("len(limited) = %d, want 2", len(limited))
+	}
+	if limited[0].GroupName != "cheap-a" || limited[1].GroupName != "cheap-b" {
+		t.Fatalf("groups = %q, %q; want cheap-a, cheap-b", limited[0].GroupName, limited[1].GroupName)
+	}
+}
+
 func TestApplyNewAPIUserGroupPricingOverridesPricingRatio(t *testing.T) {
 	pricing := map[string]any{
 		"group_ratio": map[string]any{

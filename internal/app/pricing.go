@@ -190,24 +190,40 @@ func CheapestPricingRows(rows []PricingRow) []PricingRow {
 }
 
 func CheapestPricingRowsWithExpectedCacheHitRatio(rows []PricingRow, expectedCacheHitRatio float64) []PricingRow {
-	cheapest := map[string]PricingRow{}
+	return CheapestPricingRowsWithExpectedCacheHitRatioLimit(rows, expectedCacheHitRatio, 1)
+}
+
+func CheapestPricingRowsWithExpectedCacheHitRatioLimit(rows []PricingRow, expectedCacheHitRatio float64, limitPerModel int) []PricingRow {
+	limitPerModel = normalizeSub2APISyncKeepCount(limitPerModel)
+	grouped := map[string][]PricingRow{}
 	for _, row := range rows {
-		if strings.TrimSpace(row.ModelName) == "" {
+		model := strings.TrimSpace(row.ModelName)
+		if model == "" {
 			continue
 		}
-		current, ok := cheapest[row.ModelName]
-		if !ok || pricingRowLessWithExpectedCacheHitRatio(row, current, expectedCacheHitRatio) {
-			cheapest[row.ModelName] = row
-		}
+		grouped[model] = append(grouped[model], row)
 	}
-	models := make([]string, 0, len(cheapest))
-	for model := range cheapest {
+	models := make([]string, 0, len(grouped))
+	for model := range grouped {
 		models = append(models, model)
 	}
 	sort.Strings(models)
-	out := make([]PricingRow, 0, len(models))
+	out := make([]PricingRow, 0, len(models)*limitPerModel)
 	for _, model := range models {
-		out = append(out, cheapest[model])
+		modelRows := grouped[model]
+		sort.SliceStable(modelRows, func(i, j int) bool {
+			if pricingRowLessWithExpectedCacheHitRatio(modelRows[i], modelRows[j], expectedCacheHitRatio) {
+				return true
+			}
+			if pricingRowLessWithExpectedCacheHitRatio(modelRows[j], modelRows[i], expectedCacheHitRatio) {
+				return false
+			}
+			return modelRows[i].GroupName < modelRows[j].GroupName
+		})
+		if len(modelRows) > limitPerModel {
+			modelRows = modelRows[:limitPerModel]
+		}
+		out = append(out, modelRows...)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if pricingRowLessWithExpectedCacheHitRatio(out[i], out[j], expectedCacheHitRatio) {
@@ -216,7 +232,10 @@ func CheapestPricingRowsWithExpectedCacheHitRatio(rows []PricingRow, expectedCac
 		if pricingRowLessWithExpectedCacheHitRatio(out[j], out[i], expectedCacheHitRatio) {
 			return false
 		}
-		return out[i].ModelName < out[j].ModelName
+		if out[i].ModelName != out[j].ModelName {
+			return out[i].ModelName < out[j].ModelName
+		}
+		return out[i].GroupName < out[j].GroupName
 	})
 	return out
 }

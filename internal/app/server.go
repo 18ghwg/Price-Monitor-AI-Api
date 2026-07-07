@@ -1643,7 +1643,8 @@ func (s *Server) runNewAPIRule(ctx context.Context, rule Rule, site Site) ([]Pri
 	beforeBlockedFilter := len(rows)
 	rows = filterPricingRowsByIncludedKeywords(rows, categorySub2APIMainGroupKeywords(ctx, s.store, rule.Category))
 	rows = filterPricingRowsByBlockedKeywords(rows, categoryBlockedGroupKeywords(ctx, s.store, rule.Category))
-	rows = CheapestPricingRowsWithExpectedCacheHitRatio(rows, expectedCacheHitRatio)
+	lowPriceGroupLimit := normalizeSub2APISyncKeepCount(settings.Sub2APISyncKeepCount)
+	rows = CheapestPricingRowsWithExpectedCacheHitRatioLimit(rows, expectedCacheHitRatio, lowPriceGroupLimit)
 	if len(rows) == 0 {
 		err := missingPricingRowsError(rule, false, beforeBlockedFilter > 0)
 		_ = s.store.MarkMissingSnapshotGroupsInvalid(ctx, rule.ID, rule.ModelKeyword, nil, missingSnapshotInvalidReason(beforeBlockedFilter > 0))
@@ -1765,7 +1766,8 @@ func (s *Server) runSub2APIRule(ctx context.Context, rule Rule, upstream Sub2API
 	beforeBlockedFilter := len(rows)
 	rows = filterSub2APIPriceRowsByIncludedKeywords(rows, categorySub2APIMainGroupKeywords(ctx, s.store, rule.Category))
 	rows = filterSub2APIPriceRowsByBlockedKeywords(rows, categoryBlockedGroupKeywords(ctx, s.store, rule.Category))
-	rows = cheapestSub2PriceRowsWithExpectedCacheHitRatio(rows, expectedCacheHitRatio)
+	lowPriceGroupLimit := normalizeSub2APISyncKeepCount(settings.Sub2APISyncKeepCount)
+	rows = cheapestSub2PriceRowsWithExpectedCacheHitRatioLimit(rows, expectedCacheHitRatio, lowPriceGroupLimit)
 	if len(rows) == 0 {
 		_ = s.store.MarkMissingSnapshotGroupsInvalid(ctx, rule.ID, rule.ModelKeyword, nil, missingSnapshotInvalidReason(beforeBlockedFilter > 0))
 		return nil, missingPricingRowsError(rule, true, beforeBlockedFilter > 0)
@@ -1974,24 +1976,40 @@ func cheapestSub2PriceRows(rows []Sub2APIUserPriceRow) []Sub2APIUserPriceRow {
 }
 
 func cheapestSub2PriceRowsWithExpectedCacheHitRatio(rows []Sub2APIUserPriceRow, expectedCacheHitRatio float64) []Sub2APIUserPriceRow {
-	cheapest := map[string]Sub2APIUserPriceRow{}
+	return cheapestSub2PriceRowsWithExpectedCacheHitRatioLimit(rows, expectedCacheHitRatio, 1)
+}
+
+func cheapestSub2PriceRowsWithExpectedCacheHitRatioLimit(rows []Sub2APIUserPriceRow, expectedCacheHitRatio float64, limitPerModel int) []Sub2APIUserPriceRow {
+	limitPerModel = normalizeSub2APISyncKeepCount(limitPerModel)
+	grouped := map[string][]Sub2APIUserPriceRow{}
 	for _, row := range rows {
-		if strings.TrimSpace(row.ModelName) == "" {
+		model := strings.TrimSpace(row.ModelName)
+		if model == "" {
 			continue
 		}
-		current, ok := cheapest[row.ModelName]
-		if !ok || sub2APIUserPriceRowLessWithExpectedCacheHitRatio(row, current, expectedCacheHitRatio) {
-			cheapest[row.ModelName] = row
-		}
+		grouped[model] = append(grouped[model], row)
 	}
-	models := make([]string, 0, len(cheapest))
-	for model := range cheapest {
+	models := make([]string, 0, len(grouped))
+	for model := range grouped {
 		models = append(models, model)
 	}
 	sort.Strings(models)
-	out := make([]Sub2APIUserPriceRow, 0, len(models))
+	out := make([]Sub2APIUserPriceRow, 0, len(models)*limitPerModel)
 	for _, model := range models {
-		out = append(out, cheapest[model])
+		modelRows := grouped[model]
+		sort.SliceStable(modelRows, func(i, j int) bool {
+			if sub2APIUserPriceRowLessWithExpectedCacheHitRatio(modelRows[i], modelRows[j], expectedCacheHitRatio) {
+				return true
+			}
+			if sub2APIUserPriceRowLessWithExpectedCacheHitRatio(modelRows[j], modelRows[i], expectedCacheHitRatio) {
+				return false
+			}
+			return modelRows[i].GroupName < modelRows[j].GroupName
+		})
+		if len(modelRows) > limitPerModel {
+			modelRows = modelRows[:limitPerModel]
+		}
+		out = append(out, modelRows...)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if sub2APIUserPriceRowLessWithExpectedCacheHitRatio(out[i], out[j], expectedCacheHitRatio) {
@@ -2000,7 +2018,10 @@ func cheapestSub2PriceRowsWithExpectedCacheHitRatio(rows []Sub2APIUserPriceRow, 
 		if sub2APIUserPriceRowLessWithExpectedCacheHitRatio(out[j], out[i], expectedCacheHitRatio) {
 			return false
 		}
-		return out[i].ModelName < out[j].ModelName
+		if out[i].ModelName != out[j].ModelName {
+			return out[i].ModelName < out[j].ModelName
+		}
+		return out[i].GroupName < out[j].GroupName
 	})
 	return out
 }
@@ -2303,11 +2324,13 @@ func (s *Server) syncBestAvailableCandidate(ctx context.Context, rule Rule, mode
 		return false, true, nil
 	}
 	balanceThreshold := settings.UpstreamBalanceThreshold
+	keepCount := normalizeSub2APISyncKeepCount(settings.Sub2APISyncKeepCount)
 	refreshedRules := map[int64]bool{}
 	var fallbackErrors []string
 	var lastCandidates []PriceSnapshot
+	var retained []syncCandidateMainResult
 	for pass := 0; pass < 2; pass++ {
-		candidates, skippedLowBalance, err := s.store.SyncCandidates(ctx, rule.Category, modelName, expectedCacheHitRatio, balanceThreshold, latencyWeightPerSecond)
+		candidates, skippedLowBalance, err := s.store.SyncCandidates(ctx, rule.Category, modelName, expectedCacheHitRatio, balanceThreshold, latencyWeightPerSecond, keepCount)
 		if err != nil {
 			log.Printf("load sync candidates for rule %d model %q: %v", rule.ID, modelName, err)
 			return false, false, nil
@@ -2360,13 +2383,24 @@ func (s *Server) syncBestAvailableCandidate(ctx context.Context, rule Rule, mode
 			if signature != "" && signature == lastSignature {
 				notifySync = false
 			}
-			attempted, err := s.syncCandidateSnapshotToMain(candidateCtx, candidateRule, candidate, signature, notifySync)
+			result, err := s.syncCandidateSnapshotToMainResult(candidateCtx, candidateRule, candidate, signature, notifySync, false)
+			attempted := result.Attempted
 			if err == nil {
+				retained = appendRetainedSyncResult(retained, result)
 				if candidateRule.ID != rule.ID {
 					s.updateRuleSyncStatus(candidateCtx, rule.ID, fmt.Sprintf("不是当前可同步最低价，已切换同步：%s", candidateLabelText), "")
 				}
+				if len(retained) >= keepCount {
+					if disableErr := s.disableNonRetainedSyncAccounts(candidateCtx, retained, settings); disableErr != nil {
+						cancelCandidate()
+						return attempted, true, disableErr
+					}
+					s.updateRetainedSyncStatus(candidateCtx, rule.ID, retained, keepCount)
+					cancelCandidate()
+					return attempted, true, nil
+				}
 				cancelCandidate()
-				return attempted, true, nil
+				continue
 			}
 			if isSub2APISyncDisabledError(err) {
 				status := "主站 sub2api 同步开关未开启，已跳过同步"
@@ -2415,6 +2449,13 @@ func (s *Server) syncBestAvailableCandidate(ctx context.Context, rule Rule, mode
 			break
 		}
 	}
+	if len(retained) > 0 {
+		if disableErr := s.disableNonRetainedSyncAccounts(ctx, retained, settings); disableErr != nil {
+			return true, true, disableErr
+		}
+		s.updateRetainedSyncStatus(ctx, rule.ID, retained, keepCount)
+		return true, true, nil
+	}
 	if len(fallbackErrors) > 0 {
 		err := fmt.Errorf("所有可同步低价候选都失败：%s", strings.Join(fallbackErrors, "；"))
 		_ = s.store.UpdateRuleSyncStatus(ctx, rule.ID, err.Error(), "")
@@ -2436,6 +2477,68 @@ func (s *Server) updateRuleSyncStatus(ctx context.Context, ruleID int64, status 
 	if err := s.store.UpdateRuleSyncStatus(writeCtx, ruleID, status, errText); err != nil {
 		log.Printf("update rule %d sync status: %v", ruleID, err)
 	}
+}
+
+func appendRetainedSyncResult(results []syncCandidateMainResult, result syncCandidateMainResult) []syncCandidateMainResult {
+	if result.Account.ID <= 0 {
+		return results
+	}
+	for _, existing := range results {
+		if existing.Account.ID == result.Account.ID {
+			return results
+		}
+	}
+	return append(results, result)
+}
+
+func (s *Server) disableNonRetainedSyncAccounts(ctx context.Context, retained []syncCandidateMainResult, settings IntegrationSettings) error {
+	if len(retained) == 0 {
+		return nil
+	}
+	keepIDs := make([]int64, 0, len(retained))
+	var groups []sub2Group
+	var platform string
+	for _, result := range retained {
+		if result.Account.ID > 0 {
+			keepIDs = append(keepIDs, result.Account.ID)
+		}
+		if len(groups) == 0 && len(result.Groups) > 0 {
+			groups = result.Groups
+		}
+		if platform == "" {
+			platform = result.Platform
+		}
+	}
+	if len(keepIDs) == 0 || len(groups) == 0 {
+		return nil
+	}
+	sub2, err := s.sub2APIClient(ctx, true)
+	if err != nil {
+		return err
+	}
+	if err := sub2.DisableOtherAPIKeyAccountsForGroupsKeeping(ctx, platform, keepIDs, groups, settings.Sub2APISyncAccountMode); err != nil {
+		groupNames := make([]string, 0, len(groups))
+		for _, group := range groups {
+			groupNames = append(groupNames, group.Name)
+		}
+		return fmt.Errorf("关闭同分组其他主站账号失败：分组 %s，原因：%w", strings.Join(groupNames, ", "), err)
+	}
+	return nil
+}
+
+func (s *Server) updateRetainedSyncStatus(ctx context.Context, ruleID int64, retained []syncCandidateMainResult, keepCount int) {
+	if keepCount <= 1 || len(retained) <= 1 {
+		return
+	}
+	labels := make([]string, 0, len(retained))
+	for _, result := range retained {
+		label := fmt.Sprintf("#%d", result.Account.ID)
+		if result.Snapshot.GroupName != "" {
+			label += " " + result.Snapshot.GroupName
+		}
+		labels = append(labels, label)
+	}
+	s.updateRuleSyncStatus(ctx, ruleID, fmt.Sprintf("同步成功：已保留 %d/%d 个低价主站账号：%s", len(retained), keepCount, strings.Join(labels, "，")), "")
 }
 
 func (s *Server) recordLowBalanceSkips(ctx context.Context, skipped []PriceSnapshot) []PriceSnapshot {
@@ -2535,9 +2638,22 @@ func (s *Server) recordSyncFailure(ctx context.Context, rule Rule, candidate Pri
 }
 
 func (s *Server) syncCandidateSnapshotToMain(ctx context.Context, rule Rule, candidate PriceSnapshot, signature string, notifySync bool) (bool, error) {
+	result, err := s.syncCandidateSnapshotToMainResult(ctx, rule, candidate, signature, notifySync, true)
+	return result.Attempted, err
+}
+
+type syncCandidateMainResult struct {
+	Attempted bool
+	Account   sub2Account
+	Groups    []sub2Group
+	Platform  string
+	Snapshot  PriceSnapshot
+}
+
+func (s *Server) syncCandidateSnapshotToMainResult(ctx context.Context, rule Rule, candidate PriceSnapshot, signature string, notifySync bool, disableOthers bool) (syncCandidateMainResult, error) {
 	candidateRule, site, upstream, err := s.store.GetRuleWithSource(ctx, candidate.RuleID)
 	if err != nil {
-		return false, err
+		return syncCandidateMainResult{}, err
 	}
 	row := pricingRowFromSnapshot(candidate)
 	keyName := upstreamKeyName(candidateRule, candidate.ModelName)
@@ -2546,7 +2662,7 @@ func (s *Server) syncCandidateSnapshotToMain(ctx context.Context, rule Rule, can
 		client, userID, token, err := s.newAPIClientForSite(ctx, site, false)
 		if err != nil {
 			s.saveNewAPISession(ctx, site, client, site.UserID, site.AccessToken, err.Error())
-			return false, fmt.Errorf("candidate %s auth NewAPI upstream: %w", candidateLabel(candidate), err)
+			return syncCandidateMainResult{}, fmt.Errorf("candidate %s auth NewAPI upstream: %w", candidateLabel(candidate), err)
 		}
 		apiKey, keyAction, err := createNewAPIUpstreamKey(ctx, client, userID, token, keyName, candidate.GroupName)
 		if err != nil && isSessionAuthError(err) {
@@ -2557,22 +2673,24 @@ func (s *Server) syncCandidateSnapshotToMain(ctx context.Context, rule Rule, can
 		}
 		if err != nil {
 			s.saveNewAPISession(ctx, site, client, userID, token, err.Error())
-			return true, fmt.Errorf("candidate %s create NewAPI key for group %s: %w", candidateLabel(candidate), candidate.GroupName, err)
+			return syncCandidateMainResult{Attempted: true, Snapshot: candidate}, fmt.Errorf("candidate %s create NewAPI key for group %s: %w", candidateLabel(candidate), candidate.GroupName, err)
 		}
 		s.saveNewAPISession(ctx, site, client, userID, token, "")
-		return true, s.syncUpstreamKeyToMainSub2APIWithSignature(ctx, rule, site.Name, site.BaseURL, apiKey, row, candidate, keyAction, signature, notifySync)
+		result, err := s.syncUpstreamKeyToMainSub2APIWithOptions(ctx, rule, site.Name, site.BaseURL, apiKey, row, candidate, keyAction, signature, notifySync, disableOthers)
+		return syncCandidateMainResult{Attempted: true, Account: result.Account, Groups: result.Groups, Platform: result.Platform, Snapshot: candidate}, err
 	case RuleSourceSub2API:
 		group, err := sub2GroupFromSnapshot(candidate)
 		if err != nil {
-			return false, fmt.Errorf("candidate %s load sub2api group from snapshot: %w", candidateLabel(candidate), err)
+			return syncCandidateMainResult{}, fmt.Errorf("candidate %s load sub2api group from snapshot: %w", candidateLabel(candidate), err)
 		}
 		apiKey, keyAction, err := s.ensureSub2APIUpstreamAPIKey(ctx, upstream, keyName, group)
 		if err != nil {
-			return true, fmt.Errorf("candidate %s create sub2api key for group %s: %w", candidateLabel(candidate), candidate.GroupName, err)
+			return syncCandidateMainResult{Attempted: true, Snapshot: candidate}, fmt.Errorf("candidate %s create sub2api key for group %s: %w", candidateLabel(candidate), candidate.GroupName, err)
 		}
-		return true, s.syncUpstreamKeyToMainSub2APIWithSignature(ctx, rule, upstream.Name, upstream.BaseURL, apiKey, row, candidate, keyAction, signature, notifySync)
+		result, err := s.syncUpstreamKeyToMainSub2APIWithOptions(ctx, rule, upstream.Name, upstream.BaseURL, apiKey, row, candidate, keyAction, signature, notifySync, disableOthers)
+		return syncCandidateMainResult{Attempted: true, Account: result.Account, Groups: result.Groups, Platform: result.Platform, Snapshot: candidate}, err
 	default:
-		return false, fmt.Errorf("unsupported sync candidate source type %q", candidate.SourceType)
+		return syncCandidateMainResult{}, fmt.Errorf("unsupported sync candidate source type %q", candidate.SourceType)
 	}
 }
 
@@ -2822,7 +2940,7 @@ func (s *Server) shouldSyncGlobalCheapestWithBalance(ctx context.Context, rule R
 		log.Printf("load integration settings for sync candidate: %v", err)
 		return false, nil, false
 	}
-	candidate, skipped, err := s.store.CheapestSyncCandidate(ctx, rule.Category, snapshot.ModelName, settings.ExpectedCacheHitRatio, settings.UpstreamBalanceThreshold, effectiveLatencyWeight(settings))
+	candidate, skipped, err := s.store.CheapestSyncCandidate(ctx, rule.Category, snapshot.ModelName, settings.ExpectedCacheHitRatio, settings.UpstreamBalanceThreshold, effectiveLatencyWeight(settings), settings.Sub2APISyncKeepCount)
 	if err != nil {
 		log.Printf("load cheapest sync candidate for rule %d model %q: %v", rule.ID, snapshot.ModelName, err)
 		return false, skipped, false
@@ -2980,21 +3098,32 @@ func (s *Server) syncUpstreamKeyToMainSub2API(ctx context.Context, rule Rule, so
 }
 
 func (s *Server) syncUpstreamKeyToMainSub2APIWithSignature(ctx context.Context, rule Rule, sourceName string, sourceBaseURL string, apiKey string, row PricingRow, snapshot PriceSnapshot, keyAction string, signature string, notifySync bool) error {
+	_, err := s.syncUpstreamKeyToMainSub2APIWithOptions(ctx, rule, sourceName, sourceBaseURL, apiKey, row, snapshot, keyAction, signature, notifySync, true)
+	return err
+}
+
+type syncToMainResult struct {
+	Account  sub2Account
+	Groups   []sub2Group
+	Platform string
+}
+
+func (s *Server) syncUpstreamKeyToMainSub2APIWithOptions(ctx context.Context, rule Rule, sourceName string, sourceBaseURL string, apiKey string, row PricingRow, snapshot PriceSnapshot, keyAction string, signature string, notifySync bool, disableOthers bool) (syncToMainResult, error) {
 	settings, err := s.store.GetIntegrationSettings(ctx)
 	if err != nil {
-		return fmt.Errorf("load integration settings: %w", err)
+		return syncToMainResult{}, fmt.Errorf("load integration settings: %w", err)
 	}
 	if !settings.Sub2APIEnabled {
-		return fmt.Errorf("sub2api sync is disabled")
+		return syncToMainResult{}, fmt.Errorf("sub2api sync is disabled")
 	}
 	sub2, err := s.sub2APIClient(ctx, true)
 	if err != nil {
-		return err
+		return syncToMainResult{}, err
 	}
 
 	category, err := s.store.GetCategoryBySlug(ctx, rule.Category)
 	if err != nil && !notFound(err) {
-		return fmt.Errorf("load category sync target: %w", err)
+		return syncToMainResult{}, fmt.Errorf("load category sync target: %w", err)
 	}
 	targets := categorySyncTargets(rule, category)
 	groups := make([]sub2Group, 0, len(targets))
@@ -3002,7 +3131,7 @@ func (s *Server) syncUpstreamKeyToMainSub2APIWithSignature(ctx context.Context, 
 	for _, target := range targets {
 		group, err := sub2.EnsureGroupByIDOrNameWithRate(ctx, target.ID, target.Name, groupRate)
 		if err != nil {
-			return err
+			return syncToMainResult{}, err
 		}
 		groups = append(groups, group)
 	}
@@ -3014,19 +3143,21 @@ func (s *Server) syncUpstreamKeyToMainSub2APIWithSignature(ctx context.Context, 
 	accountName := fmt.Sprintf("%s %s %s", sourceName, strings.Join(groupNames, "+"), row.GroupName)
 	account, action, alreadyMatchedGroups, err := sub2.UpsertAPIKeyAccountGroupsWithRateAndMode(ctx, platform, accountName, sourceBaseURL, apiKey, groups, nil, settings.Sub2APISyncAccountMode)
 	if err != nil {
-		return err
+		return syncToMainResult{}, err
 	}
 	if err := sub2.PrioritizeOpenAIAPIKeyAccountForGroupsWithRate(ctx, account.ID, groups, nil); err != nil {
-		return err
+		return syncToMainResult{}, err
 	}
 	if !alreadyMatchedGroups {
 		if err := sub2.TestAccountConnection(ctx, account.ID, row.ModelName); err != nil {
-			return fmt.Errorf("主站账号连接测试失败：账号 #%d，模型 %s，主站分组 %s，上游低价分组 %s，原因：%w",
+			return syncToMainResult{}, fmt.Errorf("主站账号连接测试失败：账号 #%d，模型 %s，主站分组 %s，上游低价分组 %s，原因：%w",
 				account.ID, row.ModelName, strings.Join(groupNames, ", "), row.GroupName, err)
 		}
 	}
-	if err := sub2.DisableOtherAPIKeyAccountsForGroups(ctx, platform, account.ID, groups, settings.Sub2APISyncAccountMode); err != nil {
-		return fmt.Errorf("关闭同分组其他主站账号失败：分组 %s，原因：%w", strings.Join(groupNames, ", "), err)
+	if disableOthers {
+		if err := sub2.DisableOtherAPIKeyAccountsForGroups(ctx, platform, account.ID, groups, settings.Sub2APISyncAccountMode); err != nil {
+			return syncToMainResult{}, fmt.Errorf("关闭同分组其他主站账号失败：分组 %s，原因：%w", strings.Join(groupNames, ", "), err)
+		}
 	}
 	if snapshot.ID == 0 {
 		snapshot = priceSnapshotFromPricingRow(row, sourceName, sourceBaseURL)
@@ -3045,9 +3176,9 @@ func (s *Server) syncUpstreamKeyToMainSub2APIWithSignature(ctx context.Context, 
 		status = "复核成功：" + strings.TrimPrefix(status, "同步成功：")
 	}
 	if strings.TrimSpace(signature) != "" {
-		return s.store.UpdateRuleSyncSuccess(ctx, rule.ID, status, signature)
+		return syncToMainResult{Account: account, Groups: groups, Platform: platform}, s.store.UpdateRuleSyncSuccess(ctx, rule.ID, status, signature)
 	}
-	return s.store.UpdateRuleSyncStatus(ctx, rule.ID, status, "")
+	return syncToMainResult{Account: account, Groups: groups, Platform: platform}, s.store.UpdateRuleSyncStatus(ctx, rule.ID, status, "")
 }
 
 func chineseSyncAction(action string) string {
