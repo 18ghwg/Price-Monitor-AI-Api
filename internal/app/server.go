@@ -3174,18 +3174,16 @@ func (s *Server) syncUpstreamKeyToMainSub2APIWithOptions(ctx context.Context, ru
 	if !disableOthers {
 		upsert = sub2.UpsertAPIKeyAccountGroupsWithRateAndModeNoDuplicateCleanup
 	}
-	account, action, alreadyMatchedGroups, err := upsert(ctx, platform, accountName, sourceBaseURL, apiKey, groups, nil, settings.Sub2APISyncAccountMode)
+	account, action, _, err := upsert(ctx, platform, accountName, sourceBaseURL, apiKey, groups, nil, settings.Sub2APISyncAccountMode)
 	if err != nil {
 		return syncToMainResult{}, err
 	}
 	if err := sub2.PrioritizeOpenAIAPIKeyAccountForGroupsWithRate(ctx, account.ID, groups, nil); err != nil {
 		return syncToMainResult{}, err
 	}
-	if !alreadyMatchedGroups {
-		if err := sub2.TestAccountConnection(ctx, account.ID, row.ModelName); err != nil {
-			return syncToMainResult{}, fmt.Errorf("主站账号连接测试失败：账号 #%d，模型 %s，主站分组 %s，上游低价分组 %s，原因：%w",
-				account.ID, row.ModelName, strings.Join(groupNames, ", "), row.GroupName, err)
-		}
+	if err := sub2.TestAccountConnection(ctx, account.ID, row.ModelName); err != nil {
+		return syncToMainResult{}, fmt.Errorf("主站账号连接测试失败：账号 #%d，模型 %s，主站分组 %s，上游低价分组 %s，原因：%w",
+			account.ID, row.ModelName, strings.Join(groupNames, ", "), row.GroupName, err)
 	}
 	if disableOthers {
 		if err := sub2.DisableOtherAPIKeyAccountsForGroups(ctx, platform, account.ID, groups, settings.Sub2APISyncAccountMode); err != nil {
@@ -3200,11 +3198,7 @@ func (s *Server) syncUpstreamKeyToMainSub2APIWithOptions(ctx context.Context, ru
 	}
 	status := fmt.Sprintf("同步成功：主站账号%s，上游key%s，低价分组 %s，倍率 %s，同步到主站分组 %s",
 		chineseSyncAction(action), chineseSyncAction(keyAction), row.GroupName, fmtFloat(row.GroupRatio), strings.Join(groupNames, ", "))
-	if !alreadyMatchedGroups {
-		status += fmt.Sprintf("，已测试模型 %s", row.ModelName)
-	} else {
-		status += "，已跳过真实测试"
-	}
+	status += fmt.Sprintf("，已测试模型 %s", row.ModelName)
 	if !notifySync {
 		status = "复核成功：" + strings.TrimPrefix(status, "同步成功：")
 	}
