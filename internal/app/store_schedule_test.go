@@ -1,6 +1,8 @@
 package app
 
 import (
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -78,4 +80,32 @@ func TestGroupScheduledRulesBySourceBatchesSameSite(t *testing.T) {
 	assertGroup(0, "newapi:10", 1, 3)
 	assertGroup(1, "newapi:20", 2)
 	assertGroup(2, "sub2api:7", 4, 5)
+}
+
+func TestRunEnabledRulesUsesDueCategories(t *testing.T) {
+	source, err := os.ReadFile("server.go")
+	if err != nil {
+		t.Fatalf("read server.go: %v", err)
+	}
+	body := string(source)
+	if !strings.Contains(body, "s.store.DueScheduledCategories") {
+		t.Fatal("runEnabledRules should load only due scheduled categories")
+	}
+	if strings.Contains(body, "s.store.ScheduledRuleIDs(ctx, 500)") || strings.Contains(body, "s.store.DueRuleIDs(ctx") {
+		t.Fatal("runEnabledRules should not drive scheduling directly by rule ids")
+	}
+}
+
+func TestCategoryBatchResultDeduplicatesAndSortsModels(t *testing.T) {
+	result := newCategoryBatchResult("codex", time.Now())
+	result.addSnapshots([]PriceSnapshot{
+		{ModelName: "gpt-5.5"},
+		{ModelName: " gpt-5.5 "},
+		{ModelName: "gpt-4.1"},
+	})
+
+	models := result.modelNames()
+	if len(models) != 2 || models[0] != "gpt-4.1" || models[1] != "gpt-5.5" {
+		t.Fatalf("modelNames = %#v, want sorted unique models", models)
+	}
 }

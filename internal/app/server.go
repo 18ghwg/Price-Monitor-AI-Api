@@ -1576,17 +1576,25 @@ func (s *Server) runRuleWithoutSync(ctx context.Context, ruleID int64) ([]PriceS
 }
 
 func (s *Server) runRuleWithSource(ctx context.Context, rule Rule, site Site, upstream Sub2APIUpstream) ([]PriceSnapshot, error) {
+	return s.runRuleWithSourceOptions(ctx, rule, site, upstream, runRuleOptions{})
+}
+
+type runRuleOptions struct {
+	DeferGlobalDecision bool
+}
+
+func (s *Server) runRuleWithSourceOptions(ctx context.Context, rule Rule, site Site, upstream Sub2APIUpstream, options runRuleOptions) ([]PriceSnapshot, error) {
 	switch strings.ToLower(strings.TrimSpace(rule.SourceType)) {
 	case "", RuleSourceNewAPI:
-		return s.runNewAPIRule(ctx, rule, site)
+		return s.runNewAPIRule(ctx, rule, site, options)
 	case RuleSourceSub2API:
-		return s.runSub2APIRule(ctx, rule, upstream)
+		return s.runSub2APIRule(ctx, rule, upstream, options)
 	default:
 		return nil, fmt.Errorf("unsupported rule source type %q", rule.SourceType)
 	}
 }
 
-func (s *Server) runNewAPIRule(ctx context.Context, rule Rule, site Site) ([]PriceSnapshot, error) {
+func (s *Server) runNewAPIRule(ctx context.Context, rule Rule, site Site, options runRuleOptions) ([]PriceSnapshot, error) {
 	settings, err := s.store.GetIntegrationSettings(ctx)
 	if err != nil {
 		return nil, err
@@ -1693,6 +1701,9 @@ func (s *Server) runNewAPIRule(ctx context.Context, rule Rule, site Site) ([]Pri
 			return nil, err
 		}
 		snapshots = append(snapshots, snapshot)
+		if options.DeferGlobalDecision {
+			continue
+		}
 		currentLowest, newLowest, stableLowest := s.lowestSnapshotEvent(ctx, rule, snapshot, previousLowest, previousLowestErr, expectedCacheHitRatio, latencyWeight)
 		if stableLowest {
 			syncDecisionRecorded = true
@@ -1721,7 +1732,7 @@ func (s *Server) runNewAPIRule(ctx context.Context, rule Rule, site Site) ([]Pri
 	return snapshots, nil
 }
 
-func (s *Server) runSub2APIRule(ctx context.Context, rule Rule, upstream Sub2APIUpstream) ([]PriceSnapshot, error) {
+func (s *Server) runSub2APIRule(ctx context.Context, rule Rule, upstream Sub2APIUpstream, options runRuleOptions) ([]PriceSnapshot, error) {
 	if upstream.ID <= 0 {
 		return nil, fmt.Errorf("sub2api source site is required")
 	}
@@ -1817,6 +1828,9 @@ func (s *Server) runSub2APIRule(ctx context.Context, rule Rule, upstream Sub2API
 			return nil, err
 		}
 		snapshots = append(snapshots, snapshot)
+		if options.DeferGlobalDecision {
+			continue
+		}
 		currentLowest, newLowest, stableLowest := s.lowestSnapshotEvent(ctx, rule, snapshot, previousLowest, previousLowestErr, expectedCacheHitRatio, latencyWeight)
 		if stableLowest {
 			syncDecisionRecorded = true
@@ -2570,6 +2584,70 @@ func (s *Server) updateRetainedSyncStatus(ctx context.Context, ruleID int64, ret
 	s.updateRuleSyncStatus(ctx, ruleID, fmt.Sprintf("同步成功：已保留 %d/%d 个低价主站账号：%s", len(retained), keepCount, strings.Join(labels, "，")), "")
 }
 
+func (s *Server) finishCategoryBatch(ctx context.Context, result *categoryBatchResult) {
+	if result == nil || result.category == "" {
+		return
+	}
+	models := result.modelNames()
+	if len(models) == 0 {
+		log.Printf("scheduler category %s finished without new snapshots", result.category)
+		return
+	}
+	settings, err := s.store.GetIntegrationSettings(ctx)
+	if err != nil {
+		log.Printf("load integration settings for category %s finish: %v", result.category, err)
+		return
+	}
+	expectedCacheHitRatio := settings.ExpectedCacheHitRatio
+	latencyWeight := effectiveLatencyWeight(settings)
+	log.Printf("scheduler category %s finished collection; evaluating %d model(s)", result.category, len(models))
+	for _, modelName := range models {
+		previous, previousErr := s.store.CheapestLatestSnapshotBefore(ctx, result.category, modelName, result.started, expectedCacheHitRatio, latencyWeight)
+		current, currentErr := s.store.CheapestLatestSnapshot(ctx, result.category, modelName, expectedCacheHitRatio, latencyWeight)
+		if currentErr != nil {
+			log.Printf("load current cheapest snapshot for category %s model %q: %v", result.category, modelName, currentErr)
+			continue
+		}
+		newLowest := false
+		if previousErr != nil {
+			if notFound(previousErr) {
+				newLowest = true
+			} else {
+				log.Printf("load previous cheapest snapshot for category %s model %q: %v", result.category, modelName, previousErr)
+			}
+		} else if !sameLowestSnapshot(previous, current) && lowerThanPreviousLowest(previous, current, expectedCacheHitRatio, latencyWeight) {
+			newLowest = true
+		}
+
+		rule, ok := result.rules[current.RuleID]
+		if !ok {
+			loaded, _, _, err := s.store.GetRuleWithSource(ctx, current.RuleID)
+			if err != nil {
+				log.Printf("load current cheapest rule %d for category %s model %q: %v", current.RuleID, result.category, modelName, err)
+			} else {
+				rule = loaded
+				ok = true
+			}
+		}
+		if !ok {
+			continue
+		}
+		syncSucceeded := !rule.SyncEnabled
+		if rule.SyncEnabled {
+			if attempted, _, err := s.syncBestAvailableCandidate(ctx, rule, modelName, expectedCacheHitRatio, latencyWeight); err != nil {
+				log.Printf("category %s model %q sync: %v", result.category, modelName, err)
+			} else {
+				syncSucceeded = attempted
+			}
+		} else {
+			_ = s.store.UpdateRuleSyncStatus(ctx, rule.ID, "同步未开启，已完成分类全局比价", "")
+		}
+		if newLowest && syncSucceeded {
+			s.notifyPriceChange(ctx, previous, current, lowestSnapshotChanges(previous, current))
+		}
+	}
+}
+
 func (s *Server) recordLowBalanceSkips(ctx context.Context, skipped []PriceSnapshot) []PriceSnapshot {
 	if len(skipped) == 0 {
 		return nil
@@ -3310,55 +3388,76 @@ func (s *Server) runEnabledRules(ctx context.Context) {
 		log.Printf("pruned %d expired invalid snapshots", deleted)
 	}
 	roundInterval, ruleDelay := s.schedulerIntervals(ctx, s.cfg.MonitorInterval)
-	ids, err := s.store.ScheduledRuleIDs(ctx, 500)
+	categories, err := s.store.DueScheduledCategories(ctx, time.Now(), 50)
 	if err != nil {
-		log.Printf("scheduler list rules: %v", err)
+		log.Printf("scheduler list due categories: %v", err)
 		return
 	}
-	if len(ids) > 0 {
-		log.Printf("scheduler found %d scheduled rule(s)", len(ids))
+	if len(categories) > 0 {
+		log.Printf("scheduler found %d due categor(ies)", len(categories))
 	}
-	rules := make([]scheduledRuleSource, 0, len(ids))
-	for _, id := range ids {
-		loadCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		rule, site, upstream, ruleErr := s.store.GetRuleWithSource(loadCtx, id)
-		cancel()
-		if ruleErr != nil {
-			log.Printf("scheduler load rule %d: %v", id, ruleErr)
-			continue
-		}
-		if !rule.Enabled || !rule.ScheduleEnabled {
-			continue
-		}
-		rules = append(rules, scheduledRuleSource{rule: rule, site: site, upstream: upstream})
-	}
-	groups := groupScheduledRulesBySource(rules)
-	if len(groups) > 0 {
-		log.Printf("scheduler grouped %d scheduled rule(s) into %d source site batch(es)", len(rules), len(groups))
-	}
-	for index, group := range groups {
-		if index > 0 {
+	for categoryIndex, category := range categories {
+		if categoryIndex > 0 {
 			_, ruleDelay = s.schedulerIntervals(ctx, s.cfg.MonitorInterval)
 			if !sleepContext(ctx, ruleDelay) {
 				return
 			}
 		}
-		log.Printf("scheduler running source site batch %s with %d rule(s)", group.label, len(group.rules))
-		batchCtx := withRuleBatchSessionCache(ctx)
-		for _, item := range group.rules {
-			runCtx, cancel := context.WithTimeout(batchCtx, 60*time.Second)
-			runStartedAt := time.Now()
-			_, err := s.runRuleWithSource(runCtx, item.rule, item.site, item.upstream)
-			if markErr := s.store.MarkRuleScheduled(context.Background(), item.rule.ID, runStartedAt, roundInterval); markErr != nil {
-				log.Printf("scheduler mark rule %d scheduled: %v", item.rule.ID, markErr)
-			} else {
-				log.Printf("scheduler rule %d scheduled next run in %d minute(s)", item.rule.ID, roundInterval)
-			}
+
+		ids, err := s.store.ScheduledRuleIDsByCategory(ctx, category, 500)
+		if err != nil {
+			log.Printf("scheduler list rules for category %s: %v", category, err)
+			continue
+		}
+		if len(ids) == 0 {
+			continue
+		}
+		rules := make([]scheduledRuleSource, 0, len(ids))
+		result := newCategoryBatchResult(category, time.Now())
+		for _, id := range ids {
+			loadCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			rule, site, upstream, ruleErr := s.store.GetRuleWithSource(loadCtx, id)
 			cancel()
-			if err != nil && !errors.Is(err, context.Canceled) {
-				log.Printf("scheduler rule %d: %v", item.rule.ID, err)
+			if ruleErr != nil {
+				log.Printf("scheduler load rule %d: %v", id, ruleErr)
+				continue
+			}
+			if !rule.Enabled || !rule.ScheduleEnabled {
+				continue
+			}
+			rules = append(rules, scheduledRuleSource{rule: rule, site: site, upstream: upstream})
+			result.addRule(rule)
+		}
+		groups := groupScheduledRulesBySource(rules)
+		if len(groups) > 0 {
+			log.Printf("scheduler running category %s with %d rule(s) in %d source site batch(es)", category, len(rules), len(groups))
+		}
+		for index, group := range groups {
+			if index > 0 {
+				_, ruleDelay = s.schedulerIntervals(ctx, s.cfg.MonitorInterval)
+				if !sleepContext(ctx, ruleDelay) {
+					return
+				}
+			}
+			log.Printf("scheduler running category %s source site batch %s with %d rule(s)", category, group.label, len(group.rules))
+			batchCtx := withRuleBatchSessionCache(ctx)
+			for _, item := range group.rules {
+				runCtx, cancel := context.WithTimeout(batchCtx, 60*time.Second)
+				runStartedAt := time.Now()
+				snapshots, err := s.runRuleWithSourceOptions(runCtx, item.rule, item.site, item.upstream, runRuleOptions{DeferGlobalDecision: true})
+				result.addSnapshots(snapshots)
+				if markErr := s.store.MarkRuleScheduled(context.Background(), item.rule.ID, runStartedAt, roundInterval); markErr != nil {
+					log.Printf("scheduler mark rule %d scheduled: %v", item.rule.ID, markErr)
+				} else {
+					log.Printf("scheduler rule %d scheduled next run in %d minute(s)", item.rule.ID, roundInterval)
+				}
+				cancel()
+				if err != nil && !errors.Is(err, context.Canceled) {
+					log.Printf("scheduler rule %d: %v", item.rule.ID, err)
+				}
 			}
 		}
+		s.finishCategoryBatch(ctx, result)
 	}
 }
 
@@ -3372,6 +3471,57 @@ type scheduledRuleSourceBatch struct {
 	key   string
 	label string
 	rules []scheduledRuleSource
+}
+
+type categoryBatchResult struct {
+	category string
+	started  time.Time
+	models   map[string]struct{}
+	rules    map[int64]Rule
+}
+
+func newCategoryBatchResult(category string, started time.Time) *categoryBatchResult {
+	if started.IsZero() {
+		started = time.Now()
+	}
+	return &categoryBatchResult{
+		category: normalizeCategorySlug(category),
+		started:  started,
+		models:   map[string]struct{}{},
+		rules:    map[int64]Rule{},
+	}
+}
+
+func (r *categoryBatchResult) addRule(rule Rule) {
+	if r == nil || rule.ID <= 0 {
+		return
+	}
+	r.rules[rule.ID] = rule
+}
+
+func (r *categoryBatchResult) addSnapshots(snapshots []PriceSnapshot) {
+	if r == nil {
+		return
+	}
+	for _, snapshot := range snapshots {
+		modelName := strings.TrimSpace(snapshot.ModelName)
+		if modelName == "" {
+			continue
+		}
+		r.models[modelName] = struct{}{}
+	}
+}
+
+func (r *categoryBatchResult) modelNames() []string {
+	if r == nil || len(r.models) == 0 {
+		return nil
+	}
+	models := make([]string, 0, len(r.models))
+	for model := range r.models {
+		models = append(models, model)
+	}
+	sort.Strings(models)
+	return models
 }
 
 func groupScheduledRulesBySource(rules []scheduledRuleSource) []scheduledRuleSourceBatch {

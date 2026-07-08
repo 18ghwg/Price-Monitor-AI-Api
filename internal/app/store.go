@@ -1415,6 +1415,36 @@ func (s Store) DueRuleIDs(ctx context.Context, now time.Time, limit int) ([]int6
 	return ids, rows.Err()
 }
 
+func (s Store) DueScheduledCategories(ctx context.Context, now time.Time, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT category
+		FROM monitor_rules
+		WHERE enabled = true
+		  AND schedule_enabled = true
+		  AND (next_run_at IS NULL OR next_run_at <= $1)
+		GROUP BY category
+		ORDER BY min(COALESCE(next_run_at, created_at)), category
+		LIMIT $2
+	`, now, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var categories []string
+	for rows.Next() {
+		var category string
+		if err := rows.Scan(&category); err != nil {
+			return nil, err
+		}
+		categories = append(categories, category)
+	}
+	return categories, rows.Err()
+}
+
 func (s Store) ScheduledRuleIDs(ctx context.Context, limit int) ([]int64, error) {
 	if limit <= 0 {
 		limit = 500
@@ -1427,6 +1457,35 @@ func (s Store) ScheduledRuleIDs(ctx context.Context, limit int) ([]int64, error)
 		ORDER BY id
 		LIMIT $1
 	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func (s Store) ScheduledRuleIDsByCategory(ctx context.Context, category string, limit int) ([]int64, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT id
+		FROM monitor_rules
+		WHERE enabled = true
+		  AND schedule_enabled = true
+		  AND category = $1
+		ORDER BY id
+		LIMIT $2
+	`, normalizeCategorySlug(category), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1845,11 +1904,28 @@ func (s Store) PreviousSnapshot(ctx context.Context, ruleID int64, modelName str
 }
 
 func (s Store) CheapestLatestSnapshot(ctx context.Context, category string, modelName string, expectedCacheHitRatio float64, latencyWeightPerSecond float64) (PriceSnapshot, error) {
+	return s.cheapestLatestSnapshot(ctx, category, modelName, nil, expectedCacheHitRatio, latencyWeightPerSecond)
+}
+
+func (s Store) CheapestLatestSnapshotBefore(ctx context.Context, category string, modelName string, before time.Time, expectedCacheHitRatio float64, latencyWeightPerSecond float64) (PriceSnapshot, error) {
+	if before.IsZero() {
+		return s.CheapestLatestSnapshot(ctx, category, modelName, expectedCacheHitRatio, latencyWeightPerSecond)
+	}
+	return s.cheapestLatestSnapshot(ctx, category, modelName, &before, expectedCacheHitRatio, latencyWeightPerSecond)
+}
+
+func (s Store) cheapestLatestSnapshot(ctx context.Context, category string, modelName string, before *time.Time, expectedCacheHitRatio float64, latencyWeightPerSecond float64) (PriceSnapshot, error) {
 	hitRatio := normalizeExpectedCacheHitRatio(expectedCacheHitRatio)
 	latencyWeight := normalizeLatencyWeightPerSecond(latencyWeightPerSecond)
 	var snapshot PriceSnapshot
 	var groupRatio, inputPrice, outputPrice, cacheReadPrice, cacheWritePrice, requestPrice, requestLatencyMS, upstreamBalance, rechargeMultiplier sql.NullFloat64
 	var invalidAt sql.NullTime
+	beforeFilter := ""
+	args := []any{normalizeCategorySlug(category), strings.TrimSpace(modelName), hitRatio, latencyWeight}
+	if before != nil {
+		args = append(args, *before)
+		beforeFilter = fmt.Sprintf("AND p.created_at < $%d", len(args))
+	}
 	err := s.db.QueryRow(ctx, `
 		WITH latest AS (
 			SELECT DISTINCT ON (COALESCE(p.source_type, 'newapi'), lower(regexp_replace(trim(p.source_base_url), '/+$', '')), lower(trim(p.source_account)), r.category, p.model_name, lower(trim(p.group_name)))
@@ -1870,6 +1946,7 @@ func (s Store) CheapestLatestSnapshot(ctx context.Context, category string, mode
 			WHERE r.enabled = true
 			  AND r.category = $1
 			  AND p.model_name = $2
+			  `+beforeFilter+`
 			  AND lower(trim(p.model_name)) = lower(trim(r.model_keyword))
 			  AND p.invalid = false
 			  AND (
@@ -1903,7 +1980,7 @@ func (s Store) CheapestLatestSnapshot(ctx context.Context, category string, mode
 		         group_ratio ASC NULLS LAST,
 		         id DESC
 		LIMIT 1
-	`, normalizeCategorySlug(category), strings.TrimSpace(modelName), hitRatio, latencyWeight).Scan(
+	`, args...).Scan(
 		&snapshot.ID, &snapshot.RuleID, &snapshot.SourceType, &snapshot.SiteID, &snapshot.Sub2APIUpstreamID, &snapshot.SiteName, &snapshot.SiteBaseURL, &snapshot.SourceAccount,
 		&snapshot.Category, &snapshot.CategoryName, &snapshot.ModelKeyword, &snapshot.ModelName,
 		&snapshot.GroupName, &snapshot.GroupDesc, &snapshot.QuotaType, &groupRatio, &inputPrice,

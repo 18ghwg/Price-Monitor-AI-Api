@@ -650,6 +650,12 @@ func (c *Sub2APIClient) upsertAPIKeyAccountGroupsWithRateAndMode(ctx context.Con
 		}
 	}
 	targetGroupIDs := sub2GroupIDs(groups)
+	var sameURLKeyAndGroups []sub2Account
+	for _, account := range sameURL {
+		if accountMatchesAPIKey(account, apiKey) && sub2AccountGroupIDsEqual(account, targetGroupIDs) {
+			sameURLKeyAndGroups = append(sameURLKeyAndGroups, account)
+		}
+	}
 	if len(sameURLAndName) > 0 {
 		account := preferredSub2Account(sameURLAndName, groups)
 		alreadyMatchedGroups := sub2AccountGroupIDsEqual(account, targetGroupIDs)
@@ -663,6 +669,19 @@ func (c *Sub2APIClient) upsertAPIKeyAccountGroupsWithRateAndMode(ctx context.Con
 			}
 		}
 		return updated, "updated", alreadyMatchedGroups, nil
+	}
+	if len(sameURLKeyAndGroups) > 0 {
+		account := preferredSub2Account(sameURLKeyAndGroups, groups)
+		updated, err := c.updateAccountGroupsWithRate(ctx, platform, account, accountName, apiBaseURL, apiKey, groups, accountRate)
+		if err != nil {
+			return updated, "updated", false, err
+		}
+		if cleanupSameURLDuplicates {
+			if err := c.disableDuplicateAPIKeyAccounts(ctx, platform, updated.ID, apiBaseURL, accountName, accounts); err != nil {
+				return updated, "updated", true, err
+			}
+		}
+		return updated, "updated", true, nil
 	}
 	if cleanupSameURLDuplicates && len(sameURL) > 0 {
 		account := preferredSub2Account(sameURL, groups)
@@ -1154,6 +1173,10 @@ func accountMatchesAPIURLAndGroups(account sub2Account, apiBaseURL string, group
 
 func accountMatchesPlatformAPIURL(account sub2Account, platform string, apiBaseURL string) bool {
 	return accountMatchesPlatform(account, platform) && accountMatchesAPIURL(account, apiBaseURL)
+}
+
+func accountMatchesAPIKey(account sub2Account, apiKey string) bool {
+	return strings.TrimSpace(stringMapValue(account.Credentials, "api_key")) == strings.TrimSpace(apiKey)
 }
 
 func accountMatchesPlatform(account sub2Account, platform string) bool {

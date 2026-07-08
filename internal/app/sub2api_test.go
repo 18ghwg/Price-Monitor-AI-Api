@@ -510,6 +510,81 @@ func TestSub2APIUpsertNoDuplicateCleanupCreatesSeparateLowGroupAccountForSameURL
 	}
 }
 
+func TestSub2APIUpsertNoDuplicateCleanupReusesSameURLKeyAndGroups(t *testing.T) {
+	var updatePayload map[string]any
+	requestCount := map[string]int{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		requestCount[r.Method+" "+r.URL.Path]++
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/admin/accounts":
+			writeSub2TestJSON(w, map[string]any{
+				"items": []map[string]any{{
+					"id":          88,
+					"name":        "site Codex Free",
+					"platform":    "openai",
+					"type":        "apikey",
+					"credentials": map[string]any{"base_url": "https://newapi.test", "api_key": "sk-same"},
+					"group_ids":   []int64{7},
+					"status":      "active",
+					"schedulable": true,
+				}},
+				"total": 1,
+			})
+		case r.Method == http.MethodPut && r.URL.Path == "/api/v1/admin/accounts/88":
+			if err := json.NewDecoder(r.Body).Decode(&updatePayload); err != nil {
+				t.Fatalf("decode update payload: %v", err)
+			}
+			writeSub2TestJSON(w, map[string]any{
+				"id":          88,
+				"name":        updatePayload["name"],
+				"platform":    "openai",
+				"type":        "apikey",
+				"credentials": updatePayload["credentials"],
+				"group_ids":   []int64{7},
+				"status":      "active",
+				"schedulable": true,
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/admin/accounts/88/schedulable":
+			writeSub2TestJSON(w, map[string]any{"id": 88, "schedulable": true})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewSub2APIClient(server.URL, "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, action, alreadyMatched, err := client.UpsertAPIKeyAccountGroupsWithRateAndModeNoDuplicateCleanup(
+		context.Background(),
+		"openai",
+		"site Codex VIP",
+		"https://newapi.test",
+		"sk-same",
+		[]sub2Group{{ID: 7, Name: "Codex"}},
+		nil,
+		sub2APISyncAccountModeSchedulableOnly,
+	)
+	if err != nil {
+		t.Fatalf("UpsertAPIKeyAccountGroupsWithRateAndModeNoDuplicateCleanup() error = %v", err)
+	}
+	if action != "updated" {
+		t.Fatalf("action = %q, want updated", action)
+	}
+	if !alreadyMatched {
+		t.Fatal("alreadyMatched = false, want true")
+	}
+	if requestCount[http.MethodPost+" /api/v1/admin/accounts"] != 0 {
+		t.Fatalf("create account calls = %d, want 0", requestCount[http.MethodPost+" /api/v1/admin/accounts"])
+	}
+	if updatePayload["name"] != "site Codex VIP" {
+		t.Fatalf("updated name = %v, want site Codex VIP", updatePayload["name"])
+	}
+}
+
 func TestSub2APIEnsureGroupByIDOrNameWithRateUpdatesGroupRate(t *testing.T) {
 	var updatePayload map[string]any
 
