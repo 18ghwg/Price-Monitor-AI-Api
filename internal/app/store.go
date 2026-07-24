@@ -43,6 +43,7 @@ type CategoryInput struct {
 	Sub2APIMainGroups        []Sub2APIGroupRef `json:"sub2api_main_groups"`
 	Sub2APIMainGroupKeywords []string          `json:"sub2api_main_group_keywords"`
 	BlockedGroupKeywords     []string          `json:"blocked_group_keywords"`
+	Sub2APIMainTestEnabled   *bool             `json:"sub2api_main_test_enabled"`
 }
 
 type Sub2APIUpstreamInput struct {
@@ -436,7 +437,7 @@ func (s Store) UpdateSub2APIUpstreamCheckWithSession(ctx context.Context, upstre
 
 func (s Store) ListCategories(ctx context.Context) ([]Category, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, name, slug, sub2api_main_group_id, sub2api_main_group_name, COALESCE(sub2api_main_groups, '[]'::jsonb), COALESCE(sub2api_main_group_keywords, '[]'::jsonb), COALESCE(blocked_group_keywords, '[]'::jsonb), created_at, updated_at
+		SELECT id, name, slug, sub2api_main_group_id, sub2api_main_group_name, COALESCE(sub2api_main_groups, '[]'::jsonb), COALESCE(sub2api_main_group_keywords, '[]'::jsonb), COALESCE(blocked_group_keywords, '[]'::jsonb), sub2api_main_test_enabled, created_at, updated_at
 		FROM categories
 		ORDER BY CASE slug WHEN 'codex' THEN 0 WHEN 'claud' THEN 1 WHEN 'other' THEN 2 ELSE 3 END, name
 	`)
@@ -454,6 +455,7 @@ func (s Store) ListCategories(ctx context.Context) ([]Category, error) {
 		if err := rows.Scan(
 			&category.ID, &category.Name, &category.Slug, &category.Sub2APIMainGroupID, &category.Sub2APIMainGroupName,
 			&groupsRaw, &includeRaw, &blockedRaw,
+			&category.Sub2APIMainTestEnabled,
 			&category.CreatedAt, &category.UpdatedAt,
 		); err != nil {
 			return nil, err
@@ -476,6 +478,7 @@ func (s Store) CreateCategory(ctx context.Context, input CategoryInput) (Categor
 	includeKeywords, includeJSON := normalizeStringList(input.Sub2APIMainGroupKeywords)
 	blockedKeywords, blockedJSON := normalizeStringList(input.BlockedGroupKeywords)
 	primary := primaryCategoryGroup(groups)
+	mainTestEnabled := categoryMainTestEnabledFromInput(input)
 	if slug == "" {
 		slug = normalizeCategorySlug(name)
 	}
@@ -485,8 +488,8 @@ func (s Store) CreateCategory(ctx context.Context, input CategoryInput) (Categor
 
 	var category Category
 	err = s.db.QueryRow(ctx, `
-		INSERT INTO categories (name, slug, sub2api_main_group_id, sub2api_main_group_name, sub2api_main_groups, sub2api_main_group_keywords, blocked_group_keywords)
-		VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb)
+		INSERT INTO categories (name, slug, sub2api_main_group_id, sub2api_main_group_name, sub2api_main_groups, sub2api_main_group_keywords, blocked_group_keywords, sub2api_main_test_enabled)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8)
 		ON CONFLICT (slug) DO UPDATE
 		SET name = EXCLUDED.name,
 		    sub2api_main_group_id = EXCLUDED.sub2api_main_group_id,
@@ -494,11 +497,13 @@ func (s Store) CreateCategory(ctx context.Context, input CategoryInput) (Categor
 		    sub2api_main_groups = EXCLUDED.sub2api_main_groups,
 		    sub2api_main_group_keywords = EXCLUDED.sub2api_main_group_keywords,
 		    blocked_group_keywords = EXCLUDED.blocked_group_keywords,
+		    sub2api_main_test_enabled = EXCLUDED.sub2api_main_test_enabled,
 		    updated_at = now()
-		RETURNING id, name, slug, sub2api_main_group_id, sub2api_main_group_name, COALESCE(sub2api_main_groups, '[]'::jsonb), COALESCE(sub2api_main_group_keywords, '[]'::jsonb), COALESCE(blocked_group_keywords, '[]'::jsonb), created_at, updated_at
-	`, name, slug, primary.ID, primary.Name, string(groupsJSON), string(includeJSON), string(blockedJSON)).Scan(
+		RETURNING id, name, slug, sub2api_main_group_id, sub2api_main_group_name, COALESCE(sub2api_main_groups, '[]'::jsonb), COALESCE(sub2api_main_group_keywords, '[]'::jsonb), COALESCE(blocked_group_keywords, '[]'::jsonb), sub2api_main_test_enabled, created_at, updated_at
+	`, name, slug, primary.ID, primary.Name, string(groupsJSON), string(includeJSON), string(blockedJSON), mainTestEnabled).Scan(
 		&category.ID, &category.Name, &category.Slug, &category.Sub2APIMainGroupID, &category.Sub2APIMainGroupName,
 		&groupsJSON, &includeJSON, &blockedJSON,
+		&category.Sub2APIMainTestEnabled,
 		&category.CreatedAt, &category.UpdatedAt,
 	)
 	category.Sub2APIMainGroups = normalizeCategoryGroupRefs(category.Sub2APIMainGroupID, category.Sub2APIMainGroupName, groupsJSON)
@@ -525,8 +530,12 @@ func (s Store) UpdateCategory(ctx context.Context, categoryID int64, input Categ
 	}
 
 	var oldSlug string
-	if err := s.db.QueryRow(ctx, `SELECT slug FROM categories WHERE id = $1`, categoryID).Scan(&oldSlug); err != nil {
+	var mainTestEnabled bool
+	if err := s.db.QueryRow(ctx, `SELECT slug, sub2api_main_test_enabled FROM categories WHERE id = $1`, categoryID).Scan(&oldSlug, &mainTestEnabled); err != nil {
 		return Category{}, err
+	}
+	if input.Sub2APIMainTestEnabled != nil {
+		mainTestEnabled = *input.Sub2APIMainTestEnabled
 	}
 
 	tx, err := s.db.Begin(ctx)
@@ -545,12 +554,14 @@ func (s Store) UpdateCategory(ctx context.Context, categoryID int64, input Categ
 		    sub2api_main_groups = $6::jsonb,
 		    sub2api_main_group_keywords = $7::jsonb,
 		    blocked_group_keywords = $8::jsonb,
+		    sub2api_main_test_enabled = $9,
 		    updated_at = now()
 		WHERE id = $1
-		RETURNING id, name, slug, sub2api_main_group_id, sub2api_main_group_name, COALESCE(sub2api_main_groups, '[]'::jsonb), COALESCE(sub2api_main_group_keywords, '[]'::jsonb), COALESCE(blocked_group_keywords, '[]'::jsonb), created_at, updated_at
-	`, categoryID, name, slug, primary.ID, primary.Name, string(groupsJSON), string(includeJSON), string(blockedJSON)).Scan(
+		RETURNING id, name, slug, sub2api_main_group_id, sub2api_main_group_name, COALESCE(sub2api_main_groups, '[]'::jsonb), COALESCE(sub2api_main_group_keywords, '[]'::jsonb), COALESCE(blocked_group_keywords, '[]'::jsonb), sub2api_main_test_enabled, created_at, updated_at
+	`, categoryID, name, slug, primary.ID, primary.Name, string(groupsJSON), string(includeJSON), string(blockedJSON), mainTestEnabled).Scan(
 		&category.ID, &category.Name, &category.Slug, &category.Sub2APIMainGroupID, &category.Sub2APIMainGroupName,
 		&groupsJSON, &includeJSON, &blockedJSON,
+		&category.Sub2APIMainTestEnabled,
 		&category.CreatedAt, &category.UpdatedAt,
 	); err != nil {
 		return Category{}, err
@@ -610,12 +621,13 @@ func (s Store) GetCategoryBySlug(ctx context.Context, slug string) (Category, er
 	var includeRaw []byte
 	var blockedRaw []byte
 	err := s.db.QueryRow(ctx, `
-		SELECT id, name, slug, sub2api_main_group_id, sub2api_main_group_name, COALESCE(sub2api_main_groups, '[]'::jsonb), COALESCE(sub2api_main_group_keywords, '[]'::jsonb), COALESCE(blocked_group_keywords, '[]'::jsonb), created_at, updated_at
+		SELECT id, name, slug, sub2api_main_group_id, sub2api_main_group_name, COALESCE(sub2api_main_groups, '[]'::jsonb), COALESCE(sub2api_main_group_keywords, '[]'::jsonb), COALESCE(blocked_group_keywords, '[]'::jsonb), sub2api_main_test_enabled, created_at, updated_at
 		FROM categories
 		WHERE slug = $1
 	`, slug).Scan(
 		&category.ID, &category.Name, &category.Slug, &category.Sub2APIMainGroupID, &category.Sub2APIMainGroupName,
 		&groupsRaw, &includeRaw, &blockedRaw,
+		&category.Sub2APIMainTestEnabled,
 		&category.CreatedAt, &category.UpdatedAt,
 	)
 	category.Sub2APIMainGroups = normalizeCategoryGroupRefs(category.Sub2APIMainGroupID, category.Sub2APIMainGroupName, groupsRaw)
@@ -645,6 +657,13 @@ func normalizeStringList(values []string) ([]string, []byte) {
 	}
 	data, _ := json.Marshal(normalized)
 	return normalized, data
+}
+
+func categoryMainTestEnabledFromInput(input CategoryInput) bool {
+	if input.Sub2APIMainTestEnabled == nil {
+		return true
+	}
+	return *input.Sub2APIMainTestEnabled
 }
 
 func normalizeStringListFromJSON(raw []byte) []string {
@@ -1903,25 +1922,26 @@ func (s Store) PreviousSnapshot(ctx context.Context, ruleID int64, modelName str
 	return snapshot, nil
 }
 
-func (s Store) CheapestLatestSnapshot(ctx context.Context, category string, modelName string, expectedCacheHitRatio float64, latencyWeightPerSecond float64) (PriceSnapshot, error) {
-	return s.cheapestLatestSnapshot(ctx, category, modelName, nil, expectedCacheHitRatio, latencyWeightPerSecond)
+func (s Store) CheapestLatestSnapshot(ctx context.Context, category string, modelName string, expectedCacheHitRatio float64, balanceThreshold float64, latencyWeightPerSecond float64) (PriceSnapshot, error) {
+	return s.cheapestLatestSnapshot(ctx, category, modelName, nil, expectedCacheHitRatio, balanceThreshold, latencyWeightPerSecond)
 }
 
-func (s Store) CheapestLatestSnapshotBefore(ctx context.Context, category string, modelName string, before time.Time, expectedCacheHitRatio float64, latencyWeightPerSecond float64) (PriceSnapshot, error) {
+func (s Store) CheapestLatestSnapshotBefore(ctx context.Context, category string, modelName string, before time.Time, expectedCacheHitRatio float64, balanceThreshold float64, latencyWeightPerSecond float64) (PriceSnapshot, error) {
 	if before.IsZero() {
-		return s.CheapestLatestSnapshot(ctx, category, modelName, expectedCacheHitRatio, latencyWeightPerSecond)
+		return s.CheapestLatestSnapshot(ctx, category, modelName, expectedCacheHitRatio, balanceThreshold, latencyWeightPerSecond)
 	}
-	return s.cheapestLatestSnapshot(ctx, category, modelName, &before, expectedCacheHitRatio, latencyWeightPerSecond)
+	return s.cheapestLatestSnapshot(ctx, category, modelName, &before, expectedCacheHitRatio, balanceThreshold, latencyWeightPerSecond)
 }
 
-func (s Store) cheapestLatestSnapshot(ctx context.Context, category string, modelName string, before *time.Time, expectedCacheHitRatio float64, latencyWeightPerSecond float64) (PriceSnapshot, error) {
+func (s Store) cheapestLatestSnapshot(ctx context.Context, category string, modelName string, before *time.Time, expectedCacheHitRatio float64, balanceThreshold float64, latencyWeightPerSecond float64) (PriceSnapshot, error) {
 	hitRatio := normalizeExpectedCacheHitRatio(expectedCacheHitRatio)
 	latencyWeight := normalizeLatencyWeightPerSecond(latencyWeightPerSecond)
+	balanceThreshold = normalizeUpstreamBalanceThreshold(balanceThreshold)
 	var snapshot PriceSnapshot
 	var groupRatio, inputPrice, outputPrice, cacheReadPrice, cacheWritePrice, requestPrice, requestLatencyMS, upstreamBalance, rechargeMultiplier sql.NullFloat64
 	var invalidAt sql.NullTime
 	beforeFilter := ""
-	args := []any{normalizeCategorySlug(category), strings.TrimSpace(modelName), hitRatio, latencyWeight}
+	args := []any{normalizeCategorySlug(category), strings.TrimSpace(modelName), hitRatio, latencyWeight, balanceThreshold}
 	if before != nil {
 		args = append(args, *before)
 		beforeFilter = fmt.Sprintf("AND p.created_at < $%d", len(args))
@@ -1949,6 +1969,7 @@ func (s Store) cheapestLatestSnapshot(ctx context.Context, category string, mode
 			  `+beforeFilter+`
 			  AND lower(trim(p.model_name)) = lower(trim(r.model_keyword))
 			  AND p.invalid = false
+			  AND (p.upstream_balance IS NULL OR p.upstream_balance > $5)
 			  AND (
 			    NOT EXISTS (
 			      SELECT 1

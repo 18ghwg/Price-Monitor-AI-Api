@@ -42,6 +42,7 @@ type Category struct {
 	Sub2APIMainGroups        []Sub2APIGroupRef `json:"sub2api_main_groups"`
 	Sub2APIMainGroupKeywords []string          `json:"sub2api_main_group_keywords"`
 	BlockedGroupKeywords     []string          `json:"blocked_group_keywords"`
+	Sub2APIMainTestEnabled   bool              `json:"sub2api_main_test_enabled"`
 	CreatedAt                time.Time         `json:"created_at"`
 	UpdatedAt                time.Time         `json:"updated_at"`
 }

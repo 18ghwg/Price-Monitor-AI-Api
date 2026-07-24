@@ -600,6 +600,7 @@ const indexHTML = `<!doctype html>
                 </div>
                 <input name="sub2api_main_group_name" placeholder="主站 sub2api 分组名">
                 <input name="sub2api_main_group_id" type="number" min="0" value="0" placeholder="主站分组 ID">
+                <label class="checkbox-label"><input name="sub2api_main_test_enabled" type="checkbox" checked>同步后测试主站账号</label>
                 <button id="categorySubmitBtn" type="submit">保存分类</button>
                 <button id="categoryCancelBtn" class="secondary" type="button" hidden>取消</button>
               </form>
@@ -1700,6 +1701,12 @@ button.filter.active {
 
 .inline-form select[multiple] {
   height: 96px;
+}
+
+.inline-form .checkbox-label {
+  min-height: 42px;
+  align-content: center;
+  min-width: 0;
 }
 
 .category-main-group-picker {
@@ -2846,12 +2853,16 @@ function renderCategoryControls() {
     const blocked = blockedKeywords.length
       ? "<span class=\"category-main-group-tags\">" + blockedKeywords.map((keyword) => "<span class=\"group-badge muted-badge\">屏蔽：" + escapeHTML(keyword) + "</span>").join("") + "</span>"
       : "";
+    const mainTest = category.sub2api_main_test_enabled === false
+      ? "<span class=\"group-badge muted-badge\">主站测试：关闭</span>"
+      : "<span class=\"group-badge\">主站测试：开启</span>";
     return "<span class=\"category-chip\">"
       + "<strong>" + escapeHTML(category.name) + "</strong>"
       + "<span class=\"muted\">" + escapeHTML(category.slug) + "</span>"
       + mainGroup
       + included
       + blocked
+      + mainTest
       + "<span class=\"category-actions\">"
       + "<button class=\"secondary\" data-edit-category=\"" + category.id + "\" type=\"button\">编辑</button>"
       + "<button class=\"danger\" data-delete-category=\"" + category.id + "\" type=\"button\"" + protectedDelete + ">删除</button>"
@@ -4626,6 +4637,7 @@ async function editCategory(category) {
   form.elements.sub2api_main_group_keywords.value = Array.isArray(category.sub2api_main_group_keywords) ? category.sub2api_main_group_keywords.join("\n") : "";
   form.elements.sub2api_main_group_name.value = category.sub2api_main_group_name || "";
   form.elements.sub2api_main_group_id.value = String(category.sub2api_main_group_id || 0);
+  if (form.elements.sub2api_main_test_enabled) form.elements.sub2api_main_test_enabled.checked = category.sub2api_main_test_enabled !== false;
   form.dataset.mainGroupIds = groups.map((group) => String(group.id || "")).filter(Boolean).join(",");
   form.dataset.mainGroupsJson = JSON.stringify(groups);
   renderCategoryMainGroupOptions();
@@ -4644,6 +4656,7 @@ function resetCategoryForm() {
   form.elements.blocked_group_keywords.value = "";
   form.elements.sub2api_main_group_keywords.value = "";
   form.elements.sub2api_main_group_id.value = "0";
+  if (form.elements.sub2api_main_test_enabled) form.elements.sub2api_main_test_enabled.checked = true;
   form.dataset.mainGroupIds = "";
   form.dataset.mainGroupsJson = "";
   renderCategoryMainGroupOptions();

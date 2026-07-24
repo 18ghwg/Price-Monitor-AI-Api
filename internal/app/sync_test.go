@@ -21,6 +21,18 @@ func TestCandidateLabelIncludesGroupRatio(t *testing.T) {
 	}
 }
 
+func TestCategoryMainTestEnabledDefaultsOnMissingCategoryAndHonorsDisabled(t *testing.T) {
+	if !categoryMainTestEnabled(Category{}) {
+		t.Fatal("categoryMainTestEnabled() = false for missing category, want default true")
+	}
+	if !categoryMainTestEnabled(Category{ID: 1, Sub2APIMainTestEnabled: true}) {
+		t.Fatal("categoryMainTestEnabled() = false for enabled category, want true")
+	}
+	if categoryMainTestEnabled(Category{ID: 1, Sub2APIMainTestEnabled: false}) {
+		t.Fatal("categoryMainTestEnabled() = true for disabled category, want false")
+	}
+}
+
 func TestIsFallbackSyncErrorMatchesUnsupportedGroup(t *testing.T) {
 	err := errors.New("您当前的套餐或余额不支持使用所选分组")
 	if !isFallbackSyncError(err) {

@@ -1667,7 +1667,7 @@ func (s *Server) runNewAPIRule(ctx context.Context, rule Rule, site Site, option
 	syncDecisionRecorded := false
 	for _, row := range rows {
 		activeGroups = append(activeGroups, row.GroupName)
-		previousLowest, previousLowestErr := s.store.CheapestLatestSnapshot(ctx, rule.Category, row.ModelName, expectedCacheHitRatio, latencyWeight)
+		previousLowest, previousLowestErr := s.store.CheapestLatestSnapshot(ctx, rule.Category, row.ModelName, expectedCacheHitRatio, settings.UpstreamBalanceThreshold, latencyWeight)
 		requestLatencyMS := s.measureNewAPIUpstreamLatency(ctx, rule, site, client, userID, token, row)
 		snapshot := PriceSnapshot{
 			RuleID:             rule.ID,
@@ -1704,7 +1704,7 @@ func (s *Server) runNewAPIRule(ctx context.Context, rule Rule, site Site, option
 		if options.DeferGlobalDecision {
 			continue
 		}
-		currentLowest, newLowest, stableLowest := s.lowestSnapshotEvent(ctx, rule, snapshot, previousLowest, previousLowestErr, expectedCacheHitRatio, latencyWeight)
+		currentLowest, newLowest, stableLowest := s.lowestSnapshotEvent(ctx, rule, snapshot, previousLowest, previousLowestErr, expectedCacheHitRatio, settings.UpstreamBalanceThreshold, latencyWeight)
 		if stableLowest {
 			syncDecisionRecorded = true
 		}
@@ -1791,7 +1791,7 @@ func (s *Server) runSub2APIRule(ctx context.Context, rule Rule, upstream Sub2API
 	syncDecisionRecorded := false
 	for _, row := range rows {
 		activeGroups = append(activeGroups, row.GroupName)
-		previousLowest, previousLowestErr := s.store.CheapestLatestSnapshot(ctx, rule.Category, row.ModelName, expectedCacheHitRatio, latencyWeight)
+		previousLowest, previousLowestErr := s.store.CheapestLatestSnapshot(ctx, rule.Category, row.ModelName, expectedCacheHitRatio, settings.UpstreamBalanceThreshold, latencyWeight)
 		requestLatencyMS := s.measureSub2APIUpstreamLatency(ctx, rule, upstream, row)
 		cacheWritePrice := row.FinalCacheWritePerMillion
 		if cacheWritePrice == nil {
@@ -1831,7 +1831,7 @@ func (s *Server) runSub2APIRule(ctx context.Context, rule Rule, upstream Sub2API
 		if options.DeferGlobalDecision {
 			continue
 		}
-		currentLowest, newLowest, stableLowest := s.lowestSnapshotEvent(ctx, rule, snapshot, previousLowest, previousLowestErr, expectedCacheHitRatio, latencyWeight)
+		currentLowest, newLowest, stableLowest := s.lowestSnapshotEvent(ctx, rule, snapshot, previousLowest, previousLowestErr, expectedCacheHitRatio, settings.UpstreamBalanceThreshold, latencyWeight)
 		if stableLowest {
 			syncDecisionRecorded = true
 		}
@@ -2303,8 +2303,8 @@ func sub2APIUserPriceRowRaw(row Sub2APIUserPriceRow) []byte {
 	return data
 }
 
-func (s *Server) lowestSnapshotEvent(ctx context.Context, rule Rule, inserted PriceSnapshot, previous PriceSnapshot, previousErr error, expectedCacheHitRatio float64, latencyWeightPerSecond float64) (PriceSnapshot, bool, bool) {
-	current, err := s.store.CheapestLatestSnapshot(ctx, rule.Category, inserted.ModelName, expectedCacheHitRatio, latencyWeightPerSecond)
+func (s *Server) lowestSnapshotEvent(ctx context.Context, rule Rule, inserted PriceSnapshot, previous PriceSnapshot, previousErr error, expectedCacheHitRatio float64, balanceThreshold float64, latencyWeightPerSecond float64) (PriceSnapshot, bool, bool) {
+	current, err := s.store.CheapestLatestSnapshot(ctx, rule.Category, inserted.ModelName, expectedCacheHitRatio, balanceThreshold, latencyWeightPerSecond)
 	if err != nil {
 		log.Printf("load current cheapest snapshot for rule %d model %q: %v", rule.ID, inserted.ModelName, err)
 		return PriceSnapshot{}, false, false
@@ -2602,8 +2602,8 @@ func (s *Server) finishCategoryBatch(ctx context.Context, result *categoryBatchR
 	latencyWeight := effectiveLatencyWeight(settings)
 	log.Printf("scheduler category %s finished collection; evaluating %d model(s)", result.category, len(models))
 	for _, modelName := range models {
-		previous, previousErr := s.store.CheapestLatestSnapshotBefore(ctx, result.category, modelName, result.started, expectedCacheHitRatio, latencyWeight)
-		current, currentErr := s.store.CheapestLatestSnapshot(ctx, result.category, modelName, expectedCacheHitRatio, latencyWeight)
+		previous, previousErr := s.store.CheapestLatestSnapshotBefore(ctx, result.category, modelName, result.started, expectedCacheHitRatio, settings.UpstreamBalanceThreshold, latencyWeight)
+		current, currentErr := s.store.CheapestLatestSnapshot(ctx, result.category, modelName, expectedCacheHitRatio, settings.UpstreamBalanceThreshold, latencyWeight)
 		if currentErr != nil {
 			log.Printf("load current cheapest snapshot for category %s model %q: %v", result.category, modelName, currentErr)
 			continue
@@ -3259,9 +3259,12 @@ func (s *Server) syncUpstreamKeyToMainSub2APIWithOptions(ctx context.Context, ru
 	if err := sub2.PrioritizeOpenAIAPIKeyAccountForGroupsWithRate(ctx, account.ID, groups, nil); err != nil {
 		return syncToMainResult{}, err
 	}
-	if err := sub2.TestAccountConnection(ctx, account.ID, row.ModelName); err != nil {
-		return syncToMainResult{}, fmt.Errorf("主站账号连接测试失败：账号 #%d，模型 %s，主站分组 %s，上游低价分组 %s，原因：%w",
-			account.ID, row.ModelName, strings.Join(groupNames, ", "), row.GroupName, err)
+	testedMainAccount := categoryMainTestEnabled(category)
+	if testedMainAccount {
+		if err := sub2.TestAccountConnection(ctx, account.ID, row.ModelName); err != nil {
+			return syncToMainResult{}, fmt.Errorf("主站账号连接测试失败：账号 #%d，模型 %s，主站分组 %s，上游低价分组 %s，原因：%w",
+				account.ID, row.ModelName, strings.Join(groupNames, ", "), row.GroupName, err)
+		}
 	}
 	if disableOthers {
 		if err := sub2.DisableOtherAPIKeyAccountsForGroups(ctx, platform, account.ID, groups, settings.Sub2APISyncAccountMode); err != nil {
@@ -3276,7 +3279,11 @@ func (s *Server) syncUpstreamKeyToMainSub2APIWithOptions(ctx context.Context, ru
 	}
 	status := fmt.Sprintf("同步成功：主站账号%s，上游key%s，低价分组 %s，倍率 %s，同步到主站分组 %s",
 		chineseSyncAction(action), chineseSyncAction(keyAction), row.GroupName, fmtFloat(row.GroupRatio), strings.Join(groupNames, ", "))
-	status += fmt.Sprintf("，已测试模型 %s", row.ModelName)
+	if testedMainAccount {
+		status += fmt.Sprintf("，已测试模型 %s", row.ModelName)
+	} else {
+		status += "，已按分类设置跳过主站测试"
+	}
 	if !notifySync {
 		status = "复核成功：" + strings.TrimPrefix(status, "同步成功：")
 	}
@@ -3284,6 +3291,10 @@ func (s *Server) syncUpstreamKeyToMainSub2APIWithOptions(ctx context.Context, ru
 		return syncToMainResult{Account: account, Groups: groups, Platform: platform}, s.store.UpdateRuleSyncSuccess(ctx, rule.ID, status, signature)
 	}
 	return syncToMainResult{Account: account, Groups: groups, Platform: platform}, s.store.UpdateRuleSyncStatus(ctx, rule.ID, status, "")
+}
+
+func categoryMainTestEnabled(category Category) bool {
+	return category.ID == 0 || category.Sub2APIMainTestEnabled
 }
 
 func chineseSyncAction(action string) string {
@@ -3625,7 +3636,7 @@ func formMap(r *http.Request) map[string]any {
 				continue
 			}
 		}
-		if key == "enabled" || key == "schedule_enabled" || key == "sync_enabled" || key == "sub2api_enabled" {
+		if key == "enabled" || key == "schedule_enabled" || key == "sync_enabled" || key == "sub2api_enabled" || key == "sub2api_main_test_enabled" {
 			out[key] = value == "true" || value == "on" || value == "1"
 			continue
 		}
