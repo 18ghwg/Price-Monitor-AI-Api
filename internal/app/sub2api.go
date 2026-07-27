@@ -658,42 +658,43 @@ func (c *Sub2APIClient) upsertAPIKeyAccountGroupsWithRateAndMode(ctx context.Con
 	}
 	if len(sameURLAndName) > 0 {
 		account := preferredSub2Account(sameURLAndName, groups)
-		alreadyMatchedGroups := sub2AccountGroupIDsEqual(account, targetGroupIDs)
+		alreadySynced := sub2AccountAlreadySynced(account, targetGroupIDs)
 		updated, err := c.updateAccountGroupsWithRate(ctx, platform, account, accountName, apiBaseURL, apiKey, groups, accountRate)
 		if err != nil {
 			return updated, "updated", false, err
 		}
 		if cleanupSameURLDuplicates {
 			if err := c.disableDuplicateAPIKeyAccounts(ctx, platform, updated.ID, apiBaseURL, accountName, accounts); err != nil {
-				return updated, "updated", alreadyMatchedGroups, err
+				return updated, "updated", alreadySynced, err
 			}
 		}
-		return updated, "updated", alreadyMatchedGroups, nil
+		return updated, "updated", alreadySynced, nil
 	}
 	if len(sameURLKeyAndGroups) > 0 {
 		account := preferredSub2Account(sameURLKeyAndGroups, groups)
+		alreadySynced := sub2AccountAlreadySynced(account, targetGroupIDs)
 		updated, err := c.updateAccountGroupsWithRate(ctx, platform, account, accountName, apiBaseURL, apiKey, groups, accountRate)
 		if err != nil {
 			return updated, "updated", false, err
 		}
 		if cleanupSameURLDuplicates {
 			if err := c.disableDuplicateAPIKeyAccounts(ctx, platform, updated.ID, apiBaseURL, accountName, accounts); err != nil {
-				return updated, "updated", true, err
+				return updated, "updated", alreadySynced, err
 			}
 		}
-		return updated, "updated", true, nil
+		return updated, "updated", alreadySynced, nil
 	}
 	if cleanupSameURLDuplicates && len(sameURL) > 0 {
 		account := preferredSub2Account(sameURL, groups)
-		alreadyMatchedGroups := sub2AccountGroupIDsEqual(account, targetGroupIDs)
+		alreadySynced := sub2AccountAlreadySynced(account, targetGroupIDs)
 		updated, err := c.updateAccountGroupsWithRate(ctx, platform, account, accountName, apiBaseURL, apiKey, groups, accountRate)
 		if err != nil {
 			return updated, "updated", false, err
 		}
 		if err := c.disableDuplicateAPIKeyAccounts(ctx, platform, updated.ID, apiBaseURL, accountName, accounts); err != nil {
-			return updated, "updated", alreadyMatchedGroups, err
+			return updated, "updated", alreadySynced, err
 		}
-		return updated, "updated", alreadyMatchedGroups, nil
+		return updated, "updated", alreadySynced, nil
 	}
 	created, err := c.createAccountGroupsWithRate(ctx, platform, accountName, apiBaseURL, apiKey, groups, accountRate)
 	return created, "created", false, err
@@ -1118,6 +1119,10 @@ func preferredSub2Account(accounts []sub2Account, groups []sub2Group) sub2Accoun
 		return accounts[i].ID < accounts[j].ID
 	})
 	return accounts[0]
+}
+
+func sub2AccountAlreadySynced(account sub2Account, targetGroupIDs []int64) bool {
+	return account.Status == "active" && account.Schedulable && sub2AccountGroupIDsEqual(account, targetGroupIDs)
 }
 
 func openAICredentials(apiBaseURL, apiKey string) map[string]any {

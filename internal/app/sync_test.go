@@ -51,6 +51,18 @@ func TestIsSub2APISyncDisabledError(t *testing.T) {
 	}
 }
 
+func TestShouldNotifySyncUpdateSkipsAlreadySyncedMainAccount(t *testing.T) {
+	if shouldNotifySyncUpdate(true, true) {
+		t.Fatal("shouldNotifySyncUpdate(true, true) = true, want false for already synced schedulable main account")
+	}
+	if shouldNotifySyncUpdate(false, false) {
+		t.Fatal("shouldNotifySyncUpdate(false, false) = true, want false for repeated sync signature")
+	}
+	if !shouldNotifySyncUpdate(true, false) {
+		t.Fatal("shouldNotifySyncUpdate(true, false) = false, want true for newly synced or re-enabled account")
+	}
+}
+
 func TestIsFallbackSyncErrorMatchesNewAPITokenKeyRoute(t *testing.T) {
 	err := errors.New("candidate newapi create NewAPI key: get newapi token key: upstream https://doro.lol/api/token/4173/key returned HTTP 404: Invalid URL")
 	if !isFallbackSyncError(err) {

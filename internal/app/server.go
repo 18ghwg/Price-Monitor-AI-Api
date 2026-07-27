@@ -3252,7 +3252,7 @@ func (s *Server) syncUpstreamKeyToMainSub2APIWithOptions(ctx context.Context, ru
 	if !disableOthers {
 		upsert = sub2.UpsertAPIKeyAccountGroupsWithRateAndModeNoDuplicateCleanup
 	}
-	account, action, _, err := upsert(ctx, platform, accountName, sourceBaseURL, apiKey, groups, nil, settings.Sub2APISyncAccountMode)
+	account, action, alreadySynced, err := upsert(ctx, platform, accountName, sourceBaseURL, apiKey, groups, nil, settings.Sub2APISyncAccountMode)
 	if err != nil {
 		return syncToMainResult{}, err
 	}
@@ -3274,7 +3274,8 @@ func (s *Server) syncUpstreamKeyToMainSub2APIWithOptions(ctx context.Context, ru
 	if snapshot.ID == 0 {
 		snapshot = priceSnapshotFromPricingRow(row, sourceName, sourceBaseURL)
 	}
-	if notifySync {
+	effectiveNotifySync := shouldNotifySyncUpdate(notifySync, alreadySynced)
+	if effectiveNotifySync {
 		s.notifySyncUpdate(ctx, rule, Site{Name: sourceName, BaseURL: sourceBaseURL}, snapshot, action, account)
 	}
 	status := fmt.Sprintf("同步成功：主站账号%s，上游key%s，低价分组 %s，倍率 %s，同步到主站分组 %s",
@@ -3284,13 +3285,17 @@ func (s *Server) syncUpstreamKeyToMainSub2APIWithOptions(ctx context.Context, ru
 	} else {
 		status += "，已按分类设置跳过主站测试"
 	}
-	if !notifySync {
+	if !effectiveNotifySync {
 		status = "复核成功：" + strings.TrimPrefix(status, "同步成功：")
 	}
 	if strings.TrimSpace(signature) != "" {
 		return syncToMainResult{Account: account, Groups: groups, Platform: platform}, s.store.UpdateRuleSyncSuccess(ctx, rule.ID, status, signature)
 	}
 	return syncToMainResult{Account: account, Groups: groups, Platform: platform}, s.store.UpdateRuleSyncStatus(ctx, rule.ID, status, "")
+}
+
+func shouldNotifySyncUpdate(notifySync bool, alreadySynced bool) bool {
+	return notifySync && !alreadySynced
 }
 
 func categoryMainTestEnabled(category Category) bool {

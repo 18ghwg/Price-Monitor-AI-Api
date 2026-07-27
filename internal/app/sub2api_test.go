@@ -585,6 +585,68 @@ func TestSub2APIUpsertNoDuplicateCleanupReusesSameURLKeyAndGroups(t *testing.T) 
 	}
 }
 
+func TestSub2APIUpsertDoesNotMarkDisabledAccountAlreadySynced(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/admin/accounts":
+			writeSub2TestJSON(w, map[string]any{
+				"items": []map[string]any{{
+					"id":          88,
+					"name":        "site Codex VIP",
+					"platform":    "openai",
+					"type":        "apikey",
+					"credentials": map[string]any{"base_url": "https://newapi.test", "api_key": "sk-same"},
+					"group_ids":   []int64{7},
+					"status":      "active",
+					"schedulable": false,
+				}},
+				"total": 1,
+			})
+		case r.Method == http.MethodPut && r.URL.Path == "/api/v1/admin/accounts/88":
+			writeSub2TestJSON(w, map[string]any{
+				"id":          88,
+				"name":        "site Codex VIP",
+				"platform":    "openai",
+				"type":        "apikey",
+				"credentials": map[string]any{"base_url": "https://newapi.test", "api_key": "sk-same"},
+				"group_ids":   []int64{7},
+				"status":      "active",
+				"schedulable": true,
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/admin/accounts/88/schedulable":
+			writeSub2TestJSON(w, map[string]any{"id": 88, "schedulable": true})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewSub2APIClient(server.URL, "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, action, alreadySynced, err := client.UpsertAPIKeyAccountGroupsWithRateAndModeNoDuplicateCleanup(
+		context.Background(),
+		"openai",
+		"site Codex VIP",
+		"https://newapi.test",
+		"sk-same",
+		[]sub2Group{{ID: 7, Name: "Codex"}},
+		nil,
+		sub2APISyncAccountModeSchedulableOnly,
+	)
+	if err != nil {
+		t.Fatalf("UpsertAPIKeyAccountGroupsWithRateAndModeNoDuplicateCleanup() error = %v", err)
+	}
+	if action != "updated" {
+		t.Fatalf("action = %q, want updated", action)
+	}
+	if alreadySynced {
+		t.Fatal("alreadySynced = true, want false for an account that was not schedulable before upsert")
+	}
+}
+
 func TestSub2APIEnsureGroupByIDOrNameWithRateUpdatesGroupRate(t *testing.T) {
 	var updatePayload map[string]any
 
