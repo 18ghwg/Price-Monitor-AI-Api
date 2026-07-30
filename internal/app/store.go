@@ -1861,15 +1861,13 @@ func (s Store) MarkCategoryMismatchedSnapshotsInvalid(ctx context.Context, reaso
 	return tag.RowsAffected(), nil
 }
 
-func (s Store) PruneExpiredInvalidSnapshots(ctx context.Context, olderThan time.Duration) (int64, error) {
+func (s Store) PruneStaleSnapshots(ctx context.Context, olderThan time.Duration) (int64, error) {
 	if olderThan <= 0 {
-		olderThan = 7 * 24 * time.Hour
+		olderThan = 3 * 24 * time.Hour
 	}
 	tag, err := s.db.Exec(ctx, `
 		DELETE FROM price_snapshots
-		WHERE invalid = true
-		  AND invalid_at IS NOT NULL
-		  AND invalid_at < now() - make_interval(secs => $1)
+		WHERE created_at < now() - make_interval(secs => $1)
 	`, int64(olderThan.Seconds()))
 	if err != nil {
 		return 0, err
@@ -1924,6 +1922,17 @@ func (s Store) PreviousSnapshot(ctx context.Context, ruleID int64, modelName str
 
 func (s Store) CheapestLatestSnapshot(ctx context.Context, category string, modelName string, expectedCacheHitRatio float64, balanceThreshold float64, latencyWeightPerSecond float64) (PriceSnapshot, error) {
 	return s.cheapestLatestSnapshot(ctx, category, modelName, nil, expectedCacheHitRatio, balanceThreshold, latencyWeightPerSecond)
+}
+
+func (s Store) CheapestSnapshotFromSnapshots(ctx context.Context, category string, modelName string, snapshotIDs []int64, expectedCacheHitRatio float64, balanceThreshold float64, latencyWeightPerSecond float64, perSourceGroupLimit int) (PriceSnapshot, error) {
+	candidates, _, err := s.SyncCandidatesFromSnapshots(ctx, category, modelName, snapshotIDs, expectedCacheHitRatio, balanceThreshold, latencyWeightPerSecond, perSourceGroupLimit)
+	if err != nil {
+		return PriceSnapshot{}, err
+	}
+	if len(candidates) == 0 {
+		return PriceSnapshot{}, pgx.ErrNoRows
+	}
+	return candidates[0], nil
 }
 
 func (s Store) CheapestLatestSnapshotBefore(ctx context.Context, category string, modelName string, before time.Time, expectedCacheHitRatio float64, balanceThreshold float64, latencyWeightPerSecond float64) (PriceSnapshot, error) {
@@ -2126,29 +2135,59 @@ func (s Store) CheapestSyncCandidate(ctx context.Context, category string, model
 }
 
 func (s Store) SyncCandidates(ctx context.Context, category string, modelName string, expectedCacheHitRatio float64, balanceThreshold float64, latencyWeightPerSecond float64, perSourceGroupLimit int) ([]PriceSnapshot, []PriceSnapshot, error) {
-	snapshots, err := s.latestSnapshotsForModel(ctx, category, modelName, expectedCacheHitRatio, latencyWeightPerSecond, perSourceGroupLimit)
+	snapshots, err := s.latestSnapshotsForModel(ctx, category, modelName, nil, expectedCacheHitRatio, latencyWeightPerSecond, perSourceGroupLimit)
 	if err != nil {
 		return nil, nil, err
 	}
+	return filterSyncCandidatesByBalance(snapshots, balanceThreshold), filterSkippedSyncCandidatesByBalance(snapshots, balanceThreshold), nil
+}
+
+func (s Store) SyncCandidatesFromSnapshots(ctx context.Context, category string, modelName string, snapshotIDs []int64, expectedCacheHitRatio float64, balanceThreshold float64, latencyWeightPerSecond float64, perSourceGroupLimit int) ([]PriceSnapshot, []PriceSnapshot, error) {
+	snapshotIDs = normalizeSnapshotIDs(snapshotIDs)
+	if len(snapshotIDs) == 0 {
+		return nil, nil, nil
+	}
+	snapshots, err := s.latestSnapshotsForModel(ctx, category, modelName, snapshotIDs, expectedCacheHitRatio, latencyWeightPerSecond, perSourceGroupLimit)
+	if err != nil {
+		return nil, nil, err
+	}
+	return filterSyncCandidatesByBalance(snapshots, balanceThreshold), filterSkippedSyncCandidatesByBalance(snapshots, balanceThreshold), nil
+}
+
+func filterSyncCandidatesByBalance(snapshots []PriceSnapshot, balanceThreshold float64) []PriceSnapshot {
 	candidates := make([]PriceSnapshot, 0, len(snapshots))
-	skipped := make([]PriceSnapshot, 0)
 	for _, snapshot := range snapshots {
 		if snapshotBalanceInsufficient(snapshot, balanceThreshold) {
-			skipped = append(skipped, snapshot)
 			continue
 		}
 		candidates = append(candidates, snapshot)
 	}
-	return candidates, skipped, nil
+	return candidates
 }
 
-func (s Store) latestSnapshotsForModel(ctx context.Context, category string, modelName string, expectedCacheHitRatio float64, latencyWeightPerSecond float64, perSourceGroupLimit int) ([]PriceSnapshot, error) {
+func filterSkippedSyncCandidatesByBalance(snapshots []PriceSnapshot, balanceThreshold float64) []PriceSnapshot {
+	skipped := make([]PriceSnapshot, 0)
+	for _, snapshot := range snapshots {
+		if snapshotBalanceInsufficient(snapshot, balanceThreshold) {
+			skipped = append(skipped, snapshot)
+		}
+	}
+	return skipped
+}
+
+func (s Store) latestSnapshotsForModel(ctx context.Context, category string, modelName string, snapshotIDs []int64, expectedCacheHitRatio float64, latencyWeightPerSecond float64, perSourceGroupLimit int) ([]PriceSnapshot, error) {
 	hitRatio := normalizeExpectedCacheHitRatio(expectedCacheHitRatio)
 	latencyWeight := normalizeLatencyWeightPerSecond(latencyWeightPerSecond)
 	perSourceGroupLimit = normalizeSub2APISyncKeepCount(perSourceGroupLimit)
+	args := []any{normalizeCategorySlug(category), strings.TrimSpace(modelName), hitRatio, latencyWeight, perSourceGroupLimit}
+	snapshotFilter := ""
+	if len(snapshotIDs) > 0 {
+		args = append(args, snapshotIDs)
+		snapshotFilter = fmt.Sprintf("AND p.id = ANY($%d::bigint[])", len(args))
+	}
 	rows, err := s.db.Query(ctx, `
-		WITH latest AS (
-			SELECT DISTINCT ON (COALESCE(p.source_type, 'newapi'), lower(regexp_replace(trim(p.source_base_url), '/+$', '')), lower(trim(p.source_account)), r.category, p.model_name, lower(trim(p.group_name)))
+			WITH latest AS (
+				SELECT DISTINCT ON (COALESCE(p.source_type, 'newapi'), lower(regexp_replace(trim(p.source_base_url), '/+$', '')), lower(trim(p.source_account)), r.category, p.model_name, lower(trim(p.group_name)))
 			       p.id, p.rule_id, COALESCE(p.source_type, 'newapi') AS source_type, COALESCE(p.site_id, 0) AS site_id, p.sub2api_upstream_id,
 			       CASE WHEN COALESCE(p.source_type, 'newapi') = 'sub2api' THEN COALESCE(u.name, '') ELSE COALESCE(st.name, '') END AS site_name,
 			       COALESCE(NULLIF(p.source_base_url, ''), CASE WHEN COALESCE(p.source_type, 'newapi') = 'sub2api' THEN COALESCE(u.base_url, '') ELSE COALESCE(st.base_url, '') END) AS site_base_url,
@@ -2164,10 +2203,11 @@ func (s Store) latestSnapshotsForModel(ctx context.Context, category string, mod
 			LEFT JOIN sub2api_upstreams u ON u.id = p.sub2api_upstream_id
 			LEFT JOIN categories c ON c.slug = r.category
 			WHERE r.enabled = true
-			  AND r.category = $1
-			  AND p.model_name = $2
-			  AND lower(trim(p.model_name)) = lower(trim(r.model_keyword))
-			  AND p.invalid = false
+				  AND r.category = $1
+				  AND p.model_name = $2
+				  `+snapshotFilter+`
+				  AND lower(trim(p.model_name)) = lower(trim(r.model_keyword))
+				  AND p.invalid = false
 			  AND (
 			    NOT EXISTS (
 			      SELECT 1
@@ -2206,11 +2246,11 @@ func (s Store) latestSnapshotsForModel(ctx context.Context, category string, mod
 		       request_price, request_latency_ms, upstream_balance, balance_unit, online_topup_enabled, recharge_multiplier, invalid, invalid_reason, invalid_at, raw, created_at
 		FROM ranked
 		WHERE source_group_rank <= $5
-		ORDER BY `+priceComparisonExpr("$3", "$4")+` ASC,
-		         COALESCE(output_price, 1e308) ASC,
-		         group_ratio ASC NULLS LAST,
-		         id DESC
-	`, normalizeCategorySlug(category), strings.TrimSpace(modelName), hitRatio, latencyWeight, perSourceGroupLimit)
+			ORDER BY `+priceComparisonExpr("$3", "$4")+` ASC,
+			         COALESCE(output_price, 1e308) ASC,
+			         group_ratio ASC NULLS LAST,
+			         id DESC
+		`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -2244,6 +2284,26 @@ func (s Store) latestSnapshotsForModel(ctx context.Context, category string, mod
 		snapshots = append(snapshots, snapshot)
 	}
 	return snapshots, rows.Err()
+}
+
+func normalizeSnapshotIDs(ids []int64) []int64 {
+	if len(ids) == 0 {
+		return nil
+	}
+	seen := make(map[int64]struct{}, len(ids))
+	out := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }
 
 func snapshotBalanceInsufficient(snapshot PriceSnapshot, threshold float64) bool {

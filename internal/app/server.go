@@ -1595,12 +1595,13 @@ func (s *Server) runRuleWithSourceOptions(ctx context.Context, rule Rule, site S
 }
 
 func (s *Server) runNewAPIRule(ctx context.Context, rule Rule, site Site, options runRuleOptions) ([]PriceSnapshot, error) {
+	roundResult := newCategoryBatchResult(rule.Category, time.Now())
+	roundResult.addRule(rule)
 	settings, err := s.store.GetIntegrationSettings(ctx)
 	if err != nil {
 		return nil, err
 	}
 	expectedCacheHitRatio := settings.ExpectedCacheHitRatio
-	latencyWeight := effectiveLatencyWeight(settings)
 	client, userID, token, err := s.newAPIClientForSite(ctx, site, false)
 	if err != nil {
 		s.saveNewAPISession(ctx, site, client, site.UserID, site.AccessToken, err.Error())
@@ -1662,12 +1663,8 @@ func (s *Server) runNewAPIRule(ctx context.Context, rule Rule, site Site, option
 
 	snapshots := make([]PriceSnapshot, 0, len(rows))
 	activeGroups := make([]string, 0, len(rows))
-	var syncErr error
-	syncAttempted := false
-	syncDecisionRecorded := false
 	for _, row := range rows {
 		activeGroups = append(activeGroups, row.GroupName)
-		previousLowest, previousLowestErr := s.store.CheapestLatestSnapshot(ctx, rule.Category, row.ModelName, expectedCacheHitRatio, settings.UpstreamBalanceThreshold, latencyWeight)
 		requestLatencyMS := s.measureNewAPIUpstreamLatency(ctx, rule, site, client, userID, token, row)
 		snapshot := PriceSnapshot{
 			RuleID:             rule.ID,
@@ -1701,38 +1698,21 @@ func (s *Server) runNewAPIRule(ctx context.Context, rule Rule, site Site, option
 			return nil, err
 		}
 		snapshots = append(snapshots, snapshot)
-		if options.DeferGlobalDecision {
-			continue
-		}
-		currentLowest, newLowest, stableLowest := s.lowestSnapshotEvent(ctx, rule, snapshot, previousLowest, previousLowestErr, expectedCacheHitRatio, settings.UpstreamBalanceThreshold, latencyWeight)
-		if stableLowest {
-			syncDecisionRecorded = true
-		}
-		if newLowest {
-			s.notifyPriceChange(ctx, previousLowest, currentLowest, lowestSnapshotChanges(previousLowest, currentLowest))
-		}
-		if rule.SyncEnabled {
-			attempted, decisionRecorded, err := s.syncBestAvailableCandidate(ctx, rule, row.ModelName, expectedCacheHitRatio, latencyWeight)
-			syncDecisionRecorded = syncDecisionRecorded || decisionRecorded
-			if attempted {
-				syncAttempted = true
-			}
-			if err != nil {
-				syncErr = err
-			}
-		}
 	}
 	if err := s.store.MarkMissingSnapshotGroupsInvalid(ctx, rule.ID, rule.ModelKeyword, activeGroups, "upstream group disappeared or is no longer cheapest"); err != nil {
 		log.Printf("mark missing newapi snapshot groups invalid for rule %d: %v", rule.ID, err)
 	}
 	s.saveNewAPISession(ctx, site, client, userID, token, "")
-	if rule.SyncEnabled && !syncAttempted && syncErr == nil && !syncDecisionRecorded {
-		_ = s.store.UpdateRuleSyncStatus(ctx, rule.ID, "不是当前最低价", "")
+	if !options.DeferGlobalDecision {
+		roundResult.addSnapshots(snapshots)
+		s.finishCategoryBatch(ctx, roundResult)
 	}
 	return snapshots, nil
 }
 
 func (s *Server) runSub2APIRule(ctx context.Context, rule Rule, upstream Sub2APIUpstream, options runRuleOptions) ([]PriceSnapshot, error) {
+	roundResult := newCategoryBatchResult(rule.Category, time.Now())
+	roundResult.addRule(rule)
 	if upstream.ID <= 0 {
 		return nil, fmt.Errorf("sub2api source site is required")
 	}
@@ -1741,7 +1721,6 @@ func (s *Server) runSub2APIRule(ctx context.Context, rule Rule, upstream Sub2API
 		return nil, err
 	}
 	expectedCacheHitRatio := settings.ExpectedCacheHitRatio
-	latencyWeight := effectiveLatencyWeight(settings)
 	client, groups, userRates, err := s.fetchSub2APIUserClientGroups(ctx, sub2APIUserPriceInput{
 		Sub2APIUpstreamID: upstream.ID,
 	})
@@ -1786,12 +1765,8 @@ func (s *Server) runSub2APIRule(ctx context.Context, rule Rule, upstream Sub2API
 
 	snapshots := make([]PriceSnapshot, 0, len(rows))
 	activeGroups := make([]string, 0, len(rows))
-	var syncErr error
-	syncAttempted := false
-	syncDecisionRecorded := false
 	for _, row := range rows {
 		activeGroups = append(activeGroups, row.GroupName)
-		previousLowest, previousLowestErr := s.store.CheapestLatestSnapshot(ctx, rule.Category, row.ModelName, expectedCacheHitRatio, settings.UpstreamBalanceThreshold, latencyWeight)
 		requestLatencyMS := s.measureSub2APIUpstreamLatency(ctx, rule, upstream, row)
 		cacheWritePrice := row.FinalCacheWritePerMillion
 		if cacheWritePrice == nil {
@@ -1828,32 +1803,13 @@ func (s *Server) runSub2APIRule(ctx context.Context, rule Rule, upstream Sub2API
 			return nil, err
 		}
 		snapshots = append(snapshots, snapshot)
-		if options.DeferGlobalDecision {
-			continue
-		}
-		currentLowest, newLowest, stableLowest := s.lowestSnapshotEvent(ctx, rule, snapshot, previousLowest, previousLowestErr, expectedCacheHitRatio, settings.UpstreamBalanceThreshold, latencyWeight)
-		if stableLowest {
-			syncDecisionRecorded = true
-		}
-		if newLowest {
-			s.notifyPriceChange(ctx, previousLowest, currentLowest, lowestSnapshotChanges(previousLowest, currentLowest))
-		}
-		if rule.SyncEnabled {
-			attempted, decisionRecorded, err := s.syncBestAvailableCandidate(ctx, rule, row.ModelName, expectedCacheHitRatio, latencyWeight)
-			syncDecisionRecorded = syncDecisionRecorded || decisionRecorded
-			if attempted {
-				syncAttempted = true
-			}
-			if err != nil {
-				syncErr = err
-			}
-		}
 	}
 	if err := s.store.MarkMissingSnapshotGroupsInvalid(ctx, rule.ID, rule.ModelKeyword, activeGroups, "upstream group disappeared or is no longer cheapest"); err != nil {
 		log.Printf("mark missing sub2api snapshot groups invalid for rule %d: %v", rule.ID, err)
 	}
-	if rule.SyncEnabled && !syncAttempted && syncErr == nil && !syncDecisionRecorded {
-		_ = s.store.UpdateRuleSyncStatus(ctx, rule.ID, "不是当前最低价", "")
+	if !options.DeferGlobalDecision {
+		roundResult.addSnapshots(snapshots)
+		s.finishCategoryBatch(ctx, roundResult)
 	}
 	return snapshots, nil
 }
@@ -2328,7 +2284,7 @@ func (s *Server) lowestSnapshotEvent(ctx context.Context, rule Rule, inserted Pr
 	return current, true, false
 }
 
-func (s *Server) syncBestAvailableCandidate(ctx context.Context, rule Rule, modelName string, expectedCacheHitRatio float64, latencyWeightPerSecond float64) (bool, bool, error) {
+func (s *Server) syncBestAvailableCandidate(ctx context.Context, rule Rule, modelName string, snapshotIDs []int64, expectedCacheHitRatio float64, latencyWeightPerSecond float64) (bool, bool, error) {
 	settings, settingsErr := s.store.GetIntegrationSettings(ctx)
 	if settingsErr != nil {
 		log.Printf("load integration settings for sync candidates: %v", settingsErr)
@@ -2344,7 +2300,7 @@ func (s *Server) syncBestAvailableCandidate(ctx context.Context, rule Rule, mode
 	var lastCandidates []PriceSnapshot
 	var retained []syncCandidateMainResult
 	for pass := 0; pass < 2; pass++ {
-		candidates, skippedLowBalance, err := s.store.SyncCandidates(ctx, rule.Category, modelName, expectedCacheHitRatio, balanceThreshold, latencyWeightPerSecond, keepCount)
+		candidates, skippedLowBalance, err := s.store.SyncCandidatesFromSnapshots(ctx, rule.Category, modelName, snapshotIDs, expectedCacheHitRatio, balanceThreshold, latencyWeightPerSecond, keepCount)
 		if err != nil {
 			log.Printf("load sync candidates for rule %d model %q: %v", rule.ID, modelName, err)
 			return false, false, nil
@@ -2435,11 +2391,13 @@ func (s *Server) syncBestAvailableCandidate(ctx context.Context, rule Rule, mode
 					continue
 				}
 				refreshedRules[candidateRule.ID] = true
-				if _, refreshErr := s.runRuleWithoutSync(candidateCtx, candidateRule.ID); refreshErr != nil {
+				refreshedSnapshots, refreshErr := s.runRuleWithoutSync(candidateCtx, candidateRule.ID)
+				if refreshErr != nil {
 					fallbackErrors = append(fallbackErrors, fmt.Sprintf("%s/%s: 刷新上游规则失败：%v", candidate.SiteName, candidate.GroupName, refreshErr))
 					cancelCandidate()
 					continue
 				}
+				snapshotIDs = append(snapshotIDs, snapshotIDsFromSnapshots(refreshedSnapshots)...)
 				fallbackErrors = append(fallbackErrors, fmt.Sprintf("%s/%s: %v", candidate.SiteName, candidate.GroupName, err))
 				refreshedThisPass = true
 				cancelCandidate()
@@ -2602,10 +2560,21 @@ func (s *Server) finishCategoryBatch(ctx context.Context, result *categoryBatchR
 	latencyWeight := effectiveLatencyWeight(settings)
 	log.Printf("scheduler category %s finished collection; evaluating %d model(s)", result.category, len(models))
 	for _, modelName := range models {
+		snapshotIDs := result.snapshotIDsForModel(modelName)
+		if len(snapshotIDs) == 0 {
+			continue
+		}
 		previous, previousErr := s.store.CheapestLatestSnapshotBefore(ctx, result.category, modelName, result.started, expectedCacheHitRatio, settings.UpstreamBalanceThreshold, latencyWeight)
-		current, currentErr := s.store.CheapestLatestSnapshot(ctx, result.category, modelName, expectedCacheHitRatio, settings.UpstreamBalanceThreshold, latencyWeight)
+		current, currentErr := s.store.CheapestSnapshotFromSnapshots(ctx, result.category, modelName, snapshotIDs, expectedCacheHitRatio, settings.UpstreamBalanceThreshold, latencyWeight, settings.Sub2APISyncKeepCount)
 		if currentErr != nil {
-			log.Printf("load current cheapest snapshot for category %s model %q: %v", result.category, modelName, currentErr)
+			log.Printf("load current round cheapest snapshot for category %s model %q: %v", result.category, modelName, currentErr)
+			if notFound(currentErr) {
+				if rule, ok := result.firstRule(); ok && rule.SyncEnabled {
+					if _, _, err := s.syncBestAvailableCandidate(ctx, rule, modelName, snapshotIDs, expectedCacheHitRatio, latencyWeight); err != nil {
+						log.Printf("category %s model %q sync: %v", result.category, modelName, err)
+					}
+				}
+			}
 			continue
 		}
 		newLowest := false
@@ -2634,7 +2603,7 @@ func (s *Server) finishCategoryBatch(ctx context.Context, result *categoryBatchR
 		}
 		syncSucceeded := !rule.SyncEnabled
 		if rule.SyncEnabled {
-			if attempted, _, err := s.syncBestAvailableCandidate(ctx, rule, modelName, expectedCacheHitRatio, latencyWeight); err != nil {
+			if attempted, _, err := s.syncBestAvailableCandidate(ctx, rule, modelName, snapshotIDs, expectedCacheHitRatio, latencyWeight); err != nil {
 				log.Printf("category %s model %q sync: %v", result.category, modelName, err)
 			} else {
 				syncSucceeded = attempted
@@ -3047,11 +3016,15 @@ func (s *Server) shouldSyncGlobalCheapestWithBalance(ctx context.Context, rule R
 		log.Printf("load integration settings for sync candidate: %v", err)
 		return false, nil, false
 	}
-	candidate, skipped, err := s.store.CheapestSyncCandidate(ctx, rule.Category, snapshot.ModelName, settings.ExpectedCacheHitRatio, settings.UpstreamBalanceThreshold, effectiveLatencyWeight(settings), settings.Sub2APISyncKeepCount)
+	candidates, skipped, err := s.store.SyncCandidatesFromSnapshots(ctx, rule.Category, snapshot.ModelName, []int64{snapshot.ID}, settings.ExpectedCacheHitRatio, settings.UpstreamBalanceThreshold, effectiveLatencyWeight(settings), settings.Sub2APISyncKeepCount)
 	if err != nil {
 		log.Printf("load cheapest sync candidate for rule %d model %q: %v", rule.ID, snapshot.ModelName, err)
 		return false, skipped, false
 	}
+	if len(candidates) == 0 {
+		return false, skipped, false
+	}
+	candidate := candidates[0]
 	if reason, ok := s.syncThresholdSkipReason(ctx, rule, candidate); !ok {
 		_ = s.store.UpdateRuleSyncStatus(ctx, rule.ID, reason, "")
 		return false, skipped, true
@@ -3398,10 +3371,10 @@ func (s *Server) runEnabledRules(ctx context.Context) {
 	} else if invalidated > 0 {
 		log.Printf("marked %d category mismatched snapshots invalid", invalidated)
 	}
-	if deleted, err := s.store.PruneExpiredInvalidSnapshots(ctx, 7*24*time.Hour); err != nil {
-		log.Printf("prune expired invalid snapshots: %v", err)
+	if deleted, err := s.store.PruneStaleSnapshots(ctx, 3*24*time.Hour); err != nil {
+		log.Printf("prune stale snapshots: %v", err)
 	} else if deleted > 0 {
-		log.Printf("pruned %d expired invalid snapshots", deleted)
+		log.Printf("pruned %d stale snapshots", deleted)
 	}
 	roundInterval, ruleDelay := s.schedulerIntervals(ctx, s.cfg.MonitorInterval)
 	categories, err := s.store.DueScheduledCategories(ctx, time.Now(), 50)
@@ -3490,10 +3463,11 @@ type scheduledRuleSourceBatch struct {
 }
 
 type categoryBatchResult struct {
-	category string
-	started  time.Time
-	models   map[string]struct{}
-	rules    map[int64]Rule
+	category           string
+	started            time.Time
+	models             map[string]struct{}
+	snapshotIDsByModel map[string]map[int64]struct{}
+	rules              map[int64]Rule
 }
 
 func newCategoryBatchResult(category string, started time.Time) *categoryBatchResult {
@@ -3501,10 +3475,11 @@ func newCategoryBatchResult(category string, started time.Time) *categoryBatchRe
 		started = time.Now()
 	}
 	return &categoryBatchResult{
-		category: normalizeCategorySlug(category),
-		started:  started,
-		models:   map[string]struct{}{},
-		rules:    map[int64]Rule{},
+		category:           normalizeCategorySlug(category),
+		started:            started,
+		models:             map[string]struct{}{},
+		snapshotIDsByModel: map[string]map[int64]struct{}{},
+		rules:              map[int64]Rule{},
 	}
 }
 
@@ -3525,7 +3500,54 @@ func (r *categoryBatchResult) addSnapshots(snapshots []PriceSnapshot) {
 			continue
 		}
 		r.models[modelName] = struct{}{}
+		if snapshot.ID > 0 {
+			if r.snapshotIDsByModel[modelName] == nil {
+				r.snapshotIDsByModel[modelName] = map[int64]struct{}{}
+			}
+			r.snapshotIDsByModel[modelName][snapshot.ID] = struct{}{}
+		}
 	}
+}
+
+func (r *categoryBatchResult) snapshotIDsForModel(modelName string) []int64 {
+	if r == nil {
+		return nil
+	}
+	idsByModel := r.snapshotIDsByModel[strings.TrimSpace(modelName)]
+	if len(idsByModel) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(idsByModel))
+	for id := range idsByModel {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids
+}
+
+func (r *categoryBatchResult) firstRule() (Rule, bool) {
+	if r == nil || len(r.rules) == 0 {
+		return Rule{}, false
+	}
+	ids := make([]int64, 0, len(r.rules))
+	for id := range r.rules {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return r.rules[ids[0]], true
+}
+
+func snapshotIDsFromSnapshots(snapshots []PriceSnapshot) []int64 {
+	if len(snapshots) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		if snapshot.ID > 0 {
+			ids = append(ids, snapshot.ID)
+		}
+	}
+	return ids
 }
 
 func (r *categoryBatchResult) modelNames() []string {

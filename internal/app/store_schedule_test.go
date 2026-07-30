@@ -99,13 +99,31 @@ func TestRunEnabledRulesUsesDueCategories(t *testing.T) {
 func TestCategoryBatchResultDeduplicatesAndSortsModels(t *testing.T) {
 	result := newCategoryBatchResult("codex", time.Now())
 	result.addSnapshots([]PriceSnapshot{
-		{ModelName: "gpt-5.5"},
-		{ModelName: " gpt-5.5 "},
-		{ModelName: "gpt-4.1"},
+		{ID: 3, ModelName: "gpt-5.5"},
+		{ID: 2, ModelName: " gpt-5.5 "},
+		{ID: 1, ModelName: "gpt-4.1"},
 	})
 
 	models := result.modelNames()
 	if len(models) != 2 || models[0] != "gpt-4.1" || models[1] != "gpt-5.5" {
 		t.Fatalf("modelNames = %#v, want sorted unique models", models)
+	}
+	ids := result.snapshotIDsForModel("gpt-5.5")
+	if len(ids) != 2 || ids[0] != 2 || ids[1] != 3 {
+		t.Fatalf("snapshotIDsForModel = %#v, want sorted current-round snapshot ids", ids)
+	}
+}
+
+func TestRunEnabledRulesPrunesSnapshotsStaleForThreeDays(t *testing.T) {
+	source, err := os.ReadFile("server.go")
+	if err != nil {
+		t.Fatalf("read server.go: %v", err)
+	}
+	body := string(source)
+	if !strings.Contains(body, "s.store.PruneStaleSnapshots(ctx, 3*24*time.Hour)") {
+		t.Fatal("runEnabledRules should delete snapshots that have not been updated for more than 3 days")
+	}
+	if strings.Contains(body, "PruneExpiredInvalidSnapshots") {
+		t.Fatal("runEnabledRules should not prune only invalid snapshots")
 	}
 }
